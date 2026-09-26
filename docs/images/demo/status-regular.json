@@ -1,0 +1,256 @@
+{
+ "generated_at": "2026-09-24T16:40:48+00:00",
+ "pool": {
+  "running": true,
+  "version": "7.3.18-gate-1a2b3c4d5e",
+  "port": 8319,
+  "used_pct": 46.4,
+  "used_pct_all": 46.4,
+  "used_pct_regular": 67.1,
+  "headline": "all",
+  "display": "left",
+  "reserve_in_use": false,
+  "regular_available": 3,
+  "left_weight": 17.15,
+  "counted": 5,
+  "seats": 5,
+  "available": 4,
+  "resets_available": 2
+ },
+ "active": "Work B",
+ "active_name": "codex-work-b.json",
+ "next_back": {
+  "label": "Work A",
+  "at": "2026-09-26T23:52:48+00:00"
+ },
+ "seats": [
+  {
+   "label": "Work A",
+   "name": "codex-work-a.json",
+   "provider": "codex",
+   "email": "",
+   "plan": "self_serve_business_prolite",
+   "priority": 300,
+   "state": "exhausted",
+   "detail": "usage limit reached",
+   "until": "2026-09-26T23:52:48+00:00",
+   "usage": {
+    "primary": {
+     "used": 100.0,
+     "window_min": 10080,
+     "reset_at": "2026-09-26T23:52:48+00:00"
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": false,
+     "unlimited": false
+    },
+    "plan": "self_serve_business_prolite",
+    "refused": true,
+    "at": "2026-09-24T16:36:48+00:00",
+    "source": "poll",
+    "allowed": false
+   },
+   "weight": 5.0,
+   "reserve": false,
+   "week": {
+    "used": 100.0,
+    "window_min": 10080,
+    "reset_at": "2026-09-26T23:52:48+00:00"
+   },
+   "short": null,
+   "week_used": 100.0,
+   "poll_error": null,
+   "resets": {
+    "available": 1,
+    "next_expiry": "2026-10-20T16:40:48+00:00",
+    "title": "Full reset",
+    "polled_at": "2026-09-24T16:36:48+00:00"
+   }
+  },
+  {
+   "label": "Work B",
+   "name": "codex-work-b.json",
+   "provider": "codex",
+   "email": "",
+   "plan": "self_serve_business_prolite",
+   "priority": 250,
+   "state": "active",
+   "detail": "",
+   "until": null,
+   "usage": {
+    "primary": {
+     "used": 44.0,
+     "window_min": 10080,
+     "reset_at": "2026-10-01T06:28:48+00:00"
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": false,
+     "unlimited": false
+    },
+    "plan": "self_serve_business_prolite",
+    "refused": false,
+    "at": "2026-09-24T16:36:48+00:00",
+    "source": "poll",
+    "allowed": true
+   },
+   "weight": 5.0,
+   "reserve": false,
+   "week": {
+    "used": 44.0,
+    "window_min": 10080,
+    "reset_at": "2026-10-01T06:28:48+00:00"
+   },
+   "short": null,
+   "week_used": 44.0,
+   "poll_error": null,
+   "resets": {
+    "available": 0,
+    "next_expiry": null,
+    "title": null,
+    "polled_at": "2026-09-24T16:36:48+00:00"
+   }
+  },
+  {
+   "label": "Team",
+   "name": "codex-team.json",
+   "provider": "codex",
+   "email": "",
+   "plan": "team",
+   "priority": 200,
+   "state": "ready",
+   "detail": "",
+   "until": null,
+   "usage": {
+    "primary": {
+     "used": 0.0,
+     "window_min": 300,
+     "reset_at": "2026-09-24T21:40:48+00:00"
+    },
+    "secondary": {
+     "used": 76.0,
+     "window_min": 10080,
+     "reset_at": "2026-09-26T10:40:48+00:00"
+    },
+    "credits": {
+     "has_credits": false,
+     "unlimited": false
+    },
+    "plan": "team",
+    "refused": false,
+    "at": "2026-09-24T16:36:48+00:00",
+    "source": "poll",
+    "allowed": true
+   },
+   "weight": 1.0,
+   "reserve": false,
+   "week": {
+    "used": 76.0,
+    "window_min": 10080,
+    "reset_at": "2026-09-26T10:40:48+00:00"
+   },
+   "short": {
+    "used": 0.0,
+    "window_min": 300,
+    "reset_at": "2026-09-24T21:40:48+00:00"
+   },
+   "week_used": 76.0,
+   "poll_error": null,
+   "resets": {
+    "available": 0,
+    "next_expiry": null,
+    "title": null,
+    "polled_at": "2026-09-24T16:36:48+00:00"
+   }
+  },
+  {
+   "label": "Personal",
+   "name": "codex-personal.json",
+   "provider": "codex",
+   "email": "",
+   "plan": "plus",
+   "priority": 100,
+   "state": "ready",
+   "detail": "",
+   "until": null,
+   "usage": {
+    "primary": {
+     "used": 9.0,
+     "window_min": 10080,
+     "reset_at": "2026-09-29T18:40:48+00:00"
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": false,
+     "unlimited": false
+    },
+    "plan": "plus",
+    "refused": false,
+    "at": "2026-09-24T16:36:48+00:00",
+    "source": "poll",
+    "allowed": true
+   },
+   "weight": 1.0,
+   "reserve": false,
+   "week": {
+    "used": 9.0,
+    "window_min": 10080,
+    "reset_at": "2026-09-29T18:40:48+00:00"
+   },
+   "short": null,
+   "week_used": 9.0,
+   "poll_error": null,
+   "resets": {
+    "available": 0,
+    "next_expiry": null,
+    "title": null,
+    "polled_at": "2026-09-24T16:36:48+00:00"
+   }
+  },
+  {
+   "label": "Pro 20x",
+   "name": "codex-pro.json",
+   "provider": "codex",
+   "email": "",
+   "plan": "pro",
+   "priority": 10,
+   "state": "ready",
+   "detail": "",
+   "until": null,
+   "usage": {
+    "primary": {
+     "used": 34.0,
+     "window_min": 10080,
+     "reset_at": "2026-09-28T01:40:48+00:00"
+    },
+    "secondary": null,
+    "credits": {
+     "has_credits": false,
+     "unlimited": false
+    },
+    "plan": "pro",
+    "refused": false,
+    "at": "2026-09-24T16:36:48+00:00",
+    "source": "poll",
+    "allowed": true
+   },
+   "weight": 20.0,
+   "reserve": true,
+   "week": {
+    "used": 34.0,
+    "window_min": 10080,
+    "reset_at": "2026-09-28T01:40:48+00:00"
+   },
+   "short": null,
+   "week_used": 34.0,
+   "poll_error": null,
+   "resets": {
+    "available": 1,
+    "next_expiry": "2026-10-12T16:40:48+00:00",
+    "title": "Full reset",
+    "polled_at": "2026-09-24T16:36:48+00:00"
+   }
+  }
+ ]
+}

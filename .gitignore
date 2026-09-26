@@ -1,0 +1,23 @@
+# Runtime state, secrets and builds. They live in ~/.codexpool, which can also be this checkout
+# (git clone straight into ~/.codexpool), so none of it may ever be committed.
+/auth/
+/state/
+/logs/
+/config.yaml
+/settings.json
+/seats.json
+/toolchain/
+/bin/versions/
+/bin/current
+/bin/.current.tmp
+/build/codexpool-src-*/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local tooling and macOS
+.ruff_cache/
+.DS_Store
+LOCAL.md

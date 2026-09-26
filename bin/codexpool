@@ -1,0 +1,3085 @@
+#!/usr/bin/env python3
+"""codexpool: operate the pool of ChatGPT seats behind the Codex desktop app.
+
+The request path is the Codex app (or CLI) -> CLIProxyAPI (127.0.0.1:8319 by default) -> chatgpt.com,
+with one OAuth login per seat in ~/.codexpool/auth. CLIProxyAPI is built from its upstream release
+source plus one file, build/codexpool_gate.go, which refuses browser and non-loopback requests. This
+tool never sits in the request path: it reads and nudges the pool through the management API (key in
+the macOS Keychain) and never prints tokens. `codexpool guard` runs every minute from launchd.
+
+Per-machine settings (launchd labels, port, interpreters, the codex binary) live in
+~/.codexpool/settings.json (CODEXPOOL_SETTINGS points elsewhere). `codexpool install` sets everything
+up and is safe to re-run; `codexpool uninstall` undoes it.
+"""
+import argparse
+import base64
+import contextlib
+import datetime as dt
+import fcntl
+import getpass
+import hashlib
+import json
+import math
+import os
+import pathlib
+import platform
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from xml.sax.saxutils import escape as xml_escape
+
+HOME = pathlib.Path.home()
+ROOT = HOME / '.codexpool'
+CODE_DIR = pathlib.Path(__file__).resolve().parent.parent  # the checkout this file runs from (ROOT once installed)
+AUTH = ROOT / 'auth'
+STATE = ROOT / 'state'
+LOGS = ROOT / 'logs'
+BIN = ROOT / 'bin'
+VERSIONS = BIN / 'versions'
+CURRENT = BIN / 'current'
+BUILD = ROOT / 'build'
+GATE_SOURCE = BUILD / 'codexpool_gate.go'
+TOOLCHAIN = ROOT / 'toolchain'
+CONFIG = ROOT / 'config.yaml'
+SEATS_META = ROOT / 'seats.json'  # per seat file: {label, weight, reserve}
+HISTORY_FILE = STATE / 'history.jsonl'  # headline usage samples for the menu bar chart
+HISTORY_EVERY = 10 * 60
+HISTORY_KEEP_DAYS = 8
+STATUS_FILE = STATE / 'status.json'
+GUARD_FILE = STATE / 'guard.json'
+LOCK_FILE = STATE / 'guard.lock'
+SELFTEST_JOURNAL = STATE / 'selftest.json'
+INSTALL_FILE = STATE / 'install.json'  # what `codexpool install` changed outside ROOT, for uninstall
+MAIN_LOG = LOGS / 'main.log'
+GUARD_LOG = LOGS / 'guard.log'
+
+# Per-machine settings. settings.json is never committed; examples/settings.json shows every key.
+SETTINGS_FILE = pathlib.Path(os.environ.get('CODEXPOOL_SETTINGS') or ROOT / 'settings.json').expanduser()
+SETTINGS_DEFAULTS = {
+    'pool_label': 'com.codexpool.pool',        # launchd label of the pool (CLIProxyAPI)
+    'guard_label': 'com.codexpool.guard',      # launchd label of `codexpool guard` (every 60 s)
+    'menubar_label': 'com.codexpool.menubar',  # launchd label of the menu bar app
+    'port': 8319,                              # loopback port the pool listens on
+    'python': None,           # interpreter for the guard and the wrapper; null: ~/.codexpool/.venv/bin/python
+    'menubar_python': None,   # interpreter with PyObjC for the menu bar app; null: same as python
+    'codex_bin': None,        # the codex CLI; null: the one inside the Codex app, else codex on PATH
+    'headline': 'all',        # the headline %: "all" non-disabled seats, reserve included, or "regular" (no reserve)
+    'display': 'left',        # numbers count "left" (down from 100%) or "used" (up from 0%)
+}
+HEADLINES = ('all', 'regular')
+DISPLAYS = ('left', 'used')
+LABEL_OK = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+
+
+def load_settings():
+    """settings.json over the defaults. A broken file stops every command, the guard included, rather than
+    letting it run against the wrong port or launchd labels."""
+    try:
+        raw = json.loads(SETTINGS_FILE.read_text())
+    except FileNotFoundError:
+        raw = {}
+    except (OSError, ValueError) as e:
+        sys.exit(f'codexpool: cannot read {SETTINGS_FILE}: {e}')
+    if not isinstance(raw, dict):
+        sys.exit(f'codexpool: {SETTINGS_FILE} must hold a JSON object')
+    unknown = [k for k in raw if k not in SETTINGS_DEFAULTS and not str(k).startswith('_')]
+    if unknown:
+        sys.exit(f'codexpool: unknown key(s) {", ".join(map(str, unknown))} in {SETTINGS_FILE} '
+                 f'(known: {", ".join(SETTINGS_DEFAULTS)}; keys starting with _ are ignored)')
+    s = {**SETTINGS_DEFAULTS, **{k: v for k, v in raw.items() if k in SETTINGS_DEFAULTS}}
+    bad = [k for k in ('pool_label', 'guard_label', 'menubar_label')
+           if not isinstance(s[k], str) or not LABEL_OK.match(s[k])]
+    bad += [k for k in ('python', 'menubar_python', 'codex_bin')
+            if s[k] is not None and (not isinstance(s[k], str) or not s[k].strip())]
+    if isinstance(s['port'], bool) or not isinstance(s['port'], int) or not 0 < s['port'] < 65536:
+        bad.append('port')
+    bad += [f'{k} (one of: {", ".join(choices)})' for k, choices in (('headline', HEADLINES), ('display', DISPLAYS))
+            if s[k] not in choices]
+    if bad:
+        sys.exit(f'codexpool: invalid {", ".join(bad)} in {SETTINGS_FILE}')
+    return s
+
+
+SETTINGS = load_settings()
+PORT = SETTINGS['port']
+BASE = f'http://127.0.0.1:{PORT}'
+POOL_JOB = SETTINGS['pool_label']
+GUARD_JOB = SETTINGS['guard_label']
+MENUBAR_JOB = SETTINGS['menubar_label']
+LAUNCH_AGENTS = HOME / 'Library/LaunchAgents'
+CODEX_CONFIG = HOME / '.codex' / 'config.toml'  # what the Codex app reads (started from Finder: no CODEX_HOME)
+CODEX_BUNDLE_ID = 'com.openai.codex'  # the Codex desktop app; its codex CLI is Contents/Resources/codex
+MIN_PYTHON = (3, 11)
+KEYCHAIN_SERVICE = 'codexpool-management-key'
+WHAM_URL = 'https://chatgpt.com/backend-api/wham/usage'
+RESETS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'  # banked free resets (GET)
+RESETS_CONSUME_URL = RESETS_URL + '/consume'  # redeem one banked credit; never the paid purchase flow
+RESET_LOG = STATE / 'resets.jsonl'
+REPO = 'router-for-me/CLIProxyAPI'
+GATE_ANCHOR = 'serverOptions := []api.ServerOption(nil)'
+GATE_REPLACEMENT = 'serverOptions := []api.ServerOption{api.WithEngineConfigurator(codexpoolConfigureEngine)}'
+PROBE_ORIGIN = 'https://codexpool-probe.invalid'  # doctor/upgrade probes; excluded from blocked-request counts
+LOG_LINE = re.compile(r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d):\d\d\] \[[^\]]*\] \[[^\]]*\] \[([A-Za-z0-9_.-]+\.go):\d+\] (.*)$')
+GATE_FIELDS = re.compile(r'origin="((?:[^"\\]|\\.)*)" sec-fetch-site="(?:[^"\\]|\\.)*"$')
+
+POLL_EVERY = 10 * 60      # seconds between wham/usage polls of an idle seat (the serving seat reports live)
+HEAL_EVERY = 15 * 60      # seconds between refresh attempts on a blocked seat
+BLIP_SECONDS = 3 * 60     # a cooldown shorter than this is a transient blip, not a seat change
+DOWN_ALERT_AFTER = 3      # consecutive failed guard passes before alerting
+
+EXHAUSTED_REASONS = {'credential_quota', 'quota'}
+BLOCKED_REASONS = {'unauthorized', 'invalid_grant', 'payment_required'}
+USAGE_LIMIT = re.compile(r'usage_limit_reached', re.I)
+AUTH_ERROR = re.compile(r'(?<!\d)401(?!\d)|unauthori[sz]ed|invalid_grant|refresh_token_reused|'
+                        r'token.{0,20}(expired|invalid|revoked)|sign(ing)? in again|authentication_error|'
+                        r'auth_unavailable', re.I)
+
+UID = os.getuid()
+# Loopback calls must never go through a system or env HTTP proxy (it would see the management key).
+_LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+# ---------------------------------------------------------------- small helpers
+
+class PoolDown(Exception):
+    """The pool process is not answering."""
+
+
+class PoolTimeout(PoolDown):
+    """The pool accepted the request but did not reply in time (usually a slow upstream)."""
+
+
+class KeyUnavailable(Exception):
+    """The management key could not be read from the Keychain; .fix says what to do."""
+
+    def __init__(self, message, fix):
+        super().__init__(message)
+        self.fix = fix
+
+
+class ApiError(Exception):
+    def __init__(self, code, body):
+        super().__init__(f'HTTP {code}: {str(body)[:300]}')
+        self.code = code
+        self.body = body
+
+
+def now_utc():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def iso(ts):
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        return dt.datetime.fromtimestamp(ts, dt.timezone.utc).isoformat()
+    return ts
+
+
+def parse_time(value):
+    if not value:
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, (int, float)):
+        return dt.datetime.fromtimestamp(value, dt.timezone.utc)
+    try:
+        t = dt.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if t.year < 2000:  # Go zero time
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
+def when(value):
+    """Human local time: '15:10', 'Fri 05:00', or 'Sep 30 17:53'."""
+    t = parse_time(value)
+    if not t:
+        return '?'
+    local = t.astimezone()
+    today = dt.datetime.now().astimezone().date()
+    if local.date() == today:
+        return local.strftime('%H:%M')
+    if 0 < (local.date() - today).days < 7:
+        return local.strftime('%a %H:%M')
+    return local.strftime('%b %d %H:%M')
+
+
+def read_json(path, default):
+    try:
+        return json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, data):
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(json.dumps(data, indent=2, default=str) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def read_guard():
+    """guard.json, strictly: a corrupt file is set aside and reported, never silently treated as empty."""
+    try:
+        data = json.loads(GUARD_FILE.read_text())
+        if not isinstance(data, dict):
+            raise ValueError('guard.json is not an object')
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        bad = GUARD_FILE.with_name(f'guard.json.corrupt-{int(time.time())}')
+        with contextlib.suppress(OSError):
+            os.replace(GUARD_FILE, bad)
+        notify('codexpool guard state was unreadable',
+               f'Saved as {bad.name}. A seat it had parked may now show as disabled: codexpool enable <seat>.')
+        return {}
+
+
+def log_line(message):
+    with contextlib.suppress(OSError):
+        LOGS.mkdir(parents=True, exist_ok=True)
+        with GUARD_LOG.open('a') as f:
+            f.write(f'{now_utc().isoformat()} {message}\n')
+
+
+def notify(title, body):
+    """macOS notification. Never raises; text travels as argv, so any characters are safe."""
+    log_line(f'notify: {title} | {body}')
+    with contextlib.suppress(Exception):
+        subprocess.run(['osascript', '-e', 'on run argv',
+                        '-e', 'display notification (item 1 of argv) with title (item 2 of argv)',
+                        '-e', 'end run', '--', str(body), str(title)],
+                       capture_output=True, timeout=10)
+
+
+def short(message, limit=90):
+    """Readable one-liner from a CLIProxyAPI status message, which may be a raw upstream JSON body."""
+    if not message:
+        return ''
+    with contextlib.suppress(ValueError, AttributeError, TypeError):
+        err = json.loads(message).get('error')
+        if isinstance(err, dict):
+            message = err.get('message') or err.get('type') or err.get('code') or message
+    message = ' '.join(str(message).split())
+    return message if len(message) <= limit else message[:limit - 1] + '…'
+
+
+def port_open(port):
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+def launchd_loaded(label):
+    r = subprocess.run(['launchctl', 'print', f'gui/{UID}/{label}'], capture_output=True, text=True)
+    if r.returncode != 0:
+        return False, None
+    m = re.search(r'\bpid = (\d+)', r.stdout)
+    return True, int(m.group(1)) if m else None
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def cpa_binary():
+    return CURRENT / 'cli-proxy-api'
+
+
+def cpa_version():
+    try:
+        return os.readlink(CURRENT).rstrip('/').rsplit('/', 1)[-1].lstrip('v')
+    except OSError:
+        return None
+
+
+def setting_path(key):
+    value = SETTINGS.get(key)
+    return pathlib.Path(os.path.expanduser(value)) if value else None
+
+
+def python_bin():
+    """The interpreter the guard and the ~/.local/bin wrapper run codexpool with."""
+    return setting_path('python') or ROOT / '.venv' / 'bin' / 'python'
+
+
+def menubar_python_bin():
+    """The interpreter (with PyObjC) the menu bar app runs with."""
+    return setting_path('menubar_python') or python_bin()
+
+
+def codex_bin():
+    """The codex CLI: settings.json codex_bin, else the one inside the Codex app (found by its bundle id, then
+    in the usual places), else codex on PATH. None if there is none."""
+    configured = setting_path('codex_bin')
+    if configured:
+        return str(configured)
+    apps = []
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        r = subprocess.run(['mdfind', f'kMDItemCFBundleIdentifier == "{CODEX_BUNDLE_ID}"'],
+                           capture_output=True, text=True, timeout=10)
+        found = [pathlib.Path(line) for line in r.stdout.splitlines() if line.endswith('.app')]
+        apps += sorted(found, key=lambda p: not str(p).startswith('/Applications/'))
+    apps += [pathlib.Path(d) / name for d in ('/Applications', HOME / 'Applications') for name in ('ChatGPT.app', 'Codex.app')]
+    for app in apps:
+        cli = app / 'Contents' / 'Resources' / 'codex'
+        if os.access(cli, os.X_OK):
+            return str(cli)
+    return shutil.which('codex')
+
+
+def require_installed(what):
+    """login/status/doctor before install: one clear line instead of a traceback or launchctl advice."""
+    missing = [tilde(p) for p in (cpa_binary(), CONFIG) if not p.exists()]
+    if missing:
+        sys.exit(f'codexpool {what}: not installed yet ({", ".join(missing)} missing). '
+                 'Run ./bin/codexpool install from your checkout first.')
+
+
+def python_ok_here():
+    """Python 3.11+ with tarfile's data filter (build extracts upstream source with it)."""
+    return sys.version_info >= MIN_PYTHON and hasattr(tarfile, 'data_filter')
+
+
+def ensure_python(cmd):
+    """An older interpreter (a bare python3 reached through a symlink or ./bin/codexpool) hands over to the
+    configured one. install and uninstall also run on Python 3.9, so a fresh Mac can bootstrap."""
+    if python_ok_here():
+        return
+    target = python_bin()
+    if os.environ.get('CODEXPOOL_REEXEC') != '1' and os.access(target, os.X_OK):
+        os.environ['CODEXPOOL_REEXEC'] = '1'
+        os.execv(str(target), [str(target), str(pathlib.Path(__file__).resolve())] + sys.argv[1:])
+    if cmd not in ('install', 'uninstall'):
+        sys.exit(f'codexpool needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ (this is {platform.python_version()}); '
+                 f'run codexpool install, or set "python" in {SETTINGS_FILE}')
+
+
+@contextlib.contextmanager
+def guard_lock(wait=True, timeout=240):
+    """One lock for every read-modify-write of guard.json and for selftest (held for its duration)."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, 'a') as f:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not wait:
+                    yield False
+                    return
+                if time.monotonic() > deadline:
+                    sys.exit('codexpool: another codexpool operation (guard pass or selftest) is running; try again')
+                time.sleep(0.2)
+        try:
+            yield True
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------- management API
+
+_KEY = None
+KEY_FIX = ('re-run codexpool install (it mints a new key into the Keychain and config.yaml). By hand: config.yaml '
+           'keeps only a bcrypt hash, so mint a new key: K=$(openssl rand -hex 24); '
+           f'security add-generic-password -U -a "$USER" -s {KEYCHAIN_SERVICE} -w "$K"; '
+           f'put it in remote-management.secret-key in {CONFIG}; codexpool restart')
+KEYCHAIN_LOCKED_FIX = 'the key itself is fine: unlock the login keychain (security unlock-keychain) and retry'
+
+
+def mgmt_key():
+    global _KEY
+    if _KEY is None:
+        try:
+            r = subprocess.run(['security', 'find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+                               capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            raise KeyUnavailable('the Keychain did not answer within 15s (locked, or waiting on a prompt)',
+                                 KEYCHAIN_LOCKED_FIX) from None
+        if r.returncode == 44:  # errSecItemNotFound
+            raise KeyUnavailable(f'management key "{KEYCHAIN_SERVICE}" is not in the Keychain', KEY_FIX)
+        if r.returncode != 0:
+            raise KeyUnavailable(f'the Keychain would not release "{KEYCHAIN_SERVICE}" (security exit '
+                                 f'{r.returncode}); it is probably locked', KEYCHAIN_LOCKED_FIX)
+        _KEY = r.stdout.strip()
+    return _KEY
+
+
+def api(method, path, body=None, timeout=20, want_headers=False):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers={
+        'Authorization': 'Bearer ' + mgmt_key(), 'Content-Type': 'application/json'})
+    try:
+        with _LOCAL.open(req, timeout=timeout) as r:
+            raw = r.read()
+            parsed = json.loads(raw) if raw else {}
+            return (parsed, dict(r.headers)) if want_headers else parsed
+    except urllib.error.HTTPError as e:
+        raise ApiError(e.code, e.read().decode(errors='replace')) from None
+    except TimeoutError as e:
+        raise PoolTimeout(str(e) or 'timed out') from None
+    except (urllib.error.URLError, OSError) as e:
+        if isinstance(getattr(e, 'reason', None), TimeoutError):
+            raise PoolTimeout(str(e)) from None
+        raise PoolDown(str(e)) from None
+
+
+def set_disabled(name, disabled):
+    api('PATCH', '/v0/management/auth-files/status', {'name': name, 'disabled': disabled})
+
+
+def set_fields(name, **fields):
+    api('PATCH', '/v0/management/auth-files/fields', {'name': name, **fields})
+
+
+def running_version():
+    """Version string reported by the live pool (X-CPA-VERSION), or None."""
+    with contextlib.suppress(PoolDown, ApiError, KeyUnavailable):
+        _, headers = api('GET', '/v0/management/auth-files', timeout=5, want_headers=True)
+        return {k.lower(): v for k, v in headers.items()}.get('x-cpa-version')
+    return None
+
+
+# ---------------------------------------------------------------- seats
+
+def jwt_claims(token):
+    try:
+        payload = token.split('.')[1]
+        payload += '=' * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except (AttributeError, IndexError, ValueError):
+        return {}
+
+
+def file_claims(path):
+    """Non-secret identity facts from a seat file (email, plan, account). Tokens never leave here."""
+    data = read_json(path, {})
+    claims = jwt_claims(data.get('id_token', ''))
+    auth = claims.get('https://api.openai.com/auth', {})
+    return {
+        'email': claims.get('email') or data.get('email'),
+        'plan': auth.get('chatgpt_plan_type'),
+        'account_id': auth.get('chatgpt_account_id') or data.get('account_id'),
+        'priority': data.get('priority'),
+    }
+
+
+PLAN_WEIGHTS = {'pro': 20, 'prolite': 5, 'self_serve_business_prolite': 5, 'plus': 1}
+
+
+def default_weight(plan):
+    """Relative quota size (Plus = 1). Override per seat with: codexpool weight <seat> <n>."""
+    return PLAN_WEIGHTS.get((plan or '').lower(), 1)
+
+
+def valid_weight(w):
+    return isinstance(w, (int, float)) and not isinstance(w, bool) and math.isfinite(w) and w > 0
+
+
+def seat_weight(value, plan):
+    """The weight from seats.json when it is a positive number, else the plan's default (a zero, negative, NaN
+    or infinite weight would make the headline meaningless)."""
+    try:
+        w = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        w = None
+    return w if valid_weight(w) else float(default_weight(plan))
+
+
+def read_meta():
+    return read_json(SEATS_META, {})
+
+
+def update_meta(name, **fields):
+    meta = read_meta()
+    entry = meta.setdefault(name, {})
+    for k, v in fields.items():
+        if v is None:
+            entry.pop(k, None)
+        else:
+            entry[k] = v
+    if not entry:
+        meta.pop(name, None)
+    write_json(SEATS_META, meta)
+
+
+def default_label(email, plan):
+    local, _, domain = (email or 'unknown').partition('@')
+    return f'{domain.split(".")[0] or local}-{local}' + (f'-{plan}' if plan else '')
+
+
+def _int(value):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def load_seats():
+    files = api('GET', '/v0/management/auth-files').get('files', [])
+    meta = read_meta()
+    seats = []
+    for f in files:
+        claims = file_claims(f['path']) if f.get('path') else {}
+        name = f.get('name') or f.get('id')
+        seats.append({
+            'name': name,
+            'id': f.get('id') or name,
+            'provider': (f.get('provider') or f.get('type') or '').lower(),
+            'auth_index': f.get('auth_index'),
+            'label': meta.get(name, {}).get('label') or default_label(claims.get('email') or f.get('email'), claims.get('plan')),
+            'weight': seat_weight(meta.get(name, {}).get('weight'), claims.get('plan')),
+            'reserve': bool(meta.get(name, {}).get('reserve')),
+            'email': claims.get('email') or f.get('email'),
+            'plan': claims.get('plan'),
+            'account_id': claims.get('account_id'),
+            'priority': _int(f.get('priority', claims.get('priority'))),
+            'disabled': bool(f.get('disabled')),
+            'unavailable': bool(f.get('unavailable')),
+            'status': f.get('status'),
+            'status_message': f.get('status_message') or '',
+            'next_retry_after': f.get('next_retry_after'),
+            'cooldowns': f.get('cooldowns'),  # None when CLIProxyAPI cannot say
+            'quota': f.get('quota') or {},
+            'success': _int(f.get('success')),
+            'failed': _int(f.get('failed')),
+        })
+    # Labels must be unique: menu actions and commands address seats by label.
+    groups = {}
+    for s in seats:
+        groups.setdefault(s['label'].lower(), []).append(s)
+    for group in groups.values():
+        if len(group) > 1:
+            ids = [s['account_id'] for s in group]
+            for s in group:
+                key = s['account_id'] if s['account_id'] and ids.count(s['account_id']) == 1 else s['name']
+                s['label'] = f'{s["label"]}-{hashlib.sha256(key.encode()).hexdigest()[:4]}'
+    # Same order CLIProxyAPI's fill-first uses: priority descending, then auth ID ascending.
+    seats.sort(key=lambda s: (s['provider'] != 'codex', -s['priority'], s['id']))
+    return seats
+
+
+def match_seat(seats, query):
+    q = query.lower()
+    for key in ('label', 'name', 'email'):
+        exact = [s for s in seats if (s[key] or '').lower() == q]
+        if len(exact) == 1:
+            return exact[0]
+    hits = [s for s in seats if q in s['label'].lower() or q in s['name'].lower() or q in (s['email'] or '').lower()]
+    if len(hits) == 1:
+        return hits[0]
+    names = ', '.join(s['label'] for s in (hits or seats))
+    sys.exit(f'codexpool: "{query}" matches {"several" if hits else "no"} seats ({names})')
+
+
+# ---------------------------------------------------------------- usage
+
+def _window_from_signals(sig, prefix, observed):
+    used = sig.get(f'x-codex-{prefix}-used-percent')
+    if used is None:
+        return None
+    try:
+        w = {'used': float(used)}
+    except ValueError:
+        return None
+    with contextlib.suppress(ValueError, TypeError):
+        if sig.get(f'x-codex-{prefix}-window-minutes'):
+            w['window_min'] = int(float(sig[f'x-codex-{prefix}-window-minutes']))
+    with contextlib.suppress(ValueError, TypeError, OverflowError, OSError):
+        if sig.get(f'x-codex-{prefix}-reset-at'):
+            w['reset_at'] = iso(int(float(sig[f'x-codex-{prefix}-reset-at'])))
+        elif sig.get(f'x-codex-{prefix}-reset-after-seconds') and observed:
+            w['reset_at'] = (observed + dt.timedelta(seconds=float(sig[f'x-codex-{prefix}-reset-after-seconds']))).isoformat()
+    return w
+
+
+def usage_from_signals(quota):
+    sig = {k.lower(): v for k, v in (quota.get('signals') or {}).items()}
+    if not sig:
+        return None
+    observed = parse_time(quota.get('observed_at'))
+    credits = {}
+    if 'x-codex-credits-has-credits' in sig:
+        credits['has_credits'] = sig['x-codex-credits-has-credits'].lower() == 'true'
+    if 'x-codex-credits-unlimited' in sig:
+        credits['unlimited'] = sig['x-codex-credits-unlimited'].lower() == 'true'
+    with contextlib.suppress(ValueError):
+        if sig.get('x-codex-credits-balance'):
+            credits['balance'] = float(sig['x-codex-credits-balance'])
+    # Only a 429 refusal carries this header. limit_reached/allowed also describe a plan window that is
+    # used up while credits keep paying, which is exactly what the credit guard must catch.
+    refused = 'x-codex-rate-limit-reached-type' in sig
+    allowed = {'true': True, 'false': False}.get(sig.get('x-codex-allowed', '').lower())
+    return {'primary': _window_from_signals(sig, 'primary', observed),
+            'secondary': _window_from_signals(sig, 'secondary', observed),
+            'credits': credits, 'plan': sig.get('x-codex-plan-type'), 'refused': refused, 'allowed': allowed,
+            'at': observed.isoformat() if observed else None, 'source': 'live'}
+
+
+def _window_from_wham(w):
+    if not isinstance(w, dict) or w.get('used_percent') is None:
+        return None
+    out = {'used': float(w['used_percent'])}
+    if w.get('limit_window_seconds'):
+        out['window_min'] = int(w['limit_window_seconds']) // 60
+    if w.get('reset_at'):
+        out['reset_at'] = iso(int(w['reset_at']))
+    elif w.get('reset_after_seconds') is not None:
+        out['reset_at'] = (now_utc() + dt.timedelta(seconds=float(w['reset_after_seconds']))).isoformat()
+    return out
+
+
+def usage_from_wham(body):
+    rl = body.get('rate_limit') or {}
+    credits_in = body.get('credits') or {}
+    credits = {}
+    if 'has_credits' in credits_in:
+        credits['has_credits'] = bool(credits_in['has_credits'])
+    if 'unlimited' in credits_in:
+        credits['unlimited'] = bool(credits_in['unlimited'])
+    with contextlib.suppress(TypeError, ValueError):
+        if credits_in.get('balance') not in (None, ''):
+            credits['balance'] = float(credits_in['balance'])
+    return {'primary': _window_from_wham(rl.get('primary_window')),
+            'secondary': _window_from_wham(rl.get('secondary_window')),
+            'credits': credits, 'plan': body.get('plan_type'),
+            # A 200 from wham/usage never proves a refusal; only an exhausted spend cap means credits stop.
+            'refused': (body.get('spend_control') or {}).get('reached') is True,
+            'allowed': rl.get('allowed') if isinstance(rl.get('allowed'), bool) else None,
+            'at': now_utc().isoformat(), 'source': 'poll'}
+
+
+def poll_usage(seat):
+    """Ask chatgpt.com for a seat's usage via the pool (the pool substitutes the seat token)."""
+    header = {'Authorization': 'Bearer $TOKEN$', 'Accept': 'application/json',
+              'User-Agent': 'codex_cli_rs/0.155.0 (Mac OS 26.0.0; arm64) codexpool'}
+    if seat.get('account_id'):
+        header['ChatGPT-Account-Id'] = seat['account_id']
+    try:
+        r = api('POST', '/v0/management/api-call',
+                {'auth_index': seat['auth_index'], 'method': 'GET', 'url': WHAM_URL, 'header': header}, timeout=65)
+    except ApiError as e:
+        if e.code == 502:  # the pool's own reply: chatgpt.com did not answer within its 60s
+            raise PoolTimeout(f'chatgpt.com did not answer: {short(str(e.body), 80)}') from None
+        raise
+    code = r.get('status_code') or r.get('statusCode')
+    body = r.get('body')
+    if code != 200:
+        raise ApiError(code, body if isinstance(body, str) else json.dumps(body))
+    try:
+        data = json.loads(body) if isinstance(body, str) else body
+    except ValueError:
+        raise ApiError(code, 'non-JSON usage body: ' + str(body)[:120]) from None
+    if not isinstance(data, dict):
+        raise ApiError(code, 'unexpected usage body: ' + str(body)[:120])
+    try:
+        return usage_from_wham(data)
+    except (AttributeError, TypeError, ValueError) as e:
+        raise ApiError(code, f'unexpected usage shape: {e}') from None
+
+
+def _seat_call(seat, method, url, body=None, timeout=65):
+    """Call chatgpt.com as a seat through the pool's api-call (the pool substitutes the seat token)."""
+    header = {'Authorization': 'Bearer $TOKEN$', 'Accept': 'application/json',
+              'User-Agent': 'codex_cli_rs/0.155.0 (Mac OS 26.0.0; arm64) codexpool'}
+    if seat.get('account_id'):
+        header['ChatGPT-Account-Id'] = seat['account_id']
+    req = {'auth_index': seat['auth_index'], 'method': method, 'url': url, 'header': header}
+    if body is not None:
+        header['Content-Type'] = 'application/json'
+        req['data'] = json.dumps(body)
+    try:
+        r = api('POST', '/v0/management/api-call', req, timeout=timeout)
+    except ApiError as e:
+        if e.code == 502:  # the pool's own reply: chatgpt.com did not answer within its 60s
+            raise PoolTimeout(f'chatgpt.com did not answer: {short(str(e.body), 80)}') from None
+        raise
+    code = r.get('status_code') or r.get('statusCode')
+    raw = r.get('body')
+    try:
+        data = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+    except ValueError:
+        data = {'_raw': str(raw)[:200]}
+    return code, data
+
+
+def poll_resets(seat):
+    """Banked free resets for a seat: {'available', 'credits': [{id, title, expires_at}]} (non-secret)."""
+    code, data = _seat_call(seat, 'GET', RESETS_URL)
+    if code != 200 or not isinstance(data, dict):
+        raise ApiError(code, json.dumps(data)[:200])
+    credits = [{'id': c.get('id'), 'title': c.get('title') or 'Usage reset', 'expires_at': c.get('expires_at')}
+               for c in (data.get('credits') or []) if isinstance(c, dict)
+               and c.get('status') == 'available' and c.get('is_supported_by_plan', True) and c.get('id')]
+    credits.sort(key=lambda c: c.get('expires_at') or '9999')
+    return {'available': len(credits), 'credits': credits, 'polled_at': now_utc().isoformat()}
+
+
+def _open(w, now):
+    """A window still in force. Past its reset_at, a snapshot's used% is stale."""
+    if not w:
+        return False
+    reset = parse_time(w.get('reset_at'))
+    return not (reset and reset <= now)
+
+
+def split_windows(usage):
+    """(weekly window, shorter window) of a usage record; Pro and Business seats are weekly-only."""
+    if not usage:
+        return None, None
+    wins = [w for w in (usage.get('primary'), usage.get('secondary')) if w]
+    week = next((w for w in wins if (w.get('window_min') or 0) >= 7 * 24 * 60 - 60), None)
+    short_w = next((w for w in wins if w is not week), None)
+    if week is None and short_w is not None and not (short_w.get('window_min') or 0):
+        week, short_w = short_w, None  # unknown length: treat the only window as the long one
+    return week, short_w
+
+
+def best_usage(seat, cache, now=None):
+    """Merge live signals and the last poll field by field, newest source first.
+
+    CLIProxyAPI replaces the live snapshot on every response carrying any quota header (Retry-After
+    alone, plan only, windows without credits), so a newer partial snapshot must not hide what the
+    other source knows."""
+    now = now or now_utc()
+    sources = [u for u in (usage_from_signals(seat['quota']), cache.get(seat['name'])) if u]
+    if not sources:
+        return None
+    sources.sort(key=lambda u: parse_time(u.get('at')) or dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc),
+                 reverse=True)
+    merged = {'primary': None, 'secondary': None, 'credits': {}, 'plan': None, 'refused': False,
+              'at': sources[0].get('at'), 'source': sources[0].get('source')}
+    for key in ('primary', 'secondary'):
+        merged[key] = next((u[key] for u in sources if _open(u.get(key), now)), None)
+    merged['credits'] = next((u['credits'] for u in sources if u.get('credits')), {})
+    merged['plan'] = next((u['plan'] for u in sources if u.get('plan')), None)
+    merged['refused'] = bool(sources[0].get('refused'))
+    merged['allowed'] = next((u['allowed'] for u in sources if u.get('allowed') is not None), None)
+    if not merged['primary'] and not merged['secondary']:
+        return None if not merged['credits'] else merged
+    return merged
+
+
+def at_limit(usage, now=None):
+    now = now or now_utc()
+    return any(_open(w, now) and w.get('used', 0) >= 100 for w in (usage.get('primary'), usage.get('secondary')))
+
+
+def will_spend_credits(usage):
+    """True when a request past 100% would be paid with credits: unlimited, a positive balance,
+    or has_credits with the balance hidden (workspace members; CLIProxyAPI drops empty balances)."""
+    c = usage.get('credits') or {}
+    if c.get('unlimited'):
+        return True
+    if c.get('balance') is not None:
+        return c['balance'] > 0
+    return c.get('has_credits') is True
+
+
+def limit_reset(usage, now=None):
+    """Latest future reset among windows still at 100%, or None."""
+    now = now or now_utc()
+    resets = [parse_time(w.get('reset_at')) for w in (usage.get('primary'), usage.get('secondary'))
+              if _open(w, now) and w.get('used', 0) >= 100]
+    resets = [r for r in resets if r and r > now]
+    return max(resets).isoformat() if resets else None
+
+
+# ---------------------------------------------------------------- state
+
+def seat_state(seat, guard, now):
+    """(state, detail, until) for one seat. States: ready, exhausted, cooldown, blocked, parked, disabled."""
+    g = guard.get('seats', {}).get(seat['name'], {})
+    if seat['disabled']:
+        if g.get('parked_until'):
+            return 'parked', 'credit guard: would spend credits', g['parked_until']
+        return 'disabled', 'disabled by you', None
+    cooldowns = seat.get('cooldowns')
+    if cooldowns:
+        # Model-scoped timers leave the seat serving every other model; only seat-wide ones count.
+        entries = [(parse_time(c.get('retry_at')), c) for c in cooldowns if isinstance(c, dict)
+                   and (c.get('scope') != 'model' or c.get('reason') in BLOCKED_REASONS or seat['unavailable'])]
+        for t, c in entries:
+            if c.get('reason') in BLOCKED_REASONS:
+                return 'blocked', c['reason'].replace('_', ' '), t.isoformat() if t and t > now else None
+        exhausted = [t for t, c in entries if c.get('reason') in EXHAUSTED_REASONS and t and t > now]
+        if exhausted:
+            return 'exhausted', 'usage limit reached', max(exhausted).isoformat()
+        future = [(t, c) for t, c in entries if t and t > now]
+        if future:
+            t, c = max(future, key=lambda x: x[0])
+            return 'cooldown', (c.get('reason') or 'cooling down').replace('_', ' '), t.isoformat()
+    # Fallback when CLIProxyAPI gives no structured cooldown view.
+    msg = seat['status_message']
+    retry = parse_time(seat.get('next_retry_after'))
+    if seat['unavailable'] or seat['status'] == 'error':
+        if USAGE_LIMIT.search(msg) and retry and retry > now:
+            return 'exhausted', 'usage limit reached', retry.isoformat()
+        if AUTH_ERROR.search(msg):
+            return 'blocked', short(msg) or 'authentication failed', retry.isoformat() if retry and retry > now else None
+        if retry and retry > now:
+            return 'cooldown', short(msg) or 'temporarily unavailable', retry.isoformat()
+        if seat['unavailable']:
+            return 'blocked', short(msg) or 'unavailable', None
+    return 'ready', '', None
+
+
+def _reset_summary(r):
+    if not r:
+        return None
+    credits = r.get('credits') or []
+    return {'available': int(r.get('available') or 0), 'next_expiry': credits[0].get('expires_at') if credits else None,
+            'title': credits[0].get('title') if credits else None, 'polled_at': r.get('polled_at')}
+
+
+def headline_rows(codex):
+    """The seats the headline can count: every Codex seat that is not off and has a weekly figure."""
+    return [r for r in codex if r['state'] != 'disabled' and r['week_used'] is not None]
+
+
+def _weighted(rows):
+    tw = sum(r['weight'] for r in rows)
+    return round(sum(r['weight'] * r['week_used'] for r in rows) / tw, 1) if tw else None
+
+
+def set_headline(pool, codex):
+    """The headline fields of status.json, from the Codex seat rows and settings.json. used_pct_all covers every
+    counted seat (reserve included), used_pct_regular leaves reserve seats out, and used_pct is the one that
+    `headline` selects. `display` tells readers (the menu bar) whether to show it as used or as left."""
+    counted = headline_rows(codex)
+    every, regular = _weighted(counted), _weighted([r for r in counted if not r['reserve']])
+    pool['used_pct'] = every if SETTINGS['headline'] == 'all' else regular
+    pool['used_pct_all'] = every
+    pool['used_pct_regular'] = regular
+    pool['headline'] = SETTINGS['headline']
+    pool['display'] = SETTINGS['display']
+
+
+def build_status(seats, guard, extra_pool=None):
+    now = now_utc()
+    cache = guard.get('usage', {})
+    rows = []
+    for s in seats:
+        state, detail, until = seat_state(s, guard, now)
+        usage = best_usage(s, cache, now) if s['provider'] == 'codex' else None
+        if state == 'ready' and usage and (not will_spend_credits(usage) or usage.get('refused')) and \
+                (at_limit(usage, now) or usage.get('allowed') is False):
+            # The seat's own usage says it is out; the pool learns on its next request (instant 429, then cooldown).
+            state, detail, until = 'exhausted', 'usage limit reached', limit_reset(usage, now)
+        week, short_w = split_windows(usage)
+        week_used = week['used'] if week else (100.0 if state in ('exhausted', 'blocked') else None)
+        rows.append({
+            'label': s['label'], 'name': s['name'], 'provider': s['provider'], 'email': s['email'],
+            'plan': (usage or {}).get('plan') or s['plan'], 'priority': s['priority'], 'state': state,
+            'detail': detail, 'until': until, 'usage': usage, 'weight': s.get('weight', 1.0),
+            'reserve': s.get('reserve', False),
+            'week': week, 'short': short_w, 'week_used': min(week_used, 100.0) if week_used is not None else None,
+            'poll_error': cache.get(s['name'], {}).get('poll_error'),
+            'resets': _reset_summary(guard.get('resets', {}).get(s['name'])),
+        })
+    codex = [r for r in rows if r['provider'] == 'codex']
+    active_row = next((r for r in codex if r['state'] == 'ready'), None)
+    if active_row:
+        active_row['state'] = 'active'
+    upcoming = sorted((parse_time(r['until']), r['label']) for r in codex
+                      if r['state'] in ('exhausted', 'parked', 'cooldown') and parse_time(r['until']))
+    pool = {'running': True, 'version': cpa_version(), 'port': PORT}
+    pool.update(extra_pool or {})
+    counted = headline_rows(codex)
+    set_headline(pool, codex)
+    serving = next((r for r in codex if r['state'] == 'active'), None)
+    pool['reserve_in_use'] = bool(serving and serving['reserve'])
+    pool['regular_available'] = len([r for r in codex if r['state'] in ('active', 'ready') and not r['reserve']])
+    pool['left_weight'] = round(sum(r['weight'] * (100 - r['week_used']) / 100 for r in counted
+                                    if r['state'] in ('active', 'ready')), 2)
+    pool['counted'] = len(counted)
+    pool['seats'] = len([r for r in codex if r['state'] != 'disabled'])
+    pool['available'] = len([r for r in codex if r['state'] in ('active', 'ready')])
+    pool['resets_available'] = sum((r.get('resets') or {}).get('available', 0) for r in codex)
+    return {
+        'generated_at': now.isoformat(),
+        'pool': pool,
+        'active': active_row['label'] if active_row else None,
+        'active_name': active_row['name'] if active_row else None,
+        'next_back': {'label': upcoming[0][1], 'at': upcoming[0][0].isoformat()} if upcoming else None,
+        'seats': rows,
+    }
+
+
+def status_down(reason, running):
+    # headline and display too, so the menu bar keeps drawing its chart the way settings.json says while down.
+    return {'generated_at': now_utc().isoformat(),
+            'pool': {'running': running, 'version': cpa_version(), 'port': PORT, 'error': reason,
+                     'headline': SETTINGS['headline'], 'display': SETTINGS['display']},
+            'active': None, 'active_name': None, 'next_back': None, 'seats': []}
+
+
+def status_now(poll=False):
+    guard = read_guard()
+    try:
+        seats = load_seats()
+    except PoolDown as e:
+        return status_down(str(e), False)
+    except (ApiError, KeyUnavailable) as e:
+        return status_down(str(e), True)
+    if poll:
+        fresh, fresh_resets = {}, {}
+        for s in seats:
+            if s['provider'] == 'codex' and not s['disabled']:
+                with contextlib.suppress(ApiError, PoolDown):
+                    fresh[s['name']] = {**poll_usage(s), 'polled_at': now_utc().isoformat()}
+            if s['provider'] == 'codex':
+                with contextlib.suppress(ApiError, PoolDown):
+                    fresh_resets[s['name']] = poll_resets(s)
+        with guard_lock(wait=False) as got:  # share fresh numbers with the guard and the menu bar
+            if got:
+                g = read_guard()
+                g.setdefault('usage', {}).update(fresh)
+                g.setdefault('resets', {}).update(fresh_resets)
+                write_json(GUARD_FILE, g)
+                guard = g
+            else:
+                guard.setdefault('usage', {}).update(fresh)
+                guard.setdefault('resets', {}).update(fresh_resets)
+        st = build_status(seats, guard)
+        with contextlib.suppress(OSError):
+            write_json(STATUS_FILE, st)
+        return st
+    return build_status(seats, guard)
+
+
+def show_left():
+    return SETTINGS['display'] == 'left'
+
+
+def pct_text(used, left=False):
+    """A used percentage as it is shown: '44%', or with left=True what remains of it, '56%'."""
+    return f'{min(100.0, max(0.0, 100 - used)) if left else used:.0f}%'
+
+
+def pct(w, left=False):
+    return pct_text(w['used'], left) if w else '—'
+
+
+def window_name(w):
+    m = (w or {}).get('window_min') or 0
+    return 'wk' if m >= 7 * 24 * 60 - 60 else (f'{m // 60}h' if m >= 60 else (f'{m}m' if m else ''))
+
+
+def usage_cells(u, left=False):
+    if not u:
+        return '—', '', ''
+    p, s = u.get('primary'), u.get('secondary')
+    first = f'{pct(p, left)} {window_name(p)}'.strip() if p else '—'
+    second = f'{pct(s, left)} {window_name(s)}'.strip() if s else ''
+    credits = u.get('credits') or {}
+    bal = credits.get('balance')
+    cred = f'credits {bal:g}' if bal else ('credits ∞' if credits.get('unlimited') else '')
+    return first, second, cred
+
+
+STATE_ICON = {'active': '●', 'ready': '○', 'exhausted': '◌', 'parked': '⏸', 'cooldown': '◌',
+              'blocked': '✕', 'disabled': '–'}
+
+
+def print_status(st):
+    pool = st.get('pool', {})
+    if not pool.get('running'):
+        print(f'Pool is NOT running on :{PORT}. Try: codexpool restart ; codexpool doctor')
+        return
+    if pool.get('error'):
+        print(f'Pool is running but codexpool cannot read it: {pool["error"]}\nTry: codexpool doctor')
+        return
+    used, left = pool.get('used_pct'), show_left()
+    scope = 'all seats' if pool.get('headline') == 'all' else 'regular seats'
+    headline = f'{pct_text(used, left)} {"left" if left else "used"} this week ({scope})' if used is not None \
+        else 'usage unknown'
+    print(f'Codex pool  {headline}'
+          f'{"  ·  ON RESERVE" if pool.get("reserve_in_use") else ""}  ·  '
+          f'{pool.get("available", 0)} of {pool.get("seats", 0)} seats available  ·  '
+          f'new threads → {st["active"] or "NONE"}')
+    if st.get('next_back') and not st['active']:
+        print(f'next seat back: {st["next_back"]["label"]} at {when(st["next_back"]["at"])}')
+    print()
+    print(f'  {"seat":<22} {"plan":<10} {"size":>5} {"prio":>4}  {"state":<10} {"left" if left else "usage":<9} '
+          f'{"":<9} {"":<12} note')
+    for r in st['seats']:
+        first, second, cred = usage_cells(r['usage'], left)
+        note = r['detail']
+        if r['until']:
+            note = f'{note}; back {when(r["until"])}' if note else f'back {when(r["until"])}'
+        if r['provider'] != 'codex':
+            first, second, cred = '', '', ''
+            note = f'{r["provider"]} (not a Codex seat)' + (f'; {note}' if note else '')
+        if r.get('poll_error') and not r['usage']:
+            note = (note + '; ' if note else '') + 'usage unknown: ' + short(r['poll_error'], 50)
+        rs = r.get('resets') or {}
+        if rs.get('available'):
+            note = (note + '; ' if note else '') + f'{rs["available"]} reset{"s" if rs["available"] != 1 else ""} banked'
+        plan = 'business' if 'business' in (r['plan'] or '') else (r['plan'] or '')
+        size = '' if r['provider'] != 'codex' else f'{r.get("weight") or 1:g}×' + ('R' if r.get('reserve') else '')
+        print(f'{STATE_ICON.get(r["state"], "?")} {r["label"]:<22} {plan:<10} {size:>5} {r["priority"]:>4}  '
+              f'{r["state"]:<10} {first:<9} {second:<9} {cred:<12} {note}')
+    footnote = headline_footnote(st, left)
+    if footnote:
+        print()
+        print(footnote)
+
+
+def headline_footnote(st, left=False, width=None):
+    """How the headline is made: each counted seat's size and weekly figure, then the result, wrapped to the
+    terminal with a hanging indent:
+    'Left this week, weighted by size: Work A 5× 0% · ... · Pro 20x 20× 66% reserve → 54% left'.
+    With the regular headline the reserve comes last: '(reserve not counted: Pro 20x 66% left)'."""
+    pool = st.get('pool', {})
+    used = pool.get('used_pct')
+    counted = headline_rows([r for r in st.get('seats', []) if r.get('provider') == 'codex'])
+    if used is None or not counted:
+        return None
+    every = pool.get('headline') == 'all'
+    word = 'left' if left else 'used'
+    cells = [f'{r["label"]} {r["weight"]:g}× {pct_text(r["week_used"], left)}' + (' reserve' if r['reserve'] else '')
+             for r in counted if every or not r['reserve']]
+    if not cells:
+        return None
+    cells[-1] += f' → {pct_text(used, left)} {word}'
+    out = [f'{r["label"]} {pct_text(r["week_used"], left)} {word}' for r in counted if r['reserve'] and not every]
+    if out:
+        cells.append(f'(reserve not counted: {", ".join(out)})')
+    width = width or shutil.get_terminal_size().columns
+    lines, line = [], f'{word.capitalize()} this week, weighted by size:'
+    for i, cell in enumerate(cells):
+        sep = '' if i == 0 or cell.startswith('(') else ' ·'   # the separator ends the line it follows
+        if len(line) + len(sep) + 1 + len(cell) > width:
+            lines.append(line + sep)
+            line = '    ' + cell
+        else:
+            line += f'{sep} {cell}'
+    return '\n'.join(lines + [line])
+
+
+def refresh_headline(st):
+    """Re-derives the headline fields of a status.json that was read from disk, for the current settings.json
+    (an older guard wrote only used_pct, for the regular seats)."""
+    pool, seats = st.get('pool'), st.get('seats')
+    if isinstance(pool, dict) and pool.get('running') and not pool.get('error') and isinstance(seats, list) and \
+            all(isinstance(r, dict) for r in seats):
+        with contextlib.suppress(KeyError, TypeError, ValueError):
+            set_headline(pool, [r for r in seats if r.get('provider') == 'codex'])
+    return st
+
+
+# ---------------------------------------------------------------- guard (launchd, every 60s)
+
+def recover_selftest(guard):
+    """A selftest that died (even SIGKILL) left seats disabled; restore exactly what it toggled."""
+    j = read_json(SELFTEST_JOURNAL, None)
+    if not j or pid_alive(j.get('pid')):
+        return
+    ok = True
+    for name, was_disabled in (j.get('toggled') or {}).items():
+        try:
+            set_disabled(name, was_disabled)
+        except (ApiError, PoolDown):
+            ok = False
+    if ok:
+        with contextlib.suppress(OSError):
+            SELFTEST_JOURNAL.unlink()
+        notify('codexpool restored seats', 'A selftest was interrupted; its temporary seat changes were undone.')
+
+
+def guard_pass():
+    guard = read_guard()
+    guard.setdefault('seats', {})
+    guard.setdefault('usage', {})
+
+    def save():
+        write_json(GUARD_FILE, guard)
+
+    try:
+        seats = load_seats()
+    except PoolDown as e:
+        guard['down_count'] = guard.get('down_count', 0) + 1
+        if guard['down_count'] == DOWN_ALERT_AFTER:
+            notify('Codex pool is not responding', 'launchd keeps restarting it. Run: codexpool doctor')
+        save()
+        write_json(STATUS_FILE, status_down(str(e), False))
+        return
+    except (ApiError, KeyUnavailable) as e:
+        msg = short(str(e), 160)
+        if not guard.get('mgmt_error_notified'):
+            notify('codexpool is locked out of the pool', f'{msg[:90]}. The credit guard is off. Run: codexpool doctor')
+            guard['mgmt_error_notified'] = True
+        save()
+        write_json(STATUS_FILE, status_down(msg, True))
+        return
+    if guard.get('down_count', 0) >= DOWN_ALERT_AFTER or guard.get('mgmt_error_notified'):
+        notify('Codex pool is back', 'codexpool can see the pool again.')
+    guard['down_count'] = 0
+    guard.pop('mgmt_error_notified', None)
+    recover_selftest(guard)
+
+    now = now_utc()
+    codex = [s for s in seats if s['provider'] == 'codex']
+    by_name = {s['name']: s for s in codex}
+    for name in list(guard['seats']):
+        if name not in by_name:
+            del guard['seats'][name]
+    for name in list(guard['usage']):
+        if name not in by_name:
+            del guard['usage'][name]
+    for name in list(guard.get('resets', {})):
+        if name not in by_name:
+            del guard['resets'][name]
+
+    # 1. Poll usage for seats whose numbers are stale (live signals cover the busy seat for free).
+    #    Seats that timed out last time go last so one slow seat cannot starve the others.
+    order = sorted(codex, key=lambda s: guard['usage'].get(s['name'], {}).get('timed_out', False))
+    for s in order:
+        g = guard['seats'].get(s['name'], {})
+        if s['disabled'] and not g.get('parked_until'):
+            continue
+        cached = guard['usage'].get(s['name'], {})
+        last = parse_time(cached.get('polled_at'))
+        if last and (now - last).total_seconds() < POLL_EVERY:
+            continue
+        try:
+            usage = poll_usage(s)
+            usage['polled_at'] = now.isoformat()
+            guard['usage'][s['name']] = usage
+        except PoolTimeout:
+            guard['usage'][s['name']] = {**cached, 'polled_at': now.isoformat(), 'timed_out': True,
+                                         'poll_error': 'usage poll timed out'}
+            break
+        except ApiError as e:
+            guard['usage'][s['name']] = {**cached, 'polled_at': now.isoformat(), 'poll_error': short(str(e), 160)}
+        except PoolDown:
+            break
+    save()
+
+    # 1b. Banked resets, on their own cadence (cheap GET per seat).
+    for s in codex:
+        r = guard.setdefault('resets', {}).get(s['name'], {})
+        last = parse_time(r.get('polled_at'))
+        if last and (now - last).total_seconds() < POLL_EVERY:
+            continue
+        try:
+            guard['resets'][s['name']] = poll_resets(s)
+        except (ApiError, PoolTimeout):
+            guard['resets'][s['name']] = {**r, 'polled_at': now.isoformat()}
+        except PoolDown:
+            break
+    save()
+
+    # 2. Unpark seats whose limit window has reset; drop park records that never took effect; expire overrides.
+    for name, g in guard['seats'].items():
+        if name not in by_name:
+            continue
+        until = parse_time(g.get('parked_until'))
+        if until and not by_name[name]['disabled']:
+            # The park PATCH failed, or something re-enabled the seat: forget it; step 3 re-evaluates now.
+            g.pop('parked_until', None)
+            g.pop('parked_reason', None)
+            save()
+        elif until and now >= until:
+            try:
+                set_disabled(name, False)
+            except (ApiError, PoolDown):
+                continue  # keep the record; retry next pass
+            g.pop('parked_until', None)
+            g.pop('parked_reason', None)
+            guard['usage'].pop(name, None)  # force a fresh poll
+            by_name[name]['disabled'] = False
+            save()
+            notify('Codex seat back in the pool', f'{by_name[name]["label"]} has reset.')
+        override = parse_time(g.get('override_until'))
+        if override and now >= override:
+            g.pop('override_until', None)
+            save()
+
+    # 3. Credit guard: a seat at 100% that still answers is spending credits. Park it until it resets.
+    for s in codex:
+        g = guard['seats'].setdefault(s['name'], {})
+        if s['disabled'] or g.get('override_until'):
+            continue
+        if seat_state(s, guard, now)[0] != 'ready':
+            continue  # CLIProxyAPI is already refusing it (cooldown/exhausted/blocked): nothing is spent
+        usage = best_usage(s, guard['usage'], now)
+        if not usage or usage.get('refused') or not at_limit(usage, now) or not will_spend_credits(usage):
+            continue
+        until = limit_reset(usage, now)
+        if not until:
+            continue
+        g['parked_until'] = until
+        g['parked_reason'] = 'credits'
+        save()  # write the record before changing the pool, so a crash cannot orphan a disabled seat
+        try:
+            set_disabled(s['name'], True)
+        except (ApiError, PoolDown) as e:
+            log_line(f'guard: could not park {s["label"]}: {short(str(e), 120)}')
+            continue  # step 2 drops the record next pass if the seat is still enabled; step 3 retries
+        s['disabled'] = True
+        notify('Codex seat parked', f'{s["label"]} is at its limit and would spend credits. '
+                                    f'Back {when(until)}. Override: codexpool enable {s["label"]}')
+
+    # 4. Heal seats blocked by auth errors (e.g. the no-expiry 401 block): refresh, then ask for re-login.
+    for s in codex:
+        g = guard['seats'].setdefault(s['name'], {})
+        state, detail, _ = seat_state(s, guard, now)
+        if state != 'blocked':
+            if g.get('heal_failures'):
+                base = g.get('heal_success', 0)
+                last = parse_time(g.get('last_heal'))
+                if s['success'] < base:          # pool restarted: its in-memory counter reset
+                    g['heal_success'] = s['success']
+                elif s['success'] > base or (last and (now - last).total_seconds() > 8 * HEAL_EVERY):
+                    for k in ('heal_failures', 'relogin_notified', 'heal_success'):
+                        g.pop(k, None)
+            continue
+        last = parse_time(g.get('last_heal'))
+        every = HEAL_EVERY * (4 if g.get('relogin_notified') else 1)
+        if last and (now - last).total_seconds() < every:
+            continue
+        g['last_heal'] = now.isoformat()
+        g['heal_failures'] = g.get('heal_failures', 0) + 1
+        g['heal_success'] = s['success']        # a real request must succeed after this to clear it
+        save()
+        with contextlib.suppress(ApiError, PoolDown):
+            api('POST', '/v0/management/auth-files/refresh', {'name': s['name']}, timeout=60)
+        log_line(f'heal: refreshed {s["label"]} (attempt {g["heal_failures"]}): {detail}')
+        if g['heal_failures'] >= 3 and not g.get('relogin_notified'):
+            g['relogin_notified'] = True
+            save()
+            notify('Codex seat needs a re-login', f'{s["label"]}: {short(detail, 70)}. Run: codexpool login '
+                   f'{shlex.quote(s["label"])} --priority {s["priority"]}')
+
+    # 5. Tell the user when the pool moves on, or runs dry. Short transient cooldowns are blips.
+    with contextlib.suppress(PoolDown, ApiError, KeyUnavailable):
+        seats = load_seats()
+    st = build_status(seats, guard)
+    t = now_utc()
+
+    def holds_slot(r):
+        if guard['seats'].get(r['name'], {}).get('heal_failures'):
+            return False  # on heal probation: it flips between ready and blocked; don't announce it
+        if r['state'] in ('active', 'ready'):
+            return True
+        u = parse_time(r['until'])
+        return r['state'] == 'cooldown' and u is not None and (u - t).total_seconds() <= BLIP_SECONDS
+
+    rows = [r for r in st['seats'] if r['provider'] == 'codex']
+    cur_row = next((r for r in rows if holds_slot(r)), None)
+    # A seat on heal probation that CLIProxyAPI still serves means the pool is not dry: stay quiet.
+    probation_ready = any(r['state'] in ('active', 'ready') and guard['seats'].get(r['name'], {}).get('heal_failures')
+                          for r in rows)
+    prev_name, cur_name = guard.get('announced'), cur_row['name'] if cur_row else None
+    labels = {r['name']: r for r in rows}
+    if prev_name and cur_name and prev_name != cur_name:
+        old = labels.get(prev_name)
+        why = (f'{old["label"]}: {old["detail"] or old["state"]}' + (f', back {when(old["until"])}' if old['until'] else '')
+               if old else 'previous seat removed')
+        notify(f'Codex now on {cur_row["label"]}', why)
+    if prev_name and not cur_name and rows and not probation_ready:
+        nb = st.get('next_back')
+        notify('All Codex seats are exhausted', f'Next back: {nb["label"]} at {when(nb["at"])}' if nb else 'No reset time known.')
+    if cur_name and not prev_name and guard.get('announced_known'):
+        notify('Codex pool has capacity again', f'Now on {cur_row["label"]}.')
+    if cur_row and cur_row.get('reserve') and prev_name and not labels.get(prev_name, {}).get('reserve'):
+        notify('Codex is now on the reserve seat', f'{cur_row["label"]} is serving: the regular seats are spent.')
+    guard['announced'] = cur_name if cur_name or not probation_ready else prev_name
+    guard['announced_known'] = bool(rows)
+    guard['last_pass'] = now.isoformat()
+    save()
+    write_json(STATUS_FILE, st)
+    record_history(st, guard, now)
+
+
+def record_history(st, guard, now):
+    """Append one headline sample every HISTORY_EVERY; keep HISTORY_KEEP_DAYS (bounded file)."""
+    last = parse_time(guard.get('history_at'))
+    if last and (now - last).total_seconds() < HISTORY_EVERY:
+        return
+    # 'used' is the regular seats and 'all' every seat, whatever `headline` selects, so old samples keep their meaning.
+    sample = {'t': now.isoformat(), 'used': st['pool'].get('used_pct_regular'), 'all': st['pool'].get('used_pct_all'),
+              'reserve': st['pool'].get('reserve_in_use'),
+              'seats': {r['label']: r['week_used'] for r in st['seats'] if r['provider'] == 'codex'}}
+    with contextlib.suppress(OSError):
+        with HISTORY_FILE.open('a') as f:
+            f.write(json.dumps(sample) + '\n')
+        cutoff = (now - dt.timedelta(days=HISTORY_KEEP_DAYS)).isoformat()
+        lines = HISTORY_FILE.read_text().splitlines()
+        if len(lines) > HISTORY_KEEP_DAYS * 24 * 6 + 50:
+            keep = [l for l in lines if l[7:39] >= cutoff[:32]]
+            write_text_atomic(HISTORY_FILE, '\n'.join(keep) + '\n')
+    guard['history_at'] = now.isoformat()
+    write_json(GUARD_FILE, guard)
+
+
+def write_text_atomic(path, text):
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def cmd_guard(args):
+    with guard_lock(wait=False) as got:
+        if not got:
+            return  # a selftest or another pass holds the lock
+        try:
+            guard_pass()
+        except Exception as e:  # keep a record; launchd simply runs the next pass in 60s
+            log_line(f'guard error: {type(e).__name__}: {e}')
+            raise
+
+
+# ---------------------------------------------------------------- read-only commands
+
+def cmd_status(args):
+    require_installed('status')
+    if args.live or not STATUS_FILE.exists():
+        st = status_now(poll=args.live)
+    else:
+        st = read_json(STATUS_FILE, {})
+        age = (now_utc() - (parse_time(st.get('generated_at')) or dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc))).total_seconds()
+        st = status_now() if age > 180 else refresh_headline(st)
+    if args.json:
+        print(json.dumps(st, indent=2))
+    else:
+        print_status(st)
+
+
+def cmd_menubar(args):
+    """SwiftBar/xbar output. Reads the guard's status.json; falls back to a live read if it is stale."""
+    st = read_json(STATUS_FILE, {})
+    age = (now_utc() - (parse_time(st.get('generated_at')) or dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc))).total_seconds()
+    if age > 180:
+        st = status_now()
+    me = str(HOME / '.local/bin/codexpool')
+    pool = st.get('pool', {})
+    if not pool.get('running') or pool.get('error'):
+        print('Codex ✕ | sfimage=exclamationmark.triangle.fill sfcolor=#d9534f')
+        print('---')
+        print(('Pool is not running' if not pool.get('running') else 'codexpool cannot read the pool') + ' | color=#d9534f')
+        if pool.get('error'):
+            print(f'{short(pool["error"], 70)} | size=11')
+        print(f'Restart pool | bash={me} param1=restart terminal=false refresh=true')
+        print(f'Doctor | bash={me} param1=doctor terminal=true')
+        return
+    codex = [r for r in st.get('seats', []) if r['provider'] == 'codex']
+    active = next((r for r in codex if r['state'] == 'active'), None)
+    left = show_left()
+    if active:
+        u = active['usage'] or {}
+        worst = max([w['used'] for w in (u.get('primary'), u.get('secondary')) if w] or [0])
+        color = '#5cb85c' if worst < 70 else ('#f0ad4e' if worst < 90 else '#d9534f')
+        print(f'{active["label"]} {pct_text(worst, left)}{" left" if left else ""} '
+              f'| sfimage=circle.hexagongrid.fill sfcolor={color}')
+    elif codex:
+        nb = st.get('next_back')
+        print(f'Codex: none until {when(nb["at"]) if nb else "?"} | sfimage=pause.circle.fill sfcolor=#d9534f')
+    else:
+        print('Codex: no seats | sfimage=circle.dashed')
+    print('---')
+    ready = sum(1 for r in codex if r['state'] in ('active', 'ready'))
+    print(f'{ready} of {len(codex)} seats available | size=12')
+    for r in codex:
+        first, second, cred = usage_cells(r['usage'], left)
+        wins = ' · '.join(x for x in (first, second) if x and x != '—')
+        usage = ' · '.join(x for x in (f'{wins} left' if wins and left else wins, cred) if x)
+        tail = f' — back {when(r["until"])}' if r['until'] else (f' — {r["detail"]}' if r['state'] == 'blocked' else '')
+        color = {'active': '#5cb85c', 'exhausted': '#999999', 'parked': '#f0ad4e', 'cooldown': '#999999',
+                 'blocked': '#d9534f', 'disabled': '#999999'}.get(r['state'])
+        print(f'{STATE_ICON.get(r["state"], "?")} {r["label"]}  {usage}{tail}' + (f' | color={color}' if color else ''))
+        if r['state'] == 'blocked':
+            print(f'--Re-login {r["label"]} | bash={me} param1=login param2={r["label"]} terminal=true')
+        if r['state'] in ('ready', 'active'):
+            print(f'--Disable {r["label"]} | bash={me} param1=disable param2={r["name"]} terminal=false refresh=true')
+        if r['state'] in ('disabled', 'parked'):
+            print(f'--Enable {r["label"]} | bash={me} param1=enable param2={r["name"]} terminal=false refresh=true')
+    print('---')
+    print(f'Status (live) | bash={me} param1=status param2=--live terminal=true')
+    print(f'Doctor | bash={me} param1=doctor terminal=true')
+    print(f'Pool log | bash={me} param1=logs param2=-f terminal=true')
+    print(f'Restart pool | bash={me} param1=restart terminal=false refresh=true')
+    print(f'CLIProxyAPI v{pool.get("version")} · updated {when(st.get("generated_at"))} | size=11')
+
+
+# ---------------------------------------------------------------- seat commands
+
+def cmd_enable(args):
+    with guard_lock():
+        s = match_seat(load_seats(), args.seat)
+        set_disabled(s['name'], False)  # first: if this fails the park record stays and the guard unparks at reset
+        guard = read_guard()
+        g = guard.setdefault('seats', {}).setdefault(s['name'], {})
+        if g.get('parked_until'):
+            g['override_until'] = g.pop('parked_until')
+            g.pop('parked_reason', None)
+            write_json(GUARD_FILE, guard)
+            print(f'Credit guard overridden for {s["label"]} until {when(g["override_until"])}; it may spend credits.')
+    print(f'{s["label"]} enabled')
+
+
+def cmd_disable(args):
+    with guard_lock():
+        s = match_seat(load_seats(), args.seat)
+        guard = read_guard()
+        g = guard.setdefault('seats', {}).setdefault(s['name'], {})
+        g.pop('parked_until', None)
+        g.pop('parked_reason', None)
+        write_json(GUARD_FILE, guard)
+        set_disabled(s['name'], True)
+    print(f'{s["label"]} disabled (threads on it move to the next seat)')
+
+
+def cmd_priority(args):
+    s = match_seat(load_seats(), args.seat)
+    set_fields(s['name'], priority=args.priority)
+    print(f'{s["label"]} priority {s["priority"]} → {args.priority} (higher is used first)')
+
+
+def cmd_label(args):
+    s = match_seat(load_seats(), args.seat)
+    update_meta(s['name'], label=args.label)
+    print(f'{s["name"]} is now labelled {args.label}')
+
+
+def cmd_reserve(args):
+    s = match_seat(load_seats(), args.seat)
+    update_meta(s['name'], reserve=None if args.off else True)
+    print(f'{s["label"]} is {"no longer " if args.off else ""}a reserve seat (the menu bar turns red while a reserve '
+          f'seat serves; "headline": "regular" leaves reserve seats out of the headline %)')
+
+
+def cmd_reset(args):
+    """Redeem one banked free reset for a seat (soonest-expiring credit), then clear the pool's cooldown."""
+    seats = load_seats()
+    s = match_seat(seats, args.seat)
+    if s['provider'] != 'codex':
+        sys.exit(f'{s["label"]} is not a Codex seat')
+    info = poll_resets(s)
+    if not info['available']:
+        sys.exit(f'{s["label"]} has no banked resets.')
+    credit = info['credits'][0]
+    guard = read_guard()
+    usage = best_usage(s, guard.get('usage', {}))
+    week, short_w = split_windows(usage)
+    left = show_left()
+    used = ', '.join(f'{name} {pct_text(w["used"], left)}{" left" if left else ""}'
+                     for name, w in (('week', week), ('5h', short_w)) if w) or 'usage unknown'
+    print(f'{s["label"]}: {used}. Banked resets: {info["available"]}. '
+          f'Using "{credit["title"]}" (expires {when(credit.get("expires_at"))}).')
+    if not args.yes:
+        if input('Reset this seat\'s usage limit now? [y/N] ').strip().lower() not in ('y', 'yes'):
+            sys.exit('cancelled')
+    import uuid
+    body = {'credit_id': credit['id'], 'redeem_request_id': str(uuid.uuid4())}
+    code = data = None
+    for attempt in (1, 2):  # the same redeem_request_id on retry, so a network blip cannot spend two credits
+        try:
+            code, data = _seat_call(s, 'POST', RESETS_CONSUME_URL, body)
+            break
+        except PoolTimeout:
+            if attempt == 2:
+                raise
+    outcome = (data or {}).get('code') if isinstance(data, dict) else None
+    record = {'at': now_utc().isoformat(), 'seat': s['label'], 'credit_id': credit['id'], 'http': code, 'outcome': outcome}
+    with contextlib.suppress(OSError):
+        with RESET_LOG.open('a') as f:
+            f.write(json.dumps(record) + '\n')
+    log_line(f'reset: {s["label"]} credit {credit["id"][-8:]} -> HTTP {code} {outcome}')
+    if outcome == 'reset' or (code == 200 and outcome is None):
+        with contextlib.suppress(ApiError, PoolDown):
+            api('POST', '/v0/management/reset-quota', {'auth_index': s['auth_index']})
+        with guard_lock():  # fresh numbers for the menu bar
+            g = read_guard()
+            with contextlib.suppress(ApiError, PoolDown):
+                g.setdefault('usage', {})[s['name']] = {**poll_usage(s), 'polled_at': now_utc().isoformat()}
+            with contextlib.suppress(ApiError, PoolDown):
+                g.setdefault('resets', {})[s['name']] = poll_resets(s)
+            write_json(GUARD_FILE, g)
+        with contextlib.suppress(Exception):
+            write_json(STATUS_FILE, status_now())
+        notify('Codex seat reset', f'{s["label"]} is back to full usage.')
+        print(f'{s["label"]} reset: usage limits are back to full and the pool can use it again.')
+        return
+    messages = {'already_redeemed': 'That reset was already used.',
+                'nothing_to_reset': 'This seat\'s usage does not need a reset right now; the credit was not used.',
+                'no_credit': 'No resets are available.'}
+    sys.exit(messages.get(outcome) or f'Reset failed (HTTP {code}, {short(json.dumps(data), 160)}).')
+
+
+def cmd_weight(args):
+    if not valid_weight(args.weight):
+        sys.exit(f'weight must be a positive number (Plus = 1, Pro = 20), not {args.weight:g}')
+    s = match_seat(load_seats(), args.seat)
+    update_meta(s['name'], weight=args.weight)
+    print(f'{s["label"]} weight {s["weight"]:g} → {args.weight:g} (its share of the pool total; Plus = 1)')
+
+
+def cmd_refresh(args):
+    """Force token refreshes. The single-seat response embeds the seat's tokens, so only status is printed."""
+    if args.seat:
+        s = match_seat(load_seats(), args.seat)
+        r = api('POST', '/v0/management/auth-files/refresh', {'name': s['name']}, timeout=90)
+        a = r.get('auth') or {}
+        msg = short(a.get('status_message') or '')
+        print(f'{s["label"]}: refresh {"ok" if r.get("ok", True) else "failed"}, status {a.get("status") or "?"}'
+              + (f' ({msg})' if msg else ''))
+    else:
+        r = api('POST', '/v0/management/auth-files/refresh', {'all': True}, timeout=180)
+        labels = {s['name']: s['label'] for s in load_seats()}
+        results = r.get('results') or []
+        if not results:
+            print('no seats with a refresh token to refresh')
+        for x in results:
+            name = x.get('id', '?')
+            print(f'{labels.get(name, name)}: ' + ('ok' if x.get('success') else f'FAILED {short(str(x.get("error", "")))}'))
+
+
+def cmd_login(args):
+    require_installed('login')
+    if args.device:
+        print('Starting a Codex device login. Open the URL, enter the code, and pick the workspace for this seat.\n')
+        flow = ['-codex-device-login', '-no-browser']
+    else:
+        print('Opening the ChatGPT sign-in in your browser. Sign in and pick the workspace for this seat.\n'
+              '(If the browser does not open, use the URL printed below.)\n')
+        flow = ['-codex-login'] + (['-no-browser'] if args.no_open else [])
+    p = subprocess.Popen([str(cpa_binary()), '-config', str(CONFIG)] + flow,
+                         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    saved = None
+    for line in p.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        m = re.match(r'Authentication saved to (.+\.json)\s*$', line.strip())
+        if m:
+            saved = pathlib.Path(m.group(1))
+    p.wait()
+    if not saved or not saved.exists():  # CLIProxyAPI exits 0 on failure; only this line proves success
+        sys.exit('\nlogin did not complete; nothing changed')
+    c = file_claims(saved)
+    if args.label:
+        update_meta(saved.name, label=args.label)
+    if args.priority is not None:
+        deadline = time.time() + 20  # wait for the pool's watcher to load the file, then set it via the API
+        while time.time() < deadline:
+            with contextlib.suppress(PoolDown, ApiError):
+                if any(s['name'] == saved.name for s in load_seats()):
+                    set_fields(saved.name, priority=args.priority)
+                    break
+            time.sleep(1)
+        else:
+            print(f'warning: pool did not load {saved.name} in time; set priority later with: '
+                  f'codexpool priority {shlex.quote(args.label or saved.name)} {args.priority}')
+    print(f'\nseat {saved.name}: {c["email"]} plan={c["plan"]} account={c["account_id"]}'
+          + (f' label={args.label}' if args.label else '') + (f' priority={args.priority}' if args.priority is not None else ''))
+    ids = {}
+    for f in AUTH.glob('codex-*.json'):
+        fc = file_claims(f)
+        ids.setdefault((fc['email'], fc['account_id']), []).append(f.name)
+    for (email, acct), names in ids.items():
+        if len(names) > 1:
+            print(f'WARNING: {email} / {acct} is in the pool {len(names)} times: {", ".join(names)}. '
+                  'Remove the stale one with: codexpool remove <seat> --yes')
+
+
+def cmd_remove(args):
+    s = match_seat(load_seats(), args.seat)
+    if not args.yes:
+        sys.exit(f'This deletes {s["name"]} from the pool (the login is not revoked). Re-run with --yes.')
+    api('DELETE', '/v0/management/auth-files?name=' + urllib.parse.quote(s['name']))
+    update_meta(s['name'], label=None, weight=None)
+    print(f'removed {s["name"]}')
+
+
+def wait_healthy(timeout=30, want_version=None):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if port_open(PORT):
+            v = running_version()
+            if v and (want_version is None or v == want_version):
+                return True
+        time.sleep(0.5)
+    return False
+
+
+def kick_pool():
+    r = subprocess.run(['launchctl', 'kickstart', '-k', f'gui/{UID}/{POOL_JOB}'], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f'launchctl kickstart failed: {r.stderr.strip() or r.returncode}')
+
+
+def cmd_restart(args):
+    kick_pool()
+    print('pool restarted' if wait_healthy() else 'pool did not come back within 30s; run: codexpool doctor')
+
+
+def cmd_logs(args):
+    target = GUARD_LOG if args.guard else MAIN_LOG
+    os.execvp('tail', ['tail', '-n', str(args.lines)] + (['-F'] if args.follow else []) + [str(target)])
+
+
+# ---------------------------------------------------------------- selftest
+
+def _run_codex(argv, timeout=600):
+    # stdin must be closed: codex exec waits for end-of-input on a non-terminal stdin before it starts.
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    thread_id, answer, usage, errors = None, '', {}, []
+    for line in p.stdout.splitlines():
+        with contextlib.suppress(ValueError):
+            ev = json.loads(line)
+            kind = ev.get('type', '')
+            if kind == 'thread.started':
+                thread_id = ev.get('thread_id')
+            elif kind == 'item.completed' and (ev.get('item') or {}).get('type') == 'agent_message':
+                answer = ev['item'].get('text', '')
+            elif kind == 'turn.completed':
+                usage = ev.get('usage') or {}
+            elif kind in ('turn.failed', 'error'):
+                errors.append(json.dumps(ev)[:400])
+    if p.returncode != 0 and not errors:
+        errors.append((p.stderr or p.stdout)[-400:])
+    return {'code': p.returncode, 'thread_id': thread_id, 'answer': answer, 'usage': usage, 'errors': errors}
+
+
+def _rollout_for(thread_id):
+    hits = sorted((HOME / '.codex/sessions').glob(f'**/rollout-*{thread_id}.jsonl'))
+    return hits[-1] if hits else None
+
+
+def _thread_facts(thread_id):
+    """What a test thread really contains: encrypted reasoning items, compactions, per-request token sizes."""
+    facts = {'reasoning_encrypted': 0, 'compactions': 0, 'requests': []}
+    path = _rollout_for(thread_id) if thread_id else None
+    if not path:
+        return facts
+    for line in path.read_text(errors='replace').splitlines():
+        with contextlib.suppress(ValueError, AttributeError):
+            e = json.loads(line)
+            kind, payload = e.get('type'), e.get('payload') or {}
+            ptype = payload.get('type') if isinstance(payload, dict) else None
+            if ptype == 'reasoning' and payload.get('encrypted_content'):
+                facts['reasoning_encrypted'] += 1
+            if kind == 'compacted' or ptype in ('compaction', 'compaction_summary'):
+                facts['compactions'] += 1
+            if kind == 'event_msg' and ptype == 'token_count':
+                last = ((payload.get('info') or {}).get('last_token_usage') or {})
+                if last.get('input_tokens'):
+                    facts['requests'].append((int(last['input_tokens']), int(last.get('output_tokens') or 0)))
+    return facts
+
+
+def _raise_exit(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def cmd_selftest(args):
+    """Move one real Codex thread from seat A to seat B and check it survives (spends a few requests)."""
+    codex = codex_bin()
+    if not codex:
+        sys.exit('codexpool: the Codex CLI was not found (not in the Codex app, not on PATH); '
+                 f'set "codex_bin" in {SETTINGS_FILE}')
+    with guard_lock():
+        recover_selftest({})
+        now = now_utc()
+        guard = read_guard()
+        seats = [s for s in load_seats() if s['provider'] == 'codex']
+        a, b = match_seat(seats, args.from_seat), match_seat(seats, args.to_seat)
+        if a['name'] == b['name']:
+            sys.exit('pick two different seats')
+        for s in (a, b):
+            state, detail, until = seat_state(s, guard, now)
+            if state != 'ready':
+                sys.exit(f'{s["label"]} is {state}' + (f' until {when(until)}' if until else '') + '; pick seats that are ready')
+        # Only seats that are enabled and ready get paused; seats already out of rotation are left alone
+        # (disabling wipes CLIProxyAPI's cooldown memory for them).
+        horizon = now + dt.timedelta(minutes=15)
+
+        def pausable(s):
+            state, _, until = seat_state(s, guard, now)
+            if state == 'ready':
+                return True
+            t = parse_time(until)
+            return state in ('cooldown', 'exhausted') and t is not None and t <= horizon  # could return mid-test
+
+        movable = [s for s in seats if not s['disabled'] and pausable(s)]
+        toggled = {}
+        log_start = MAIN_LOG.stat().st_size if MAIN_LOG.exists() else 0
+        work = tempfile.mkdtemp(prefix='codexpool-selftest-')
+        common = [codex, 'exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-C', work,
+                  '-c', f'openai_base_url="{BASE}/v1"', '-c', f'model="{args.model}"',
+                  '-c', f'model_reasoning_effort="{args.effort}"', '-c', 'notify=[]']
+
+        def only(seat):
+            for s in movable:
+                want = s['name'] != seat['name']
+                if s['name'] not in toggled:
+                    toggled[s['name']] = s['disabled']
+                    write_json(SELFTEST_JOURNAL, {'pid': os.getpid(), 'toggled': toggled})
+                set_disabled(s['name'], want)
+
+        results = []
+        print(f'selftest: {a["label"]} → {b["label"]} (model {args.model}); other seats paused for ~1-3 minutes')
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            signal.signal(sig, _raise_exit)
+        try:
+            only(a)
+            t1 = _run_codex(common + ['First, without using any tool, find the smallest positive integer n with '
+                                      'n mod 7 = 3, n mod 11 = 5 and n mod 13 = 9, and state it as N=<n>. '
+                                      'Then run the shell command `echo $((17*23))`. Then write about 1500 words, '
+                                      'with worked examples, on why multiplication distributes over addition. '
+                                      'End with: ANSWER=<the number the shell printed>.'])
+            results.append(('turn 1 on ' + a['label'], t1))
+            if not t1['thread_id'] or t1['errors']:
+                raise RuntimeError('turn 1 failed')
+            if args.compact:
+                # Put the compaction threshold between the first request of turn 1 and the context after it,
+                # so the next turn on this seat must compact once (and fits afterwards).
+                reqs = _thread_facts(t1['thread_id'])['requests']
+                base = reqs[0][0] if reqs else 20000
+                after = (reqs[-1][0] + reqs[-1][1]) if reqs else base + 2000
+                limit = int((base + after) // 2)
+                t2 = _run_codex(common + ['-c', f'model_auto_compact_token_limit={limit}', 'resume', t1['thread_id'],
+                                          'Add 9 to the previous ANSWER. Reply only with ANSWER2=<number>.'])
+                results.append((f'turn 2 on {a["label"]} (forced compaction at {limit} tokens)', t2))
+                if t2['errors']:
+                    raise RuntimeError('turn 2 failed')
+            only(b)
+            t3 = _run_codex(common + ['resume', t1['thread_id'],
+                                      'Multiply the first ANSWER by 2 using the shell (`echo $((ANSWER*2))`). '
+                                      'Reply only with ANSWER3=<number>.'])
+            results.append(('turn 3 on ' + b['label'] + ' (cross-seat)', t3))
+        except RuntimeError:
+            pass
+        finally:
+            for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, signal.SIG_IGN)
+            restored = True
+            for name, was in toggled.items():
+                try:
+                    set_disabled(name, was)
+                except (ApiError, PoolDown):
+                    restored = False
+            if restored:
+                with contextlib.suppress(OSError):
+                    SELFTEST_JOURNAL.unlink()
+            else:
+                print('WARNING: could not restore every seat; the guard will retry from the journal.')
+            shutil.rmtree(work, ignore_errors=True)
+    log_tail = ''
+    if MAIN_LOG.exists():
+        with MAIN_LOG.open('rb') as f:
+            f.seek(log_start)
+            log_tail = f.read().decode(errors='replace')
+    bad = re.findall(r'.*(?:invalid_encrypted_content|thinking_signature_invalid|could not be verified|'
+                     r'Item with id .* not found).*', log_tail)
+    tid = results[0][1]['thread_id'] if results else None
+    facts = _thread_facts(tid)
+    failed = len(results) < 2 or any(r['errors'] for _, r in results) or bool(bad)
+    missing = []
+    if facts['reasoning_encrypted'] == 0:
+        missing.append('no encrypted reasoning in the thread')
+    if args.compact and facts['compactions'] == 0:
+        missing.append('no compaction happened')
+    verdict = 'FAIL' if failed else ('INCONCLUSIVE' if missing else 'PASS')
+    ok = verdict == 'PASS'
+    for title, r in results:
+        print(f'  [{"ok " if not r["errors"] else "FAIL"}] {title}: {r["answer"][-80:]!r}')
+        for e in r['errors']:
+            print(f'         {e}')
+    for line in bad[:5]:
+        print(f'  pool log: {line[:200]}')
+    print(f'  carried across: {facts["reasoning_encrypted"]} encrypted reasoning item(s), '
+          f'{facts["compactions"]} compaction(s)')
+    print('RESULT:', {'PASS': 'PASS: encrypted reasoning' + (' and a compaction' if args.compact else '') +
+                      ' survived the seat move',
+                      'FAIL': 'FAIL: see above',
+                      'INCONCLUSIVE': 'INCONCLUSIVE: ' + '; '.join(missing)}[verdict])
+    record = read_json(STATE / 'selftests.json', [])
+    record.append({'at': now_utc().isoformat(), 'from': a['label'], 'to': b['label'], 'compact': args.compact,
+                   'model': args.model, 'effort': args.effort, 'result': verdict,
+                   'reasoning_items': facts['reasoning_encrypted'], 'compactions': facts['compactions']})
+    write_json(STATE / 'selftests.json', record)
+    sys.exit({'PASS': 0, 'FAIL': 1, 'INCONCLUSIVE': 2}[verdict])
+
+
+# ---------------------------------------------------------------- doctor
+
+def toml_top_level(path=CODEX_CONFIG):
+    """Top-level key = value pairs of a TOML file (before the first table)."""
+    out = {}
+    try:
+        for line in pathlib.Path(path).read_text().splitlines():
+            if line.lstrip().startswith('['):
+                break
+            m = re.match(r'\s*([A-Za-z0-9_.-]+)\s*=\s*(.+?)\s*$', line)
+            if m and not line.lstrip().startswith('#'):
+                out[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return out
+
+
+def unquote(v):
+    """The value of a TOML scalar as toml_top_level() returns it: "basic" or 'literal' strings, trailing # comments."""
+    v = (v or '').strip()
+    m = re.match(r'"((?:[^"\\]|\\.)*)"', v) or re.match(r"'([^']*)'", v)
+    if m:
+        return m.group(1)
+    return v.split('#', 1)[0].strip()
+
+
+def gate_probe(port=PORT):
+    """(plain_status, browser_status): a Codex-like request must pass, a browser one must get 403."""
+    def get(headers):
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/models', headers=headers)
+        try:
+            with _LOCAL.open(req, timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+        except (urllib.error.URLError, OSError):
+            return None
+    return get({}), get({'Origin': PROBE_ORIGIN, 'Sec-Fetch-Site': 'cross-site'})
+
+
+def cmd_doctor(args):
+    require_installed('doctor')
+    problems = 0
+
+    def check(ok, text, fix=None, warn=False):
+        nonlocal problems
+        print(f' {"✓" if ok else ("!" if warn else "✗")} {text}' + ('' if ok or not fix else f'\n     → {fix}'))
+        if not ok and not warn:
+            problems += 1
+
+    print('Pool process')
+    loaded, pid = launchd_loaded(POOL_JOB)
+    check(loaded and pid, f'launchd job {POOL_JOB} ' + (f'running (pid {pid})' if pid else 'not running'),
+          f'launchctl bootstrap gui/{UID} {LAUNCH_AGENTS / (POOL_JOB + ".plist")}')
+    check(port_open(PORT), f'listening on 127.0.0.1:{PORT}', 'codexpool restart ; codexpool logs')
+    key_error = None
+    try:
+        mgmt_key()
+    except KeyUnavailable as e:
+        key_error = e
+        check(False, f'management key: {e}', e.fix)
+    live = None if key_error else running_version()
+    if not key_error:
+        check(bool(live) and '+gate' in live, f'running build: {live or "unknown"} (installed {cpa_version()})',
+              'the pool must run a +gate build: codexpool upgrade <version>')
+    plain, browser = gate_probe()
+    check(plain == 200 and browser == 403, f'origin gate: Codex-like request {plain}, browser request {browser}',
+          'expected 200 and 403; run: codexpool upgrade <version> --force')
+    cfg = CONFIG.read_text() if CONFIG.exists() else ''
+    check('host: "127.0.0.1"' in cfg, 'bound to loopback only')
+    check(re.search(r'^api-keys:\s*\[\]', cfg, re.M) is not None, 'client auth open on loopback (api-keys: [])',
+          'the Codex app sends its own bearer; api-keys must be [] (the origin gate protects the pool)')
+    try:
+        if key_error:
+            raise key_error
+        seats = load_seats()
+        check(True, 'management API reachable (Keychain key ok)')
+    except KeyUnavailable:
+        seats = []  # already reported above
+    except (PoolDown, ApiError) as e:
+        seats = []
+        check(False, f'management API: {short(str(e), 120)}', 'codexpool restart')
+
+    print('\nCodex app')
+    top = toml_top_level()
+    base_url = unquote(top.get('openai_base_url'))
+    check(base_url == f'{BASE}/v1', f'openai_base_url = {base_url or "(unset)"}',
+          f'set openai_base_url = "{BASE}/v1" in {CODEX_CONFIG}')
+    check('model_provider' not in top, 'built-in openai provider (thread history visible)',
+          'remove model_provider from config.toml; a custom provider hides all existing threads')
+    check('model_catalog_json' not in top, 'live model catalog (no static model_catalog_json)',
+          'remove model_catalog_json from config.toml', warn=True)
+
+    print('\nSeats')
+    st = build_status(seats, read_guard()) if seats else {'seats': [], 'active': None}
+    codex = [r for r in st['seats'] if r['provider'] == 'codex']
+    check(len(codex) >= 1, f'{len(codex)} Codex seats in the pool', 'codexpool login <label> --priority <n>')
+    for r in codex:
+        ok = r['state'] in ('active', 'ready', 'exhausted', 'parked', 'cooldown', 'disabled')
+        text = f'{r["label"]}: {r["state"]}' + (f' ({r["detail"]})' if r['detail'] else '') + \
+               (f', back {when(r["until"])}' if r['until'] else '')
+        q = shlex.quote(r['label'])
+        check(ok, text, f'codexpool refresh {q} ; if it stays blocked: codexpool login {q} --priority {r["priority"]}')
+        cred = (r['usage'] or {}).get('credits') or {}
+        if cred.get('balance'):
+            check(False, f'{r["label"]} holds {cred["balance"]:g} credits (spent silently past 100%)',
+                  'turn off auto top-up in ChatGPT billing; the credit guard parks the seat at 100% meanwhile', warn=True)
+    prios = {}
+    for r in codex:
+        if r['state'] != 'disabled':
+            prios.setdefault(r['priority'], []).append(r['label'])
+    for p, names in prios.items():
+        check(len(names) == 1, f'priority {p} is unique', f'{", ".join(names)} share priority {p}; fill order among them '
+              'follows file names. Make it explicit: codexpool priority <seat> <n>', warn=True)
+    ids = {}
+    for f in AUTH.glob('codex-*.json'):
+        c = file_claims(f)
+        ids.setdefault((c['email'], c['account_id']), []).append(f.name)
+    for (email, acct), names in ids.items():
+        check(len(names) == 1, f'{email} / {acct} appears once', f'duplicate seat files: {names}', warn=True)
+    check(st.get('active') is not None, f'new threads land on: {st.get("active") or "nothing available"}', warn=True)
+
+    print('\nGuard and visibility')
+    check(launchd_loaded(GUARD_JOB)[0], f'launchd job {GUARD_JOB} loaded',
+          f'launchctl bootstrap gui/{UID} {LAUNCH_AGENTS / (GUARD_JOB + ".plist")}')
+    last = parse_time(read_guard().get('last_pass'))
+    check(bool(last) and (now_utc() - last).total_seconds() < 300, f'guard last completed {when(last) if last else "never"}',
+          'codexpool logs --guard')
+    mb_loaded, mb_pid = launchd_loaded(MENUBAR_JOB)
+    check(mb_loaded and mb_pid, f'menu bar app running' + (f' (pid {mb_pid})' if mb_pid else ''),
+          f'launchctl bootstrap gui/{UID} {LAUNCH_AGENTS / (MENUBAR_JOB + ".plist")}  (log: {LOGS / "menubar.log"})', warn=True)
+    j = read_json(SELFTEST_JOURNAL, None)
+    check(not j or pid_alive(j.get('pid')), 'no interrupted selftest', 'the guard restores its seats on its next pass', warn=True)
+
+    print('\nRecent pool errors (last 24h of logs)')
+    counts = {}
+    cutoff = (dt.datetime.now() - dt.timedelta(hours=24)).strftime('%Y-%m-%d %H:%M')
+    for log in sorted(LOGS.glob('main*.log')):
+        with contextlib.suppress(OSError):
+            if dt.datetime.fromtimestamp(log.stat().st_mtime) < dt.datetime.now() - dt.timedelta(hours=24):
+                continue
+            for line in log.read_text(errors='replace').splitlines():
+                m = LOG_LINE.match(line)
+                if not m or m.group(1) < cutoff:
+                    continue  # continuation lines and old lines
+                src, msg = m.group(2), m.group(3)
+                if src == 'codexpool_gate.go':
+                    g = GATE_FIELDS.search(msg)
+                    if not (g and g.group(1) == PROBE_ORIGIN):
+                        counts['codexpool gate: rejected'] = counts.get('codexpool gate: rejected', 0) + 1
+                    continue
+                if src == 'gin_logger.go':
+                    continue  # access-log lines echo request paths, which any client controls
+                for pat in ('invalid_encrypted_content', 'thinking_signature_invalid', 'auth_unavailable',
+                            'usage_limit_reached', 'refresh_token_reused'):
+                    if pat in msg:
+                        counts[pat] = counts.get(pat, 0) + 1
+    check(not counts.get('invalid_encrypted_content') and not counts.get('thinking_signature_invalid'),
+          'no cross-seat encrypted-content failures',
+          "a seat pair rejects each other's thread state; run codexpool selftest on that pair")
+    check(not counts.get('refresh_token_reused'), 'no refresh_token_reused',
+          'a seat file is shared with another tool; never copy seat files; re-login the affected seat')
+    if counts.get('codexpool gate: rejected'):
+        check(False, f'{counts["codexpool gate: rejected"]} browser/non-loopback requests blocked by the gate',
+              'something local tried to use the pool from a web context; see: grep "codexpool gate" ~/.codexpool/logs/main.log',
+              warn=True)
+    print('\nOK' if not problems else f'\n{problems} problem(s)')
+    sys.exit(1 if problems else 0)
+
+
+# ---------------------------------------------------------------- build / upgrade
+
+def _download(url, dest):
+    req = urllib.request.Request(url, headers={'User-Agent': 'codexpool'})
+    with urllib.request.urlopen(req, timeout=180) as r, open(dest, 'wb') as f:
+        shutil.copyfileobj(r, f)
+
+
+def _github_json(path):
+    req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/{path}',
+                                 headers={'User-Agent': 'codexpool', 'Accept': 'application/vnd.github+json'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+
+def gate_selftest(binary):
+    """Run a built binary on a scratch port with an empty auth dir and check the gate end to end."""
+    work = pathlib.Path(tempfile.mkdtemp(prefix='codexpool-gate-'))
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        port = s.getsockname()[1]
+    key = hashlib.sha256(os.urandom(16)).hexdigest()
+    (work / 'auth').mkdir()
+    (work / 'config.yaml').write_text(
+        f'host: "127.0.0.1"\nport: {port}\nauth-dir: "{work / "auth"}"\napi-keys: []\nlogging-to-file: false\n'
+        f'remote-management: {{allow-remote: false, secret-key: "{key}", disable-control-panel: true}}\n')
+    proc = subprocess.Popen([str(binary), '-config', str(work / 'config.yaml')], cwd=work,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and not port_open(port):
+            time.sleep(0.2)
+        if not port_open(port):
+            return False, 'built binary did not start'
+
+        def code(path, headers=None, method='GET'):
+            req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', headers=headers or {}, method=method)
+            try:
+                with _LOCAL.open(req, timeout=5) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+            except (urllib.error.URLError, OSError):
+                return None
+        evil = {'Origin': 'https://example.com'}
+        cases = [
+            ('Codex-like GET /v1/models', code('/v1/models'), 200),
+            ('browser Origin', code('/v1/models', evil), 403),
+            ('CORS preflight', code('/v1/responses', {**evil, 'Access-Control-Request-Method': 'POST'}, 'OPTIONS'), 403),
+            ('no-cors cross-site', code('/v1/models', {'Sec-Fetch-Site': 'cross-site'}), 403),
+            ('DNS rebinding Host', code('/v1/models', {'Host': f'attacker.example:{port}'}), 403),
+            ('Codex renderer app://-', code('/v1/models', {'Origin': 'app://-', 'Sec-Fetch-Site': 'cross-site'}), 200),
+            ('management with key', code('/v0/management/auth-files', {'Authorization': f'Bearer {key}'}), 200),
+        ]
+        for _ in range(6):  # browser-originated keyless management calls must not get loopback banned
+            code('/v0/management/auth-files', evil)
+        cases.append(('management after 6 browser attempts', code('/v0/management/auth-files',
+                                                                 {'Authorization': f'Bearer {key}'}), 200))
+        def ws_code(headers=None, host=None):
+            extra = ''.join(f'{k}: {v}\r\n' for k, v in (headers or {}).items())
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=5) as s:
+                    s.sendall(f'GET /v1/responses HTTP/1.1\r\nHost: {host or f"127.0.0.1:{port}"}\r\n'
+                              'Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n'
+                              f'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n{extra}\r\n'.encode())
+                    parts = s.recv(200).decode(errors='replace').split('\r\n')[0].split()
+                    return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+            except OSError:
+                return None
+        cases += [
+            ('WebSocket upgrade (Codex-like)', ws_code(), 101),
+            ('WebSocket upgrade from a browser page', ws_code(evil), 403),
+            ('WebSocket upgrade via DNS rebinding', ws_code(host=f'attacker.example:{port}'), 403),
+        ]
+        failed = [f'{n}: got {got}, want {want}' for n, got, want in cases if got != want]
+        return not failed, '; '.join(failed) or f'{len(cases)} gate checks passed'
+    finally:
+        proc.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=10)
+        if proc.poll() is None:
+            proc.kill()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def gate_id(gate_src=None):
+    """Short hash of everything codexpool changes in upstream; part of the build dir and version."""
+    gate_src = GATE_SOURCE.read_bytes() if gate_src is None else gate_src
+    return hashlib.sha256(gate_src + b'\0' + GATE_ANCHOR.encode() + b'\0' +
+                          GATE_REPLACEMENT.encode()).hexdigest()[:10]
+
+
+def gate_version(version):
+    return f'{version}+gate.{gate_id()}'
+
+
+def build(version):
+    """Build CLIProxyAPI <version> from its release tag plus codexpool_gate.go; return the version dir."""
+    gate_src = GATE_SOURCE.read_bytes()
+    gid = gate_id(gate_src)
+    dest = VERSIONS / f'v{version}-gate-{gid}'
+    if (dest / 'cli-proxy-api').exists():
+        return dest
+    go = TOOLCHAIN / 'current' / 'bin' / 'go'
+    if not go.exists():
+        sys.exit(f'Go toolchain missing at {go}; run: codexpool install (it fetches the official build from go.dev)')
+    commit = _github_json(f'commits/v{version}')['sha'][:8]
+    src = pathlib.Path(tempfile.mkdtemp(prefix=f'codexpool-src-v{version}-', dir=BUILD))
+    try:
+        print(f'fetching v{version} source (commit {commit})')
+        tgz = src / 'src.tgz'
+        _download(f'https://codeload.github.com/{REPO}/tar.gz/refs/tags/v{version}', tgz)
+        with tarfile.open(tgz) as t:
+            root = t.getnames()[0].split('/')[0]
+            t.extractall(src, filter='data')
+        tree = src / root
+        main_go = tree / 'cmd/server/main.go'
+        text = main_go.read_text()
+        if text.count(GATE_ANCHOR) != 1:
+            sys.exit(f'v{version}: gate anchor not found exactly once in cmd/server/main.go; upstream changed. '
+                     f'Update GATE_ANCHOR in codexpool before upgrading. Nothing was changed.')
+        if 'WithEngineConfigurator' in text:
+            sys.exit(f'v{version}: upstream now sets its own engine configurator; the gate would replace it. '
+                     'Move the gate to api.WithMiddleware before upgrading. Nothing was changed.')
+        main_go.write_text(text.replace(GATE_ANCHOR, GATE_REPLACEMENT))
+        (tree / 'cmd/server/codexpool_gate.go').write_bytes(gate_src)
+        env = {**os.environ, 'GOROOT': str(TOOLCHAIN / 'current'), 'GOPATH': str(TOOLCHAIN / 'gopath'),
+               'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0', 'GOFLAGS': '-mod=mod',
+               'PATH': f'{TOOLCHAIN / "current" / "bin"}:{os.environ.get("PATH", "")}'}
+        stamp = now_utc().strftime('%Y-%m-%dT%H:%M:%SZ')
+        out = src / 'cli-proxy-api'
+        print('building (CGO off; plugins unsupported, not used)')
+        r = subprocess.run([str(go), 'build', '-trimpath', '-buildvcs=false', '-ldflags',
+                            f'-s -w -X main.Version={version}+gate.{gid} -X main.Commit={commit} -X main.BuildDate={stamp}',
+                            '-o', str(out), './cmd/server'], cwd=tree, env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f'build failed:\n{r.stderr[-2000:]}')
+        ok, detail = gate_selftest(out)
+        if not ok:
+            sys.exit(f'built binary failed the gate self-test: {detail}. Nothing was changed.')
+        print(f'gate self-test: {detail}')
+        staging = VERSIONS / f'.{dest.name}.partial'
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        shutil.copy2(out, staging / 'cli-proxy-api')
+        shutil.copy2(tree / 'config.example.yaml', staging / 'config.example.yaml')
+        shutil.copy2(tree / 'LICENSE', staging / 'LICENSE')
+        (staging / 'BUILD-INFO').write_text(f'upstream v{version} commit {commit}\n+ build/codexpool_gate.go gate {gid}\n'
+                                            f'built {stamp} with {subprocess.run([str(go), "version"], capture_output=True, text=True, env=env).stdout.strip()}\n')
+        os.replace(staging, dest)
+        return dest
+    finally:
+        shutil.rmtree(src, ignore_errors=True)
+
+
+def _point_current(target):
+    link = BIN / '.current.tmp'
+    with contextlib.suppress(FileNotFoundError):
+        link.unlink()
+    link.symlink_to(target)
+    os.replace(link, CURRENT)
+
+
+def cmd_build(args):
+    version = args.version.lstrip('v')
+    if version == 'latest':
+        version = _github_json('releases/latest')['tag_name'].lstrip('v')
+    print(f'ready: {build(version)}')
+
+
+def cmd_upgrade(args):
+    version = args.version.lstrip('v')
+    if version == 'latest':
+        version = _github_json('releases/latest')['tag_name'].lstrip('v')
+    target_version = gate_version(version)
+    if running_version() == target_version and not args.force:
+        print(f'already running {target_version}')
+        return
+    dest = build(version)
+    try:
+        seats_before = len(load_seats())
+    except (PoolDown, ApiError, KeyUnavailable):
+        seats_before = None  # pool already down: allow upgrade/downgrade as recovery
+    previous = os.readlink(CURRENT) if CURRENT.is_symlink() else None
+    swapped = False
+    try:
+        if not (previous and pathlib.Path(previous).resolve() == dest.resolve()):
+            swapped = True  # set first: re-pointing to previous is harmless if the swap never happened
+            _point_current(dest)
+        kick_pool()
+        healthy = wait_healthy(45, want_version=target_version)
+        if healthy and seats_before is not None:
+            try:
+                healthy = len(load_seats()) == seats_before
+            except (PoolDown, ApiError, KeyUnavailable):
+                healthy = False
+        if healthy:
+            plain, browser = gate_probe()
+            healthy = plain == 200 and browser == 403
+        if not healthy:
+            raise RuntimeError('health check failed')
+    except BaseException as e:
+        for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)  # a second signal must not cut the restore short
+        back = None
+        if swapped and previous:
+            _point_current(previous)
+            with contextlib.suppress(Exception):
+                kick_pool()
+            back = wait_healthy(45)
+        reason = e if not isinstance(e, SystemExit) else f'signal {e.code}'
+        if back is None:
+            where = 'the pool was restarted and is unhealthy' if not swapped else f'current now points at {dest}'
+            sys.exit(f'{target_version} failed ({reason}); {where}. Run: codexpool doctor')
+        if back:
+            sys.exit(f'{target_version} failed ({reason}); rolled back to {previous}, pool is up')
+        sys.exit(f'{target_version} failed ({reason}); rolled back to {previous} but nothing answers on :{PORT}. '
+                 'Run: codexpool doctor')
+    print(f'now running {target_version}. Previous build kept at {previous}.')
+
+
+# ---------------------------------------------------------------- install / uninstall
+
+def set_toml_top_level(key, value, path=CODEX_CONFIG):
+    """Set (value: TOML literal) or delete (value None) a top-level key, leaving everything else as is.
+    A symlinked file (dotfiles) is edited where it points, so the link stays a link."""
+    path = pathlib.Path(path).resolve()
+    lines = path.read_text().splitlines(keepends=True)
+    first_table = next((i for i, l in enumerate(lines) if l.lstrip().startswith('[')), len(lines))
+    pat = re.compile(rf'^\s*{re.escape(key)}\s*=')
+    idx = next((i for i in range(first_table) if pat.match(lines[i])), None)
+    if value is None:
+        if idx is not None:
+            del lines[idx]
+    elif idx is not None:
+        lines[idx] = f'{key} = {value}\n'
+    else:
+        lines.insert(0, f'{key} = {value}\n')
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+    with os.fdopen(fd, 'w') as f:
+        f.write(''.join(lines))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+REPO_URL = 'https://github.com/memfactorduke/codex-load-balancer'
+CODEX_BACKUP = 'codex-config.pre-install-{stamp}.toml'  # in STATE; one per install, never overwritten
+CODEX_KEYS = ('openai_base_url', 'model_provider', 'model_catalog_json')  # what install may change, recorded first
+CONFIG_WARNINGS = {'model_provider': 'a custom provider hides every existing Codex thread',
+                   'model_catalog_json': 'a static catalog freezes the model picker'}
+WRAPPER = HOME / '.local' / 'bin' / 'codexpool'
+WRAPPER_MARK = '# codexpool wrapper, written by `codexpool install`'
+CODE_FILES = ('bin/codexpool', 'build/codexpool_gate.go', 'menubar/codexpool_menubar.py', 'menubar/SPEC.md',
+              'launchd', 'examples', 'docs', 'README.md', 'AGENTS.md', 'LICENSE')
+MENUBAR_PACKAGES = ('pyobjc-core', 'pyobjc-framework-Cocoa')
+VENV_PYTHON = '3.13'  # what uv creates the venv with (it downloads a standalone build if needed)
+GO_RELEASES = 'https://go.dev/dl/?mode=json'
+
+
+def tilde(path):
+    s, h = str(path), str(HOME)
+    return '~' + s[len(h):] if s == h or s.startswith(h + '/') else s
+
+
+class Steps:
+    """Prints the install plan while running it. In a dry run, change() only says what it would do."""
+    TOTAL = 7
+
+    def __init__(self, dry_run):
+        self.dry = dry_run
+        self.n = 0
+        self.problems = []
+
+    def step(self, title):
+        self.n += 1
+        print(f'\n[{self.n}/{self.TOTAL}] {title}')
+
+    def ok(self, text):
+        print(f'  ✓ {text}')
+
+    def warn(self, text, fix=None):
+        print(f'  ! {text}' + (f'\n      → {fix}' if fix else ''))
+
+    def fail(self, text, fix=None):
+        print(f'  ✗ {text}' + (f'\n      → {fix}' if fix else ''))
+        self.problems.append(text)
+
+    def change(self, text, fn=None, *args):
+        print(f'  {"[dry-run] " if self.dry else "+ "}{text}')
+        sys.stdout.flush()
+        if not self.dry and fn is not None:
+            return fn(*args)
+        return None
+
+
+def run_checked(argv, what, **kwargs):
+    r = subprocess.run([str(a) for a in argv], capture_output=True, text=True, **kwargs)
+    if r.returncode != 0:
+        tail = ' '.join((r.stderr or r.stdout or '').split())[-300:]
+        raise RuntimeError(f'{what} failed (exit {r.returncode}): {tail}')
+    return r
+
+
+NETWORK_HOSTS = ('go.dev', 'api.github.com', 'codeload.github.com', 'proxy.golang.org')  # what install downloads from
+
+
+def network_error(host):
+    """None if https://<host>/ answers (any HTTP status), else why not, in words."""
+    req = urllib.request.Request(f'https://{host}/', method='HEAD', headers={'User-Agent': 'codexpool'})
+    try:
+        with urllib.request.urlopen(req, timeout=15):
+            return None
+    except urllib.error.HTTPError:
+        return None  # the server answered
+    except (urllib.error.URLError, OSError) as e:
+        reason = getattr(e, 'reason', e)
+        return f'{type(reason).__name__}: {reason}'
+
+
+def python_version_ok(python):
+    """'3.13.5' if `python` runs and is 3.11+ with tarfile's data filter, else None."""
+    code = ('import sys, tarfile; print("%d.%d.%d" % sys.version_info[:3]); '
+            'sys.exit(0 if sys.version_info >= (3, 11) and hasattr(tarfile, "data_filter") else 3)')
+    try:
+        r = subprocess.run([str(python), '-c', code], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def python_has(python, module):
+    try:
+        return subprocess.run([str(python), '-c', f'import {module}'], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def find_uv():
+    for c in (shutil.which('uv'), HOME / '.local/bin/uv', HOME / '.cargo/bin/uv', '/opt/homebrew/bin/uv',
+              '/usr/local/bin/uv'):
+        if c and os.access(str(c), os.X_OK):
+            return str(c)
+    return None
+
+
+def find_python():
+    """A Python 3.11+ already on this Mac to build a venv from (the running one first)."""
+    seen = set()
+    names = ('python3.13', 'python3.12', 'python3.11', 'python3.14', 'python3')
+    for c in [sys.executable] + [shutil.which(n) for n in names] + ['/opt/homebrew/bin/python3', '/usr/local/bin/python3']:
+        if c and c not in seen and os.access(c, os.X_OK):
+            seen.add(c)
+            if python_version_ok(c):
+                return c
+    return None
+
+
+def create_venv(python, how):
+    env_dir = pathlib.Path(python).parent.parent
+    tool, exe = how
+    env_dir.parent.mkdir(parents=True, exist_ok=True)
+    if tool == 'uv':
+        run_checked([exe, 'venv', '--python', VENV_PYTHON, env_dir], f'uv venv {tilde(env_dir)}')
+    else:
+        run_checked([exe, '-m', 'venv', env_dir], f'{exe} -m venv {tilde(env_dir)}')
+    if not python_version_ok(python):
+        raise RuntimeError(f'{tilde(python)} was created but is not a usable Python 3.11+')
+
+
+def pip_install(python, packages):
+    uv = find_uv()
+    if uv:
+        run_checked([uv, 'pip', 'install', '--python', python] + list(packages), 'uv pip install ' + ' '.join(packages))
+    else:
+        run_checked([python, '-m', 'pip', 'install', '--quiet'] + list(packages), 'pip install ' + ' '.join(packages))
+
+
+def code_files():
+    """(source, destination) for each code file of this checkout, when it is not ROOT itself."""
+    out = []
+    for rel in CODE_FILES:
+        src = CODE_DIR / rel
+        if src.is_file():
+            files = [src]
+        elif src.is_dir():
+            files = sorted(p for p in src.rglob('*') if p.is_file() and '__pycache__' not in p.parts)
+        else:
+            files = []
+        out += [(f, ROOT / f.relative_to(CODE_DIR)) for f in files]
+    return out
+
+
+def copy_code():
+    for src, dest in code_files():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists() or dest.read_bytes() != src.read_bytes():
+            shutil.copy2(src, dest)
+
+
+def make_dirs():
+    for d in (ROOT, STATE, LOGS):
+        d.mkdir(parents=True, exist_ok=True)
+    AUTH.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(AUTH, 0o700)  # seat logins: only you
+
+
+def write_private(path, text):
+    """Atomic write, mode 0600 (mkstemp's default)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+# -- install steps --------------------------------------------------------------------------------------
+
+def install_preflight(st):
+    st.step('Preflight')
+    if platform.system() != 'Darwin':
+        sys.exit('codexpool needs macOS (launchd, the Keychain, the AppKit menu bar); nothing was changed.')
+    arch = platform.machine()
+    st.ok(f'macOS {platform.mac_ver()[0] or "?"} on {arch}')
+    if arch != 'arm64':
+        st.warn('Intel Macs are untested')
+    codex = codex_bin()
+    if codex:
+        st.ok(f'Codex: {tilde(codex)}')
+    else:
+        st.fail('Codex app not found', f'install the Codex app from OpenAI, or set "codex_bin" in {tilde(SETTINGS_FILE)}')
+
+    codex_home = os.environ.get('CODEX_HOME')
+    if codex_home and pathlib.Path(codex_home).expanduser().resolve() != CODEX_CONFIG.parent.resolve():
+        st.warn(f'CODEX_HOME is set to {codex_home} in this shell; install configures {tilde(CODEX_CONFIG)}, which '
+                'is what the Codex app reads', f'for the codex CLI in this shell, also add openai_base_url = '
+                f'"{BASE}/v1" to {codex_home}/config.toml')
+
+    venvs = []  # (python, how) to create
+    checked = []
+    for key, py in (('python', python_bin()), ('menubar_python', menubar_python_bin())):
+        if py in checked:
+            continue
+        checked.append(py)
+        version = python_version_ok(py)
+        if version:
+            st.ok(f'{key}: Python {version} ({tilde(py)})')
+            continue
+        where = f'"{key}" in {tilde(SETTINGS_FILE)}'
+        if py.exists():
+            fix = (f'delete {tilde(py.parent.parent)} and re-run' if not SETTINGS[key]
+                   else f'point {where} at Python 3.11+, or set it to null for codexpool\'s own venv')
+            st.fail(f'{tilde(py)} is not Python 3.11+', fix)
+            continue
+        if py.parent.name != 'bin' or py.parent.parent.exists():
+            st.fail(f'{tilde(py)} does not exist',
+                    f'fix {where}' if SETTINGS[key] else f'delete {tilde(py.parent.parent)} and re-run')
+            continue
+        uv = find_uv()
+        base = None if uv else find_python()
+        how = ('uv', uv) if uv else (('venv', base) if base else None)
+        if not how:
+            st.fail('no Python 3.11+ and no uv on this Mac',
+                    'install uv (https://docs.astral.sh/uv/) or Python (brew install python@3.13), then re-run')
+            continue
+        st.ok(f'{key}: will be a new venv at {tilde(py.parent.parent)} '
+              + (f'(uv, Python {VENV_PYTHON})' if how[0] == 'uv' else f'(from {tilde(how[1])})'))
+        venvs.append((py, how))
+
+    need_network = not (TOOLCHAIN / 'current' / 'bin' / 'go').exists() or not (CURRENT / 'cli-proxy-api').exists()
+    errors = {h: e for h in NETWORK_HOSTS if (e := network_error(h))}
+    if not errors:
+        st.ok('network: ' + ', '.join(NETWORK_HOSTS) + ' answer')
+    elif need_network:
+        certs = any('CERTIFICATE_VERIFY_FAILED' in e or 'SSLCertVerification' in e for e in errors.values())
+        st.fail('cannot reach ' + '; '.join(f'{h} ({short(e, 80)})' for h, e in errors.items()),
+                'this Python cannot verify HTTPS certificates: run "Install Certificates.command" in '
+                '/Applications/Python 3.x, or start the installer with Homebrew Python or uv' if certs else
+                'install downloads Go (go.dev, proxy.golang.org) and the CLIProxyAPI source (github.com) once')
+    else:
+        st.ok('network: not reachable, but not needed (Go and a pool build are already here)')
+    loaded, pid = launchd_loaded(POOL_JOB)
+    if loaded:
+        st.ok(f'{POOL_JOB} already loaded' + (f' (pid {pid})' if pid else ''))
+    elif port_open(PORT):
+        st.fail(f'something else is listening on 127.0.0.1:{PORT}',
+                f'stop it (lsof -nP -iTCP:{PORT} -sTCP:LISTEN), or pick another port: ' +
+                (f'set "port" in {tilde(SETTINGS_FILE)}' if SETTINGS_FILE.exists() else
+                 f'mkdir -p {tilde(SETTINGS_FILE.parent)} && echo \'{{"port": {PORT + 10}}}\' > {tilde(SETTINGS_FILE)}'))
+    else:
+        st.ok(f'port {PORT} is free')
+
+    if st.problems and not st.dry:
+        sys.exit(f'\n{len(st.problems)} problem(s) above. Fix them and re-run codexpool install; nothing was changed.')
+
+    if CODE_DIR != ROOT.resolve():
+        files = code_files()
+        st.change(f'copy the code ({len(files)} files) from {tilde(CODE_DIR)} to {tilde(ROOT)} '
+                  '(re-run install from the checkout after a git pull to update it)', copy_code)
+    if not SETTINGS_FILE.exists():
+        st.change(f'write {tilde(SETTINGS_FILE)} with the defaults (launchd labels, port {PORT}, interpreters)',
+                  write_json, SETTINGS_FILE, SETTINGS_DEFAULTS)
+    if not AUTH.is_dir() or not STATE.is_dir() or not LOGS.is_dir():
+        st.change(f'create {tilde(AUTH)} (mode 700), {tilde(STATE)}, {tilde(LOGS)}', make_dirs)
+    for py, (tool, exe) in venvs:
+        st.change(f'create the venv {tilde(py.parent.parent)} '
+                  + (f'with uv (Python {VENV_PYTHON})' if tool == 'uv' else f'with {tilde(exe)} -m venv'),
+                  create_venv, py, (tool, exe))
+    if not st.dry and not python_ok_here() and os.environ.get('CODEXPOOL_REEXEC') != '1':
+        py = python_bin()
+        print(f'  + continuing under {tilde(py)}')
+        sys.stdout.flush()
+        os.environ['CODEXPOOL_REEXEC'] = '1'
+        os.execv(str(py), [str(py), str(ROOT / 'bin' / 'codexpool')] + sys.argv[1:])
+
+
+def go_release():
+    req = urllib.request.Request(GO_RELEASES, headers={'User-Agent': 'codexpool'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        releases = json.loads(r.read())
+    arch = 'arm64' if platform.machine() == 'arm64' else 'amd64'
+    for rel in releases:
+        if not rel.get('stable'):
+            continue
+        for f in rel.get('files') or []:
+            if f.get('os') == 'darwin' and f.get('arch') == arch and f.get('kind') == 'archive':
+                return rel['version'], f['filename'], f['sha256']
+    raise ValueError(f'go.dev lists no stable darwin-{arch} archive')
+
+
+def install_go(version, filename, sha256):
+    TOOLCHAIN.mkdir(parents=True, exist_ok=True)
+    work = pathlib.Path(tempfile.mkdtemp(prefix='.go-', dir=TOOLCHAIN))
+    try:
+        tgz = work / filename
+        _download('https://go.dev/dl/' + filename, tgz)
+        h = hashlib.sha256()
+        with open(tgz, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                h.update(chunk)
+        if h.hexdigest() != sha256:
+            raise RuntimeError(f'{filename}: sha256 {h.hexdigest()} does not match go.dev ({sha256}); nothing installed')
+        run_checked(['/usr/bin/tar', '-xzf', tgz, '-C', work], f'unpacking {filename}')
+        dest = TOOLCHAIN / version
+        shutil.rmtree(dest, ignore_errors=True)
+        os.replace(work / 'go', dest)
+        link = TOOLCHAIN / '.current.tmp'
+        with contextlib.suppress(FileNotFoundError):
+            link.unlink()
+        link.symlink_to(version)
+        os.replace(link, TOOLCHAIN / 'current')
+        (TOOLCHAIN / 'gopath').mkdir(exist_ok=True)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def install_toolchain(st):
+    st.step('Go toolchain (to build CLIProxyAPI from source)')
+    go = TOOLCHAIN / 'current' / 'bin' / 'go'
+    if os.access(go, os.X_OK):
+        out = subprocess.run([str(go), 'version'], capture_output=True, text=True).stdout.split()
+        st.ok(f'{out[2] if len(out) > 2 else "go"} in {tilde(TOOLCHAIN / "current")}')
+        return
+    try:
+        version, filename, sha256 = go_release()
+    except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+        if not st.dry:
+            raise RuntimeError(f'cannot read the Go release list from go.dev: {e}') from None
+        st.change(f'download the latest stable Go from go.dev into {tilde(TOOLCHAIN)} (go.dev did not answer: {e})')
+        return
+    st.change(f'download {filename} from go.dev, check its sha256 ({sha256[:16]}…) and unpack it to '
+              f'{tilde(TOOLCHAIN / version)} (toolchain/current)', install_go, version, filename, sha256)
+
+
+def install_build(st):
+    st.step('CLIProxyAPI with the origin gate')
+    if (CURRENT / 'cli-proxy-api').exists():
+        st.ok(f'bin/current → v{cpa_version()} (newer releases: codexpool upgrade latest)')
+        return
+    try:
+        version = _github_json('releases/latest')['tag_name'].lstrip('v')
+    except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+        if not st.dry:
+            raise RuntimeError(f'cannot ask GitHub for the latest CLIProxyAPI release: {e}') from None
+        version = 'latest'
+    gid = gate_id((CODE_DIR / 'build' / 'codexpool_gate.go').read_bytes())
+    st.change(f'build CLIProxyAPI v{version} from its release source + build/codexpool_gate.go (gate {gid}), '
+              'run the gate self-test on a scratch port, and point bin/current at it',
+              lambda: _point_current(build(version)))
+
+
+def keychain_has_key():
+    """True, False (errSecItemNotFound only), or None when the Keychain does not answer or errs (locked, no GUI
+    session). A locked Keychain must never read as "no key": install would mint a second one. Never reads the
+    secret itself."""
+    try:
+        r = subprocess.run(['security', 'find-generic-password', '-s', KEYCHAIN_SERVICE],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return True if r.returncode == 0 else (False if r.returncode == 44 else None)
+
+
+def store_key(key):
+    # `security -i` reads the command from stdin, so the key never shows up in the process list.
+    cmd = f'add-generic-password -U -a "{getpass.getuser()}" -s "{KEYCHAIN_SERVICE}" -w "{key}"\n'
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(['security', '-i'], input=cmd, capture_output=True, text=True, timeout=30)
+    if keychain_has_key() is not True:
+        raise RuntimeError(f'could not store the management key in the Keychain ({KEYCHAIN_SERVICE}); '
+                           'unlock the login keychain and re-run')
+
+
+SECRET_LINE = re.compile(r'(?m)^(\s*secret-key:).*$')
+
+
+def render_config(key):
+    text = (CODE_DIR / 'examples' / 'config.yaml').read_text()
+    if not re.search(r'(?m)^port:', text) or not SECRET_LINE.search(text):
+        raise RuntimeError('examples/config.yaml has no port: or secret-key: line')
+    text = re.sub(r'(?m)^port:.*$', f'port: {PORT}', text, count=1).replace('127.0.0.1:8319', f'127.0.0.1:{PORT}')
+    return SECRET_LINE.sub(lambda m: f'{m.group(1)} "{key}"  # hashed by CLIProxyAPI on first start; '
+                                     f'plaintext in the Keychain ({KEYCHAIN_SERVICE})', text, count=1)
+
+
+def new_key_and_config():
+    key = secrets.token_hex(24)
+    make_dirs()
+    write_private(CONFIG, render_config(key))  # config first: a failed Keychain write then just re-runs
+    store_key(key)
+
+
+def config_from_keychain():
+    make_dirs()
+    write_private(CONFIG, render_config(mgmt_key()))
+
+
+def rekey_config():
+    key = secrets.token_hex(24)
+    text = CONFIG.read_text()
+    if not SECRET_LINE.search(text):
+        raise RuntimeError(f'{tilde(CONFIG)} has no remote-management secret-key line')
+    write_private(STATE / f'config.yaml.pre-rekey-{time.strftime("%Y%m%d-%H%M%S")}', text)  # mode 600
+    write_private(CONFIG, SECRET_LINE.sub(lambda m: f'{m.group(1)} "{key}"', text, count=1))
+    store_key(key)
+
+
+def install_key_and_config(st):
+    st.step('Management key and config.yaml')
+    have_key = keychain_has_key()
+    if have_key is None:
+        raise RuntimeError('the Keychain did not answer (locked?); unlock it (security unlock-keychain) and re-run')
+    if CONFIG.exists():
+        m = re.search(r'(?m)^port:\s*(\d+)', CONFIG.read_text())
+        if m and int(m.group(1)) != PORT:
+            msg = f'{tilde(CONFIG)} listens on {m.group(1)} but settings.json says {PORT}'
+            if not st.dry:
+                raise RuntimeError(msg + '; make them match')
+            st.fail(msg, 'make them match')
+        if have_key:
+            st.ok(f'management key in the Keychain ({KEYCHAIN_SERVICE}); {tilde(CONFIG)} present')
+        else:
+            st.change(f'mint a new management key into the Keychain ({KEYCHAIN_SERVICE}) and {tilde(CONFIG)} '
+                      f'(the file keeps only a hash of the old one; a copy goes to {tilde(STATE)})', rekey_config)
+        return
+    if have_key:
+        st.ok(f'a management key is already in the Keychain ({KEYCHAIN_SERVICE}); reusing it')
+        st.change(f'write {tilde(CONFIG)} (mode 600) from examples/config.yaml with that key and port {PORT}',
+                  config_from_keychain)
+    else:
+        st.change(f'mint a random management key into the Keychain ({KEYCHAIN_SERVICE}) and write {tilde(CONFIG)} '
+                  f'(mode 600) from examples/config.yaml: loopback, port {PORT}, api-keys: [], fill-first, '
+                  'session affinity 24h', new_key_and_config)
+
+
+def agent_templates():
+    return ((POOL_JOB, 'pool.plist.template'), (GUARD_JOB, 'guard.plist.template'),
+            (MENUBAR_JOB, 'menubar.plist.template'))
+
+
+def render_plist(label, template):
+    text = (CODE_DIR / 'launchd' / template).read_text()
+    values = {'LABEL': label, 'ROOT': str(ROOT), 'PYTHON': str(python_bin()),
+              'MENUBAR_PYTHON': str(menubar_python_bin())}
+    for key, value in values.items():
+        text = text.replace('{{' + key + '}}', xml_escape(value))
+    left = re.search(r'\{\{[A-Z_]+\}\}', text)
+    if left:
+        raise RuntimeError(f'launchd/{template}: unknown placeholder {left.group(0)}')
+    return text
+
+
+def load_agent(label, plist, text, replace):
+    LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
+    plist.write_text(text)
+    if replace and launchd_loaded(label)[0]:
+        subprocess.run(['launchctl', 'bootout', f'gui/{UID}/{label}'], capture_output=True)
+        deadline = time.time() + 10
+        while time.time() < deadline and launchd_loaded(label)[0]:
+            time.sleep(0.3)
+    if launchd_loaded(label)[0]:
+        return
+    r = subprocess.run(['launchctl', 'bootstrap', f'gui/{UID}', str(plist)], capture_output=True, text=True)
+    if r.returncode != 0 and not launchd_loaded(label)[0]:
+        raise RuntimeError(f'launchctl bootstrap {label} failed: {(r.stderr or "").strip()[-200:]}')
+
+
+def remember_agents():
+    rec = read_json(INSTALL_FILE, {})
+    rec['agents'] = sorted(set(rec.get('agents') or []) | {POOL_JOB, GUARD_JOB, MENUBAR_JOB})
+    write_json(INSTALL_FILE, rec)
+
+
+def install_agents(st):
+    st.step('launchd agents (pool, guard, menu bar)')
+    menubar_ok = True
+    mb = menubar_python_bin()
+    if python_has(mb, 'AppKit'):
+        st.ok(f'PyObjC available to {tilde(mb)}')
+    else:
+        try:
+            st.change(f'install {" and ".join(MENUBAR_PACKAGES)} into {tilde(mb)} (for the menu bar app)',
+                      pip_install, mb, MENUBAR_PACKAGES)
+        except RuntimeError as e:
+            menubar_ok = False
+            st.warn(f'menu bar app skipped: {e}', 'fix it, then re-run codexpool install (the pool works without it)')
+    for label, template in agent_templates():
+        if label == MENUBAR_JOB and not menubar_ok:
+            continue
+        plist = LAUNCH_AGENTS / f'{label}.plist'
+        text = render_plist(label, template)
+        current = plist.read_text() if plist.exists() else None
+        loaded, pid = launchd_loaded(label)
+        if current == text and loaded:
+            st.ok(f'{label} loaded' + (f' (pid {pid})' if pid else ''))
+            continue
+        what = (f'write {tilde(plist)} from launchd/{template}' if current is None else
+                f'update {tilde(plist)} from launchd/{template}' if current != text else f'{tilde(plist)} is current')
+        st.change(f'{what}; load it (launchctl bootstrap gui/{UID})', load_agent, label, plist, text,
+                  current is not None and current != text)
+        if label == POOL_JOB and not st.dry and not wait_healthy(30):
+            raise RuntimeError(f'the pool did not answer on 127.0.0.1:{PORT} within 30 s; see: codexpool logs')
+    if not st.dry:
+        remember_agents()
+
+
+def set_codex_key(key, value, cfg=CODEX_CONFIG):
+    if not cfg.exists():
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.touch(mode=0o600)
+    set_toml_top_level(key, value, cfg)
+
+
+def remove_codex_key(key, cfg=CODEX_CONFIG):
+    """--fix-config: remove a key and record that install removed it, so uninstall puts back only that."""
+    set_codex_key(key, None, cfg)
+    rec = read_json(INSTALL_FILE, {})
+    rec['removed'] = sorted(set(rec.get('removed') or []) | {key})
+    write_json(INSTALL_FILE, rec)
+
+
+def record_codex_config(cfg, top, existed):
+    """Once, before the first change: back up config.toml and record the keys install may touch."""
+    ours = f'{BASE}/v1'
+    original = {}
+    for key in CODEX_KEYS:
+        value = top.get(key)
+        original[key] = None if key == 'openai_base_url' and unquote(value) == ours else value
+    STATE.mkdir(parents=True, exist_ok=True)
+    backup = STATE / CODEX_BACKUP.format(stamp=time.strftime('%Y%m%d-%H%M%S'))
+    if existed:
+        shutil.copyfile(cfg, backup)
+        os.chmod(backup, 0o600)
+    else:
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.touch(mode=0o600)
+    rec = read_json(INSTALL_FILE, {})
+    rec.update({'installed_at': now_utc().isoformat(), 'codex_config': str(cfg), 'created_config': not existed,
+                'backup': str(backup) if existed else None, 'original': original, 'removed': []})
+    write_json(INSTALL_FILE, rec)
+
+
+def install_codex_config(st, fix):
+    st.step('Codex config')
+    cfg = CODEX_CONFIG
+    existed = cfg.exists()
+    top = toml_top_level(cfg) if existed else {}
+    ours = f'{BASE}/v1'
+    if isinstance(read_json(INSTALL_FILE, {}).get('original'), dict):
+        st.ok(f'the original Codex settings are recorded in {tilde(INSTALL_FILE)}')
+    elif existed:
+        st.change(f'back up {tilde(cfg)} to {tilde(STATE / CODEX_BACKUP.format(stamp="<time>"))} and record its '
+                  f'{", ".join(CODEX_KEYS)} in '
+                  f'{tilde(INSTALL_FILE)} (uninstall puts them back)', record_codex_config, cfg, top, existed)
+    else:
+        st.change(f'create {tilde(cfg)} (it does not exist yet)', record_codex_config, cfg, top, existed)
+    if unquote(top.get('openai_base_url')) == ours:
+        st.ok(f'openai_base_url = "{ours}"')
+    else:
+        was = f' (was {top["openai_base_url"]})' if top.get('openai_base_url') else ''
+        st.change(f'set openai_base_url = "{ours}" in {tilde(cfg)}{was}', set_codex_key, 'openai_base_url',
+                  f'"{ours}"', cfg)
+    for key, why in CONFIG_WARNINGS.items():
+        if key not in top:
+            continue
+        if fix:
+            st.change(f'remove {key} from {tilde(cfg)} ({why}; uninstall puts it back)', remove_codex_key, key, cfg)
+        else:
+            st.warn(f'{key} is set in {tilde(cfg)}: {why}',
+                    'remove it, or re-run with --fix-config (uninstall puts it back)')
+
+
+def wrapper_text():
+    return (f'#!/bin/sh\n{WRAPPER_MARK}\n'
+            f'exec {shlex.quote(str(python_bin()))} {shlex.quote(str(ROOT / "bin" / "codexpool"))} "$@"\n')
+
+
+def wrapper_is_ours():
+    if WRAPPER.is_symlink():
+        try:
+            return WRAPPER.resolve() == (ROOT / 'bin' / 'codexpool').resolve()
+        except OSError:
+            return False
+    try:
+        return WRAPPER_MARK in WRAPPER.read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def write_wrapper():
+    WRAPPER.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=WRAPPER.parent, prefix='.codexpool.', suffix='.tmp')
+    with os.fdopen(fd, 'w') as f:
+        f.write(wrapper_text())
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, WRAPPER)
+
+
+def install_command(st):
+    st.step('The codexpool command and a health check')
+    how = f'runs bin/codexpool with {tilde(python_bin())}'
+    if not (WRAPPER.exists() or WRAPPER.is_symlink()):
+        st.change(f'write {tilde(WRAPPER)} ({how})', write_wrapper)
+    elif not wrapper_is_ours():
+        st.warn(f'{tilde(WRAPPER)} exists and is not codexpool\'s; left alone',
+                f'remove it and re-run, or use {tilde(ROOT / "bin" / "codexpool")}')
+    elif not WRAPPER.is_symlink() and WRAPPER.read_text() == wrapper_text():
+        st.ok(f'{tilde(WRAPPER)}')
+    else:  # a symlink of ours runs whatever python3 is first on PATH (under launchd: the system one)
+        st.change(f'{"replace the symlink" if WRAPPER.is_symlink() else "update"} {tilde(WRAPPER)} ({how})',
+                  write_wrapper)
+    if str(WRAPPER.parent) not in os.environ.get('PATH', '').split(os.pathsep):
+        st.warn(f'{tilde(WRAPPER.parent)} is not on your PATH',
+                'echo \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc, then open a new terminal')
+    me = [str(python_bin()), str(ROOT / 'bin' / 'codexpool')]
+
+    def check():
+        subprocess.run(me + ['guard'])
+        print()
+        subprocess.run(me + ['doctor'])
+    st.change('run one guard pass, then codexpool doctor (no seats yet is expected on a fresh install)', check)
+
+
+def headline_upgrade_note():
+    """A note for the install that upgrades from a codexpool without the headline and display settings, when
+    settings.json sets neither: the menu bar's number changes meaning, from % used of the regular seats to % left
+    of all seats. That install is the one whose installed code, or whose guard's last status.json, predates them.
+    Evaluated before the code is copied; the answer survives install's re-exec under another Python."""
+    if os.environ.get('CODEXPOOL_HEADLINE_NOTE') != '1':
+        raw = read_json(SETTINGS_FILE, None)
+        if not isinstance(raw, dict) or 'headline' in raw or 'display' in raw:
+            return None
+        installed = ROOT / 'bin' / 'codexpool'
+        try:
+            old_code = CODE_DIR != ROOT.resolve() and 'used_pct_regular' not in installed.read_text()
+        except OSError:
+            old_code = False   # nothing installed yet: a first install, nothing changes meaning
+        status = read_json(STATUS_FILE, {})
+        pool = status.get('pool') if isinstance(status, dict) else None
+        if not old_code and not (isinstance(pool, dict) and 'headline' not in pool):
+            return None
+        os.environ['CODEXPOOL_HEADLINE_NOTE'] = '1'
+    return ('The menu bar now shows % left across all seats. For the old number (% used of the regular seats),\n'
+            f'set "display": "used" and "headline": "regular" in {tilde(SETTINGS_FILE)}.\n'
+            f'Restart the menu bar app to see the change: launchctl kickstart -k gui/$(id -u)/{MENUBAR_JOB}')
+
+
+def cmd_install(args):
+    """Set up everything, or repair it. Every step checks first and changes only what is missing or wrong."""
+    note = headline_upgrade_note()
+    st = Steps(args.dry_run)
+    print(f'codexpool install{" --dry-run: nothing is changed; each step says what it would do" if st.dry else ""}'
+          f'\n  home {tilde(ROOT)} · settings {tilde(SETTINGS_FILE)} · port {PORT} · '
+          f'launchd {POOL_JOB}, {GUARD_JOB}, {MENUBAR_JOB}')
+    try:
+        install_preflight(st)
+        install_toolchain(st)
+        install_build(st)
+        install_key_and_config(st)
+        install_agents(st)
+        install_codex_config(st, args.fix_config)
+        install_command(st)
+    except RuntimeError as e:
+        sys.exit(f'\ninstall stopped: {e}\nFix that and re-run codexpool install; every step is safe to repeat.')
+    if st.dry:
+        print('\nDry run: nothing was changed.'
+              + (f' The {len(st.problems)} problem(s) marked ✗ would stop a real install.' if st.problems else '')
+              + (f'\n\n{note}' if note else ''))
+        sys.exit(1 if st.problems else 0)
+    seat_files = list((ROOT / 'auth').glob('codex-*.json')) if (ROOT / 'auth').is_dir() else []
+    if seat_files:
+        print(f'\nUp to date: {len(seat_files)} seat(s) in the pool. codexpool status shows them; codexpool doctor checks '
+              f'everything.\nDocs: {tilde(ROOT / "README.md")} or {REPO_URL}')
+        if note:
+            print(f'\n{note}')
+        return
+    print('\nInstalled. The doctor check above lists 0 seats as a problem until you add one, and Codex requests\n'
+          'fail until then (codexpool uninstall --yes undoes the install). Next:\n'
+          '  1. Add each seat (browser sign-in; pick the workspace):  codexpool login "<Label>" --priority <n>\n'
+          '     Higher priority is used first. For an account your browser is not signed in to, add --no-open\n'
+          '     and open the printed link in a private window.\n'
+          '  2. Quit the Codex app fully (Cmd-Q) and reopen it, so it picks up openai_base_url.\n'
+          '  3. Optional: codexpool weight "<Label>" <n> (Plus = 1, Pro = 20), codexpool reserve "<Label>".\n'
+          '  Then: send Codex a prompt and check codexpool status (the top seat shows active) or the menu bar item.\n'
+          f'Docs: {tilde(ROOT / "README.md")} or {REPO_URL}')
+    if note:
+        print(f'\n{note}')
+
+
+def cmd_uninstall(args):
+    """Stop the agents and restore the Codex config keys recorded at install. Seats, config and data stay."""
+    rec = read_json(INSTALL_FILE, {})
+    original = rec.get('original') if isinstance(rec.get('original'), dict) else None
+    removed = set(rec.get('removed') or [])  # what --fix-config took out; keys you removed yourself stay out
+    cfg = pathlib.Path(rec.get('codex_config') or CODEX_CONFIG)
+    top = toml_top_level(cfg)
+    ours = f'{BASE}/v1'
+    restores = []  # (key, TOML literal or None)
+    if original is not None:
+        for key, value in original.items():
+            if key == 'openai_base_url':
+                if unquote(top.get(key)) == ours:  # still ours; if you changed it since, leave it
+                    restores.append((key, value))
+            elif value is not None and key in removed and key not in top:
+                restores.append((key, value))
+    elif unquote(top.get('openai_base_url')) == ours:
+        restores.append(('openai_base_url', None))
+    agents = sorted(set(rec.get('agents') or []) | {POOL_JOB, GUARD_JOB, MENUBAR_JOB},
+                    key=lambda j: (j == POOL_JOB, j))  # the pool last: the guard must not see it vanish
+    plan = [f'stop the launchd agents {", ".join(agents)} and delete their plists from {tilde(LAUNCH_AGENTS)}']
+    if restores:
+        plan.append(f'in {tilde(cfg)}: ' + '; '.join(f'remove {k}' if v is None else f'set {k} = {v} (as before install)'
+                                                    for k, v in restores))
+    else:
+        plan.append(f'leave {tilde(cfg)} as it is (nothing of codexpool\'s left in it)')
+    if wrapper_is_ours():
+        plan.append(f'remove {tilde(WRAPPER)}')
+    plan.append(f'keep {tilde(ROOT)}: seat logins, config.yaml, history and builds (codexpool install brings it all back)')
+    if not args.yes:
+        print('Uninstall would:\n' + '\n'.join(f'  {i + 1}. {p}' for i, p in enumerate(plan))
+              + '\nthen you quit and reopen the Codex app.\nRe-run with --yes.')
+        return
+    for job in agents:
+        subprocess.run(['launchctl', 'bootout', f'gui/{UID}/{job}'], capture_output=True)
+        with contextlib.suppress(FileNotFoundError):
+            (LAUNCH_AGENTS / f'{job}.plist').unlink()
+    if cfg.exists():
+        for key, value in restores:
+            set_toml_top_level(key, value, cfg)
+        if rec.get('created_config') and not cfg.read_text().strip():
+            cfg.unlink()
+    if wrapper_is_ours():
+        WRAPPER.unlink()
+    if INSTALL_FILE.exists():
+        os.replace(INSTALL_FILE, STATE / f'install.json.uninstalled-{int(time.time())}')
+    print('\n'.join(f'  ✓ {p}' for p in plan))
+    print(f'\nUninstalled. Quit and reopen the Codex app; it now talks to OpenAI directly.\n'
+          f'To remove everything: rm -rf {tilde(ROOT)} && security delete-generic-password -s {KEYCHAIN_SERVICE}\n'
+          '(this does not sign the seats out; do that at chatgpt.com if you want to).')
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    p = argparse.ArgumentParser(prog='codexpool', description=__doc__.split('\n\n')[0])
+    sub = p.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('status', help='seat table (the default)')
+    s.add_argument('--live', action='store_true', help='poll every seat now instead of the guard cache')
+    s.add_argument('--json', action='store_true')
+    s.set_defaults(fn=cmd_status)
+    sub.add_parser('doctor', help='check the whole setup and say how to fix problems').set_defaults(fn=cmd_doctor)
+    s = sub.add_parser('login', help='add or re-login a seat (browser sign-in; --device for a device code)')
+    s.add_argument('label', nargs='?', help='label for the seat')
+    s.add_argument('--device', action='store_true', help='device-code flow (needs device sign-in enabled on the account)')
+    s.add_argument('--no-open', action='store_true',
+                   help='print the sign-in link instead of opening it (open it in a private window to use another account)')
+    s.add_argument('--priority', type=int, help='higher is used first')
+    s.set_defaults(fn=cmd_login)
+    for name, fn, hlp in (('enable', cmd_enable, 'put a seat back in rotation (overrides the credit guard)'),
+                          ('disable', cmd_disable, 'take a seat out of rotation')):
+        s = sub.add_parser(name, help=hlp)
+        s.add_argument('seat')
+        s.set_defaults(fn=fn)
+    s = sub.add_parser('priority', help='change fill order (higher first)')
+    s.add_argument('seat')
+    s.add_argument('priority', type=int)
+    s.set_defaults(fn=cmd_priority)
+    s = sub.add_parser('label', help='rename a seat')
+    s.add_argument('seat')
+    s.add_argument('label')
+    s.set_defaults(fn=cmd_label)
+    s = sub.add_parser('weight', help="set a seat's share of the pool total (Plus = 1, Pro = 20)")
+    s.add_argument('seat')
+    s.add_argument('weight', type=float)
+    s.set_defaults(fn=cmd_weight)
+    s = sub.add_parser('reset', help='redeem one banked free reset for a seat (never buys one)')
+    s.add_argument('seat')
+    s.add_argument('--yes', action='store_true', help='skip the confirmation prompt')
+    s.set_defaults(fn=cmd_reset)
+    s = sub.add_parser('reserve', help='mark a seat as reserve: red when serving, left out of a "regular" headline')
+    s.add_argument('seat')
+    s.add_argument('--off', action='store_true')
+    s.set_defaults(fn=cmd_reserve)
+    s = sub.add_parser('remove', help='delete a seat file from the pool')
+    s.add_argument('seat')
+    s.add_argument('--yes', action='store_true')
+    s.set_defaults(fn=cmd_remove)
+    s = sub.add_parser('refresh', help='force a token refresh (clears auth blocks)')
+    s.add_argument('seat', nargs='?')
+    s.set_defaults(fn=cmd_refresh)
+    sub.add_parser('restart', help='restart the pool process').set_defaults(fn=cmd_restart)
+    s = sub.add_parser('logs', help='tail the pool log')
+    s.add_argument('-f', '--follow', action='store_true')
+    s.add_argument('-n', '--lines', type=int, default=60)
+    s.add_argument('--guard', action='store_true', help='tail the guard log instead')
+    s.set_defaults(fn=cmd_logs)
+    s = sub.add_parser('selftest', help='move a real thread between two seats and check it survives')
+    s.add_argument('from_seat')
+    s.add_argument('to_seat')
+    s.add_argument('--model', default='gpt-6-astra', help='model for the test turns (default: %(default)s)')
+    s.add_argument('--compact', action='store_true', help='also carry a native compaction across')
+    s.add_argument('--effort', default='high', help='reasoning effort for the test turns (must produce reasoning items)')
+    s.set_defaults(fn=cmd_selftest)
+    s = sub.add_parser('build', help='build a CLIProxyAPI release with the origin gate (no install)')
+    s.add_argument('version', help='e.g. 7.3.18 or latest')
+    s.set_defaults(fn=cmd_build)
+    s = sub.add_parser('upgrade', help='build, switch, health-check, and switch back on failure')
+    s.add_argument('version', help='e.g. 7.3.18 or latest')
+    s.add_argument('--force', action='store_true')
+    s.set_defaults(fn=cmd_upgrade)
+    s = sub.add_parser('install', help='set up or repair everything (Go, the gated build, key, launchd, Codex config)')
+    s.add_argument('--dry-run', action='store_true', help='print every step without changing anything')
+    s.add_argument('--fix-config', action='store_true',
+                   help='also remove model_provider / model_catalog_json from the Codex config (uninstall restores them)')
+    s.set_defaults(fn=cmd_install)
+    s = sub.add_parser('uninstall', help='stop the agents and restore the Codex config (keeps seats and data)')
+    s.add_argument('--yes', action='store_true', help='do it (without --yes it only prints the plan)')
+    s.set_defaults(fn=cmd_uninstall)
+    sub.add_parser('guard', help='one guard pass (run by launchd every minute)').set_defaults(fn=cmd_guard)
+    sub.add_parser('menubar', help='SwiftBar output').set_defaults(fn=cmd_menubar)
+    args = p.parse_args(sys.argv[1:] or ['status'])
+    ensure_python(args.cmd)
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(sig, _raise_exit)  # closing the terminal or launchd stopping us still runs cleanup
+    try:
+        args.fn(args)
+    except PoolDown as e:
+        sys.exit(f'codexpool: pool not reachable on :{PORT} ({e}). Try: codexpool restart ; codexpool doctor')
+    except ApiError as e:
+        sys.exit(f'codexpool: management API error: {short(str(e), 200)}')
+    except KeyUnavailable as e:
+        sys.exit(f'codexpool: {e}\n  fix: {e.fix}')
+
+
+if __name__ == '__main__':
+    main()

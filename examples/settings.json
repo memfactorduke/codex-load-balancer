@@ -1,0 +1,13 @@
+{
+  "pool_label": "com.codexpool.pool",
+  "guard_label": "com.codexpool.guard",
+  "menubar_label": "com.codexpool.menubar",
+  "port": 8319,
+  "python": null,
+  "menubar_python": null,
+  "codex_bin": null,
+  "_headline": "What the headline % covers: \"all\" (every seat that is not off, reserve seats included, weighted by size) or \"regular\" (reserve seats left out).",
+  "headline": "all",
+  "_display": "How every number and bar reads: \"left\" (counts down from 100%, bars drain) or \"used\" (counts up from 0%, bars fill).",
+  "display": "left"
+}

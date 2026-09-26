@@ -1,0 +1,58 @@
+# codexpool: CLIProxyAPI pool of ChatGPT seats behind the Codex desktop app.
+# `codexpool install` writes ~/.codexpool/config.yaml from this file (port from settings.json, a fresh
+# management key). Owned by ~/.codexpool (see README.md): never point another tool at it or at auth/.
+# Codex reaches the pool via ~/.codex/config.toml: openai_base_url = "http://127.0.0.1:8319/v1"
+
+host: "127.0.0.1" # loopback only
+port: 8319
+remote-management:
+  allow-remote: false
+  secret-key: "<set by codexpool install>" # plaintext is hashed by CLIProxyAPI on first start; plaintext lives in the Keychain (codexpool-management-key)
+  disable-control-panel: true # no web panel downloaded from GitHub at runtime
+auth-dir: "~/.codexpool/auth" # one OAuth login per seat; only this process refreshes these tokens
+# Empty = no client auth on loopback. The Codex app sends its own ChatGPT bearer; the pool ignores it
+# and substitutes the selected seat's token. The origin gate (build/codexpool_gate.go) keeps browsers out.
+api-keys: []
+debug: false
+discovery:
+  enabled: false
+plugins:
+  enabled: false
+logging-to-file: true
+logs-max-total-size-mb: 200
+error-logs-max-files: 20
+usage-statistics-enabled: true
+proxy-url: ""
+# Forward the serving seat's x-codex-* rate-limit headers to the app.
+passthrough-headers: true
+# Seat failover: an exhausted seat (429 usage_limit_reached, always before any output) is cooled down
+# until its resets_at and the identical request is replayed on the next seat.
+request-retry: 3
+max-retry-credentials: 0
+max-retry-interval: 30
+disable-cooling: false
+save-cooldown-status: false # a restart is a clean slate
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: false # never silently swap the model you picked
+  antigravity-credits: false
+routing:
+  strategy: "fill-first" # drain seats in priority order (auth file "priority", higher first)
+  session-affinity: true # a thread stays on its seat until that seat is unavailable
+  session-affinity-ttl: "24h"
+  session-affinity-subagents: true # subagents ride their parent's seat
+# Leave the Codex payload alone: no image_generation tool injection/stripping.
+disable-image-generation: "passthrough"
+codex:
+  optimize-multi-agent-v2: true # plaintext subagent handoffs between agents
+  identity-confuse: false
+  disable-codex-cloaking: false
+  stream-bootstrap-buffering: false
+  model-level-cooling: false # usage limits are per seat, not per model
+  orphan-delegation-compatibility: false
+  response-steering: false
+
+# Models hidden from the Codex picker (and refused if requested). Exact names; hot-reloaded. None by default:
+# oauth-excluded-models:
+#   codex:
+#     - "<model name>"
