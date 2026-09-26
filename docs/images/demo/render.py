@@ -5,8 +5,9 @@ Run it with a Python that has PyObjC (the menu bar app's venv):
 
     ~/.codexpool/.venv/bin/python docs/images/demo/render.py [--app menubar/codexpool_menubar.py]
 
-The popovers come straight from the app's own `--snapshot` mode. The menu bar strip and the hero image
-reuse the app's drawing code (imported, never modified) and add only the backdrop around it.
+The popovers come straight from the app's own `--snapshot` mode, and the Settings window and Setup assistant
+from codexpool_settings.py's (with doctor.json and lanes.json from this folder). The menu bar strip and the hero
+image reuse the app's drawing code (imported, never modified) and add only the backdrop around it.
 """
 from __future__ import annotations
 
@@ -63,6 +64,25 @@ def snapshot(app_path: Path, out: Path, appearance: str, scenario: str):
                         '--history', str(history_path(scenario)), '--now', NOW],
                        check=True, stdout=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
         shutil.copyfile(shot, out)
+    print(rel(out))
+
+
+SETTINGS_SHOTS = (   # (file name, pane or Setup assistant step, appearance), all from the regular scenario
+    ('settings-overview-light', 'overview', 'light'),
+    ('settings-overview-dark', 'overview', 'dark'),
+    ('settings-seats-light', 'seats', 'light'),
+    ('setup-accounts-light', 'setup-accounts', 'light'),
+    ('setup-signin-light', 'setup-signin', 'light'),
+)
+
+
+def settings_snapshot(settings_path: Path, out: Path, pane: str, appearance: str):
+    """codexpool_settings.py's own --snapshot of one pane (it runs no command)."""
+    subprocess.run([sys.executable, str(settings_path), '--snapshot', str(out), '--pane', pane,
+                    '--appearance', appearance, '--status', str(HERE / 'status-regular.json'),
+                    '--doctor', str(HERE / 'doctor.json'), '--lanes', str(HERE / 'lanes.json'),
+                    '--history', str(history_path('regular')), '--now', NOW],
+                   check=True, stdout=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     print(rel(out))
 
 
@@ -386,6 +406,7 @@ def hero(k: Kit, out: Path):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--app', type=Path, default=REPO / 'menubar' / 'codexpool_menubar.py')
+    p.add_argument('--settings', type=Path, default=REPO / 'menubar' / 'codexpool_settings.py')
     p.add_argument('--out', type=Path, default=IMAGES)
     p.add_argument('--skip-data', action='store_true', help='render the data files already in this folder')
     args = p.parse_args()
@@ -396,6 +417,8 @@ def main():
                                        ('popover-reserve-light', 'light', 'reserve'),
                                        ('popover-used-light', 'light', 'used')):
         snapshot(args.app, args.out / f'{name}.png', appearance, scenario)
+    for name, pane, appearance in SETTINGS_SHOTS:
+        settings_snapshot(args.settings, args.out / f'{name}.png', pane, appearance)
     k = Kit(load_app(args.app))
     menubar_strip(k, args.out / 'menubar-strip.png')
     hero(k, args.out / 'hero.png')

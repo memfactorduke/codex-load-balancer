@@ -1,8 +1,17 @@
-# The menu bar app
+# The menu bar app and the Settings window
 
-A native macOS menu bar item for codexpool, written in Python with PyObjC (one file,
-[`menubar/codexpool_menubar.py`](../menubar/codexpool_menubar.py); no Xcode). `codexpool install` sets it up and
-launchd keeps it running. The design spec, for anyone changing it, is [`menubar/SPEC.md`](../menubar/SPEC.md).
+codexpool's Mac apps are written in Python with PyObjC, no Xcode: the menu bar item next to the clock
+([`menubar/codexpool_menubar.py`](../menubar/codexpool_menubar.py)), and the [Settings window](#the-settings-window)
+and [Setup assistant](#the-setup-assistant) it opens
+([`menubar/codexpool_settings.py`](../menubar/codexpool_settings.py)). `codexpool install` sets them up and launchd
+keeps the menu bar item running. The design spec, for anyone changing them, is
+[`menubar/SPEC.md`](../menubar/SPEC.md).
+
+- [What it can touch](#what-it-can-touch)
+- [The item next to the clock](#the-item-next-to-the-clock), [the popover](#the-popover) and
+  [seat actions](#seat-actions)
+- [The Settings window](#the-settings-window) and [the Setup assistant](#the-setup-assistant)
+- [Running it](#running-it), [snapshots](#snapshots), [SwiftBar or xbar instead](#swiftbar-or-xbar-instead)
 
 <p>
   <img src="images/popover-light.png" width="340" alt="The popover in light mode: 54% left this week across all seats, five seats, Work B serving">
@@ -15,7 +24,9 @@ It reads `~/.codexpool/state/status.json` (the guard rewrites it every 60 second
 chart, and `settings.json` only to find the Python that runs codexpool. The `headline` and `display` settings reach
 it through `status.json`, where the guard copies them. It never touches the Keychain, never
 calls the network and never talks to the pool's management API. Actions run the `codexpool` command in the
-background, or open Terminal for commands that need one.
+background, or open Terminal for commands that need one. The Settings window and the Setup assistant follow the
+same rules; they also read what `codexpool doctor --json`, `codexpool lane list --json` and `codexpool version`
+print.
 
 ## The item next to the clock
 
@@ -41,7 +52,8 @@ Click the item.
    says `Regular` (green), `Reserve` (red), or `All out`, `Down`, `Stale`, `No seats`, `No data` (grey). After
    you use an action, the subtitle shows its progress and result for a few seconds.
 2. **Problem banner** when something needs you: pool down (**Restart Pool**), not reporting (**Run Doctor**) or
-   no seats yet (**Add Seat…**, which opens Terminal with `codexpool login`).
+   no seats yet (**Add Account…**, which opens the [Setup assistant](#the-setup-assistant) at its Add accounts
+   step).
 3. **Headline**: the big percentage ("54% left this week · all seats") and its bar, then
    - "3 of 4 regular seats ready · reserve 66% left",
    - "Next back: Work A in 2d 7h" when a seat is out (in bold when every regular seat is out),
@@ -70,7 +82,9 @@ Click the item.
    or less, and grey for a seat that can't serve. A seat that needs a new sign-in says "Re-login needed" and shows
    the error.
 6. **Footer**: Status… (Terminal, `codexpool status --live`), Doctor, Pool log (`codexpool logs -f`), Docs (the
-   README), Refresh (runs one guard pass now), Quit, and the running CLIProxyAPI version.
+   README), Refresh (runs one guard pass now); then **Add a ChatGPT account…** (the Setup assistant's Add
+   accounts step), **Settings…** (⌘,, which also works while the popover is open), Quit, and the running
+   CLIProxyAPI version.
 
 If the popover is taller than the screen, only the seat list scrolls.
 
@@ -113,6 +127,56 @@ because a new login rewrites the seat file that holds it.
 
 After any action the app runs one guard pass, so the popover shows the effect at once.
 
+## The Settings window
+
+A window in the style of System Settings: a sidebar with the pool's number and serving seat, and six panes. It
+shows the same data as the popover, in the same colours, and every change it makes is a `codexpool` command run
+in the background, the same one you could type in a terminal.
+
+![The Settings window, Seats pane: the five seats in fill order with Work A selected, and its Name, Size, Priority, Reserve and In rotation settings, its banked reset, and buttons to sign in again or remove it](images/settings-seats-light.png)
+
+**Open it** with **Settings…** (⌘,) in the popover, or with `codexpool gui` from a terminal
+(`codexpool gui seats` opens it on a pane). Only one runs at a time: opening it again brings the open window
+forward on the pane you asked for. While it is open it has a Dock icon and a menu bar of its own, with ⌘1 to ⌘6
+for the panes. Closing the window quits it.
+
+| Pane | Shows | You can |
+|---|---|---|
+| **Overview** | The headline number and its bar, the seat new threads go to, how many regular seats are ready, the reserve, the next seat back, a banked reset you could use, the pace, and every seat with its plan, size, weekly and 5-hour bars and reset times | When the pool is down, not reporting or has no seats: Restart Pool…, Check Health or Add a ChatGPT Account… |
+| **Seats** | The seats in fill order; pick one for its settings | Rename it (`codexpool label`), set its Size (`weight`) and Priority (`priority`), switch Reserve (`reserve`, `--off`) and In rotation (`enable`, `disable`; a parked seat asks first, since it would spend credits), Redeem Reset… (`reset --yes`, after saying it spends one banked free reset and never buys one), Sign In Again… (the Setup assistant, keeping the seat's name and priority), Remove… (`remove --yes`, after a confirmation), Add Account… |
+| **Lanes** | Each [lane](LANES.md) with its effort, role and members in order, with their state and last test | Test… (confirms first, since it spends lane quota and can take minutes; the output streams into a sheet with Stop), Apply… (`lane apply`), Open Docs |
+| **General** | The menu bar settings | Numbers show Left or Used (`codexpool set display`), Headline covers All seats or Regular seats (`codexpool set headline`), Restart… the pool, Open Logs, Reopen Codex… (quits the Codex app and opens it again), open the Setup assistant |
+| **Health** | `codexpool doctor`'s report: a summary, then each check with ✓, ! or ✗ and how to fix it | Run Again, Copy Report (the full text, which stays on your Mac until you paste it) |
+| **About** | The codexpool and CLIProxyAPI versions, links to the website, source, docs and issues, the license and the disclaimer | |
+
+A change takes effect at once: the window runs one guard pass after it and shows the result inline. If a command
+the window needs is missing (an older `codexpool`), the pane says "This needs a newer codexpool" instead: run the
+installer again. The window's output goes to `~/.codexpool/logs/settings.log`.
+
+## The Setup assistant
+
+A three-step window for adding ChatGPT accounts. It opens:
+
+- by itself at the end of a first install with the one-liner, when it runs in Terminal on the Mac itself;
+- once by itself from the menu bar app, the first time it sees the pool running with no seats (it records that in
+  `state/setup-shown` and never opens on its own again);
+- from **Add a ChatGPT account…** in the popover (at step 2), **Setup Assistant…** in the Settings window's
+  menu, the General pane, or `codexpool gui setup-welcome`.
+
+1. **Welcome**: what codexpool does, and a checklist from `codexpool doctor` (pool running, Codex app pointed at
+   the pool, menu bar running), with the fix for any check that fails.
+2. **Add accounts**: the seats already in the pool, then a name field and **Get Sign-In Link**, which runs
+   `codexpool login <name> --no-open` in the background. Open the link in the browser, in a private Chrome window
+   (when Chrome is installed) or copy it; to add an account other than the one your browser is signed in to, use
+   a private window. The link is good for 5 minutes, with Try Again after that. Once you have signed in, the
+   assistant shows the seat's plan and size, and offers **Mark as Reserve** and **Add Another…**. If the browser
+   signed in to an account that is already a seat, nothing is added: it says so and gives that seat its old name
+   back.
+3. **Done**: **Quit and Reopen Codex…**, so the app goes through the pool, and where to find Settings later.
+
+`codexpool setup` is the same flow in a terminal. The README shows the Add accounts step
+([Install](../README.md#install)).
+
 ## Running it
 
 The LaunchAgent (label `menubar_label` in `settings.json`, default `com.codexpool.menubar`) runs
@@ -134,6 +198,9 @@ launchctl kickstart gui/$(id -u)/com.codexpool.menubar
 
 If the item doesn't appear, see [Troubleshooting](TROUBLESHOOTING.md#the-menu-bar-item-is-missing).
 
+The Settings window is not a LaunchAgent: the menu bar app, `codexpool gui` or the installer start it when you
+open it, with the same interpreter (`menubar_python`), and it quits when you close its last window.
+
 ## Snapshots
 
 The app can render its popover and item to PNG without showing any UI, which is how the screenshots here were
@@ -149,6 +216,20 @@ Options: `--status PATH` and `--history PATH` (default: the live files), `--now 
 (`--hover tip:headline` prints the headline's breakdown tooltip, which can't be drawn offscreen). It writes
 `OUT.png` (the popover) and `OUT-menubar.png` (the item), both at 2×. The headline and display modes come from the
 status file, as in the running app; `docs/images/demo/status-used.json` is the demo pool with `"display": "used"`.
+
+The Settings window and the Setup assistant do the same, and run no command while they do:
+
+```sh
+~/.codexpool/.venv/bin/python ~/.codexpool/menubar/codexpool_settings.py \
+    --snapshot /tmp/seats.png --pane seats --appearance light --status docs/images/demo/status-regular.json
+```
+
+`--pane` takes any pane, or a Setup assistant step (`setup-welcome`, `setup-accounts`, `setup-signin`,
+`setup-added`, `setup-again`, `setup-done`). Add `--doctor PATH` and `--lanes PATH` (the JSON that
+`codexpool doctor --json` and `codexpool lane list --json` print; demo files are in `docs/images/demo/`),
+`--history PATH` for the pace line, `--now ISO-8601` and `--height PT`. Without `--status` it renders the live
+`status.json`.
+
 To rebuild every image in `docs/images/`:
 
 ```sh

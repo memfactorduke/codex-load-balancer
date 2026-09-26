@@ -1,0 +1,19 @@
+name: Security contact request
+description: Only if the private report form is unavailable. Asks for a private channel; no details here.
+title: "Security contact request"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        First try the [private report form](https://github.com/memfactorduke/codex-load-balancer/security/advisories/new). Use this only if that page shows no form.
+
+        **This issue is public.** Don't describe the problem, name the affected part, or paste logs, output or code. The maintainer replies here with a private way to send the report. [SECURITY.md](https://github.com/memfactorduke/codex-load-balancer/blob/main/SECURITY.md) has the full policy.
+  - type: checkboxes
+    id: no-details
+    attributes:
+      label: Before you submit
+      options:
+        - label: The private report form showed no form for me.
+          required: true
+        - label: This issue contains no details of the problem.
+          required: true

@@ -6,7 +6,8 @@ Codex desktop app. The spec is ~/.codexpool/menubar/SPEC.md; the pool itself is 
 
 It reads only ~/.codexpool/state/status.json and ~/.codexpool/state/history.jsonl (plus settings.json, for the
 Python that runs codexpool): no Keychain, no network, no management API. Actions shell out to codexpool
-(non-blocking) or open Terminal.
+(non-blocking) or open Terminal. Settings… and "Add a ChatGPT account…" start the Settings window
+(codexpool_settings.py, its own process); on first run, with no Codex seats yet, the app opens its Setup assistant.
 
 Run (the LaunchAgent that `codexpool install` sets up does this, with "menubar_python" from settings.json):
     ~/.codexpool/.venv/bin/python ~/.codexpool/menubar/codexpool_menubar.py
@@ -62,6 +63,8 @@ from AppKit import (
     NSCompositingOperationSourceIn,
     NSCompositingOperationSourceOver,
     NSDeviceRGBColorSpace,
+    NSEventModifierFlagCommand,
+    NSEventModifierFlagDeviceIndependentFlagsMask,
     NSFont,
     NSFontAttributeName,
     NSFontWeightMedium,
@@ -124,6 +127,8 @@ CODEXPOOL_SCRIPT = POOL_DIR / 'bin' / 'codexpool'   # what background actions ru
 WRAPPER_MARK = '# codexpool wrapper'                # first comment line of that wrapper
 DOCS = POOL_DIR / 'README.md'                      # the local copy of the repo's README
 DOCS_URL = 'https://github.com/memfactorduke/codex-load-balancer#readme'   # when there is no local copy
+SETTINGS_SCRIPT = Path(__file__).resolve().with_name('codexpool_settings.py')   # the Settings window (own process)
+SETUP_SHOWN = POOL_DIR / 'state' / 'setup-shown'   # the first-run Setup assistant has been opened (or wasn't needed)
 
 BUNDLE_ID = 'com.codexpool.menubar'
 AUTOSAVE_NAME = 'CodexPool'
@@ -1057,6 +1062,10 @@ FOOTER_ROWS = (  # (SF Symbol, title, action)
     ('book', 'Docs', 'docs'),
     ('arrow.clockwise', 'Refresh', 'refresh'),
 )
+APP_ROWS = (     # above Quit: the Settings window and its Setup assistant (SF Symbol, title, action, shortcut hint)
+    ('person.crop.circle.badge.plus', 'Add a ChatGPT account…', 'addaccount', ''),
+    ('gearshape', 'Settings…', 'settings', '⌘,'),
+)
 
 BANNER_STATES = ('down', 'stale', 'missing', 'empty')
 ROW_PAD, ROW_GAP = 4.0, 2.0      # seat rows: inner top/bottom padding, space between rows
@@ -1205,7 +1214,7 @@ class PopoverLayout:
                     ('Run Doctor', 'doctor'))
         if m.status == 'empty':
             return ('No seats in the pool', 'The pool is running but has no seats yet.',
-                    ('Add Seat…', 'addseat'))
+                    ('Add Account…', 'addaccount'))
         body = {NO_FILE: 'There is no status file yet. The guard writes one every minute.',
                 INCOMPLETE: 'The status file is incomplete.'}.get(m.problem, f'{m.problem}.')
         return 'Pool not reporting', body, ('Run Doctor', 'doctor')
@@ -1471,6 +1480,8 @@ class PopoverLayout:
         for symbol, title, action in FOOTER_ROWS:
             y = self.footer_row(y, row_h, symbol, title, action, f)
         y = self.rule(y, 5, 5)
+        for symbol, title, action, hint in APP_ROWS:
+            y = self.footer_row(y, row_h, symbol, title, action, f, hint)
         y = self.footer_row(y, row_h, None, 'Quit', 'quit', f)
         version = self.m.version.split('-gate')[0].split('+gate')[0]
         if version:
@@ -1479,13 +1490,15 @@ class PopoverLayout:
                       width=INNER - 2, align='right')
         return y
 
-    def footer_row(self, y, row_h, symbol, title, action, f) -> float:
+    def footer_row(self, y, row_h, symbol, title, action, f, hint: str = '') -> float:
         self.region(((PAD - 8, y), (INNER + 16, row_h)), ('action', action), radius=6)
         x = PAD
         if symbol:
             self.add(draw_symbol, symbol, PAD + 8, y + row_h / 2, 13, C.label(), NSFontWeightRegular)
             x = PAD + 26
         self.text(title, x, y + (row_h - line_height(f)) / 2, f, C.label())
+        if hint:   # a menu-style shortcut, right-aligned
+            self.text(hint, PAD, y + (row_h - line_height(f)) / 2, f, C.tertiary(), width=INNER - 2, align='right')
         return y + row_h
 
 
@@ -1621,8 +1634,18 @@ class PopoverContent(NSView):
 
     @objc.python_method
     def set_handler(self, handler):
+        self._handler = handler
         for v in self.views():
             v.handler = handler
+
+    def performKeyEquivalent_(self, event):
+        """⌘, opens Settings, as in any Mac app."""
+        mods = event.modifierFlags() & NSEventModifierFlagDeviceIndependentFlagsMask
+        if mods == NSEventModifierFlagCommand and event.charactersIgnoringModifiers() == ',' and \
+                getattr(self, '_handler', None) is not None:
+            self._handler(('action', 'settings'), self, None)
+            return True
+        return objc.super(PopoverContent, self).performKeyEquivalent_(event)
 
     @objc.python_method
     def show(self, build, max_height: float | None = None, reset_scroll: bool = False):
@@ -1684,6 +1707,31 @@ def spawn(argv: list[str]) -> bool:
         return False
     threading.Thread(target=p.wait, daemon=True).start()
     return True
+
+
+def open_settings(pane: str | None = None) -> bool:
+    """Starts the Settings window (codexpool_settings.py) on `pane`, without blocking. It runs with this app's own
+    interpreter, which has PyObjC (codexpool's own Python may not), given explicitly as for every action: never
+    through PATH. A Settings window that is already open comes forward and shows the pane (it is single instance).
+    Its output goes to logs/settings.log, as with `codexpool gui`, so a traceback is never lost."""
+    if not SETTINGS_SCRIPT.exists():
+        return False
+    argv = [sys.executable, str(SETTINGS_SCRIPT)] + (['--pane', pane] if pane else [])
+    try:
+        logs = POOL_DIR / 'logs'
+        logs.mkdir(parents=True, exist_ok=True)
+        with open(logs / 'settings.log', 'ab') as log:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    except OSError:
+        return spawn(argv)   # no log (a full disk, a read-only folder): still open the window
+    threading.Thread(target=p.wait, daemon=True).start()
+    return True
+
+
+def codex_seat_count(raw: dict | None) -> int:
+    """Codex seats in a status.json (lane credentials such as xAI are listed there too, with another provider)."""
+    seats = as_list(as_dict(raw).get('seats'))
+    return sum(1 for s in seats if as_str(as_dict(s).get('provider'), 'codex') == 'codex')
 
 
 def codexpool_python() -> str:
@@ -1801,6 +1849,7 @@ class Controller(NSObject):
         self.bar_signature = None
         self.last_render = 0.0
         self.woke_at = -1e9          # time.monotonic() of the last wake from sleep
+        self.first_run_checked = False   # the first-run Setup assistant check has been made
         self.closed_at = -1e9        # time.monotonic() when the popover last started closing
         return self
 
@@ -1870,6 +1919,7 @@ class Controller(NSObject):
     @objc.python_method
     def apply(self, model: Model):
         self.model = model
+        self.first_run(model)
         sig = menubar_signature(model)
         if sig != self.bar_signature:
             self.bar_signature = sig
@@ -1879,6 +1929,23 @@ class Controller(NSObject):
             button.setToolTip_(fresh(menubar_tooltip(model)))
         if self.popover.isShown():
             self.render()
+
+    @objc.python_method
+    def first_run(self, model: Model):
+        """Once, at the first real report: a pool with no Codex seats opens the Setup assistant. Either way the
+        decision is remembered in state/setup-shown, so the assistant never opens on its own again."""
+        if self.first_run_checked or model.status in ('missing', 'stale', 'down'):
+            return   # wait until the guard reports on a running pool
+        self.first_run_checked = True
+        if SETUP_SHOWN.exists():
+            return
+        try:
+            SETUP_SHOWN.parent.mkdir(parents=True, exist_ok=True)
+            SETUP_SHOWN.write_text(utcnow().isoformat() + '\n')
+        except OSError:
+            return
+        if codex_seat_count(self.source.raw) == 0:
+            open_settings('setup-welcome')
 
     @objc.python_method
     def max_height(self) -> float | None:
@@ -1934,7 +2001,14 @@ class Controller(NSObject):
     def run_action(self, action: str):
         terminal = {'status': cp_command('status', '--live'), 'doctor': cp_command('doctor'),
                     'log': cp_command('logs', '-f'), 'addseat': cp_command('login')}
-        if action in terminal:
+        if action in ('settings', 'addaccount'):
+            self.popover.performClose_(None)
+            if not open_settings(None if action == 'settings' else 'setup-accounts'):
+                if action == 'addaccount':   # no Settings window installed: the Terminal sign-in, as before
+                    open_in_terminal(terminal['addseat'])
+                else:
+                    self.say('Settings aren\u2019t installed; run codexpool install')
+        elif action in terminal:
             self.popover.performClose_(None)
             open_in_terminal(terminal[action])
         elif action == 'docs':

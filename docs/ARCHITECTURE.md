@@ -55,10 +55,10 @@ moves rare (a few a week). Subagents ride their parent's seat. Round-robin was r
 the next seat (`request-retry: 3`). Cooldowns are not saved across restarts, so a restart is a clean slate and
 the pool relearns from the next 429.
 
-**One OAuth login per seat, owned by the pool.** Seats are added with `codexpool login`, which runs
-CLIProxyAPI's own login flow and writes a new file into `auth/`. Only the pool refreshes these tokens. The Codex
-app keeps its own separate login (a different token family, even for the same account) for its usage meter,
-cloud tasks, plugins and sign-in.
+**One OAuth login per seat, owned by the pool.** Seats are added with `codexpool login` (the sign-in that
+`codexpool setup` and the Setup assistant also use), which runs CLIProxyAPI's own login flow and writes a new
+file into `auth/`. Only the pool refreshes these tokens. The Codex app keeps its own separate login (a
+different token family, even for the same account) for its usage meter, cloud tasks, plugins and sign-in.
 
 **codexpool never handles tokens.** Usage and reset calls go through the pool's management `api-call` endpoint
 with a `$TOKEN$` placeholder, and the pool substitutes the seat's token. codexpool reads only identity claims
@@ -124,6 +124,18 @@ interpreter, because under launchd `PATH` is `/usr/bin:/bin` and `python3` there
 actions. It never touches the Keychain, because a locked Keychain would pop password dialogs, and it never calls
 the network or the management API.
 
+**The Settings window and the Setup assistant follow the same rules.** They are one separate PyObjC process
+(`menubar/codexpool_settings.py`, single instance), started on demand by the menu bar app, `codexpool gui` or
+`install.sh`. They read `status.json` and `history.jsonl` (through the menu bar app's own parsing code) and the
+JSON that `codexpool doctor --json`, `codexpool lane list --json` and `codexpool version` print, and change
+things only by running `codexpool` commands in the background. Every action in a window is therefore also a
+terminal command, and the CLI stays the one place that changes state.
+
+**The one-line installer is a bootstrap.** `install.sh` checks the Mac, finds or gets a Python 3.11+ (through uv,
+after asking), downloads a release's source and hands over to `bin/codexpool install`, then opens the Setup
+assistant. The install logic lives only in `bin/codexpool`, so the one-liner, a clone and a re-run for an upgrade
+all take the same checked, repeatable steps.
+
 ## Seat state model
 
 CLIProxyAPI's structured `cooldowns[]` view decides a seat's state, not regexes over error messages:
@@ -154,6 +166,77 @@ the login (`plus` 1, `prolite` and `self_serve_business_prolite` 5, `pro` 20, an
 `history.jsonl` records both figures (`all`, and `used` for the regular seats) whatever the settings, so switching
 `headline` keeps the chart's history.
 
+## Lanes
+
+Lanes let the Codex main agent spawn subagents on models from other providers. The pool serves each lane under
+its own alias from an ordered list of members, each one provider and one model. They are optional; how to use
+them is in [LANES.md](LANES.md).
+
+**Why payload rules instead of a proxy.** Lane models need a few request changes: the lane's reasoning effort,
+and for xAI, integer types for four tool arguments that xAI otherwise fills with floats (`30000.0`) and Codex
+rejects. A proxy in front of the pool would put custom code in every seat request, which is exactly what
+invariant 1 rules out, because proxies that rewrite Codex payloads break on Codex updates. CLIProxyAPI's payload
+rules make these changes inside the pool, declaratively. Each rule names only a lane's own aliases, with a
+protocol (`codex` for xAI, `meta` for bridge members), so no seat request can match one: lane names are unique,
+`lane apply` refuses one the pool already serves (doctor checks the same), and `lane test` refuses a member
+alias the same way before it offers one. The type rule changes a field only where it is currently `"number"`,
+so if Codex reshapes its tools the rule stops matching rather than corrupting them. The worst a Codex update can
+do is break a lane, never a seat.
+
+**Why the bridge sits behind the pool.** Some providers speak the OpenAI Responses API but not Codex's dialect
+of it: namespaced and custom tools, agent-message items, compaction triggers, a required session header. The
+adapter for them, `lanes/bridge.py`, is a `meta-api-key` upstream of the pool, not a proxy in front of it. It
+only sees requests the pool has already routed to a lane member, and the pool keeps doing for lanes what it
+does for seats: priority, cooldowns, session affinity and failover. Each member gets its own base URL on the
+bridge (`/lane/<lane>/<id>/v1`), so each is a distinct credential with its own priority and cooldown. The
+provider key stays in the bridge; `config.yaml` holds only the bridge key, which admits the pool. The bridge
+reports provider limits as the quota-shaped 429 with `resets_at` that the pool already treats as a credential
+cooldown. Like the pool, it is loopback-only and refuses browser origins; it also requires its key (only
+`GET /healthz`, a list of model ids, skips these checks), and it never logs content.
+
+**Why compaction checkpoints are sealed.** Bridge providers have no compaction of their own, so the bridge
+answers Codex's inline compaction trigger with a model-written summary, returned as a compaction item. It signs
+the item with HMAC under a local seal key, so that on later requests it can tell its own checkpoints from
+anything else in the thread: a checkpoint from another provider is dropped, and a tampered one is refused. The
+seal authenticates; it doesn't encrypt.
+
+**Why role files turn off apps.** The pool advertises lane models without tool search or code mode, so Codex
+sends every ChatGPT connector's tool schema inline, about 130k input tokens on each child request.
+`apps = false` in the lane's role file cut a child request from about 156k tokens to about 28k in testing, and
+a role file's config applies to the child only, so the main agent keeps its connectors. The same role file tells the
+child to edit files through `apply_patch` in the shell, because Codex gives lane models no `apply_patch` tool.
+
+**Why a block in `~/.codex/AGENTS.md`.** The main agent has to know which lanes exist, what each is for and how
+to spawn one. The block is generated from `lanes.json` along with the role files, so the two can't drift apart.
+It and the role files name models, which invariant 10 otherwise forbids: a lane's instructions are only useful
+if they say what the lane runs.
+
+**Priority and fallback.** The pool chooses among a lane's members the way it chooses seats: fill-first by
+credential priority, with session affinity. The xAI login keeps its own priority, 0, and serves every lane with
+an xAI member (at most one per lane). Each bridge member gets a priority from its position relative to the xAI
+member, 10 per position above 0 if it comes before and 10 per position below 0 if it comes after (without an
+xAI member, 10·n for the first of n and 10 less for each next). A member that answers a quota 429 is cooled
+until its `resets_at` and the same request is replayed on the next member, inside the request; this was tested
+live in both directions. A child thread stays on the member serving it. Lane aliases exist only on lane
+credentials, so a lane never falls back to a seat and a seat never serves a lane.
+
+**Why member aliases exist only during a lane test.** `lane test` has to pin one member, and the pool pins by
+model name, so each member has an alias of its own, `<lane>-<id>`. Offered all the time, those aliases put every
+member in the Codex model picker next to its lane, and a thread started on one is pinned to that member, without
+the lane's fallback. So `lane apply` renders only the lane alias, one picker entry per lane, and `lane test` adds
+the member aliases to the block while it runs and withdraws them in its cleanup, which also runs on Ctrl-C,
+SIGTERM and SIGHUP. A test that is killed outright can still leave them behind; doctor warns about that, and
+`lane apply` removes them. A member's display name ends in "only", so a leftover stands out in the picker. The
+xAI alias entry for a lane carries the same display name as the lane's bridge entries: when two providers offer
+one alias, the picker takes the name of whichever registered last, so with different names the lane's label
+changed with provider load order.
+
+**One source, rendered.** Lanes are defined in one file, `~/.codexpool/lanes.json`. `codexpool lane apply`
+renders everything else from it, deterministically: a marked block in `config.yaml`, `lanes/bridge.json` and the
+bridge's launchd job, role files, the `AGENTS.md` block. `codexpool doctor` compares what is on disk with a
+fresh render. Generated files carry a marker; apply refuses to overwrite a file without it, and refuses to merge
+its pool sections with top-level ones the user wrote, rather than guess.
+
 ## Known limits
 
 - **Terms of service.** OpenAI's terms prohibit circumventing usage limits, and every seat is used from one IP
@@ -164,3 +247,5 @@ the login (`plus` 1, `prolite` and `self_serve_business_prolite` 5, `pro` 20, an
 - **Attestation.** `x-oai-attestation` is not forwarded for pooled requests. It has not mattered so far.
 - **Shared Macs.** Any non-browser process on the machine, including other users', can use the pool on loopback.
 - **Platform.** macOS only; developed on Apple Silicon, Intel untested.
+- **Lanes.** Bridge members re-reason every turn, and a lane thread that changes provider loses the other
+  provider's compaction checkpoint and reasoning. See [LANES.md](LANES.md#known-limits).

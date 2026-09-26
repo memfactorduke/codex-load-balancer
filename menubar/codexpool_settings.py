@@ -1,0 +1,3142 @@
+#!/usr/bin/env python3
+"""codexpool Settings window and Setup assistant.
+
+A native macOS window (Python + PyObjC/AppKit) in the style of System Settings: a sidebar and a content pane
+(Overview, Seats, Lanes, General, Health, About), plus a Setup assistant that adds ChatGPT accounts. It runs as
+its own process, started by the menu bar app ("Settings…", "Add a ChatGPT account…") or by the installer. The
+spec is the GUI section of menubar/SPEC.md.
+
+Same rules as the menu bar app: no Keychain, no network, no management API. It reads
+~/.codexpool/state/status.json (parsed by the menu bar app's own code, imported from codexpool_menubar.py) and the
+JSON that `codexpool doctor --json`, `codexpool lane list --json` and `codexpool version` print. Every change is a
+`codexpool …` command run in the background, the way the menu bar app runs its actions; the main thread never
+waits for one.
+
+Run:
+    <menubar python> ~/.codexpool/menubar/codexpool_settings.py [--pane NAME]
+    NAME: overview | seats | lanes | general | health | about | setup-welcome | setup-accounts | setup-done
+
+Snapshot (no UI shown, no command run; for humans and agents checking the design, and for the docs):
+    codexpool_settings.py --snapshot OUT.png --pane NAME --appearance light|dark --status PATH
+                          [--doctor PATH] [--lanes PATH] [--now ISO-8601] [--height PT]
+    NAME also takes setup-signin (the sign-in step, with a made-up link), setup-added (a seat just added) and
+    setup-again (the browser signed in to an account that is already a seat).
+    --now defaults to the status file's generated_at, so demo data reads as fresh.
+
+Layout of this file:
+    1. Paths and constants            6. Panes: Overview, Seats, Lanes, General, Health, About
+    2. Running codexpool              7. The Settings window (sidebar + content)
+    3. Data: status, doctor, lanes    8. Setup assistant
+    4. Look: colours, the app icon    9. App controller (single instance, menus, Dock icon)
+    5. Building blocks (views)       10. Snapshot mode and main()
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import json
+import math
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.dont_write_bytecode = True   # importing the menu bar app must not leave a __pycache__ in ~/.codexpool/menubar
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import codexpool_menubar as mb   # noqa: E402  (the status model, colours and drawing primitives)
+
+import objc  # noqa: E402
+from AppKit import (  # noqa: E402
+    NSAlert,
+    NSAlertFirstButtonReturn,
+    NSAlertStyleWarning,
+    NSAppearance,
+    NSAppearanceNameAqua,
+    NSAppearanceNameDarkAqua,
+    NSApplication,
+    NSApplicationActivationPolicyProhibited,
+    NSApplicationActivationPolicyRegular,
+    NSAttributedString,
+    NSBackingStoreBuffered,
+    NSButton,
+    NSColor,
+    NSCompositingOperationSourceOver,
+    NSControlSizeSmall,
+    NSFont,
+    NSFontAttributeName,
+    NSFontWeightBold,
+    NSFontWeightMedium,
+    NSFontWeightRegular,
+    NSFontWeightSemibold,
+    NSForegroundColorAttributeName,
+    NSGradient,
+    NSGraphicsContext,
+    NSGridView,
+    NSImage,
+    NSImageSymbolConfiguration,
+    NSImageView,
+    NSLayoutAttributeCenterY,
+    NSLayoutAttributeLeading,
+    NSLayoutConstraint,
+    NSLineBreakByTruncatingMiddle,
+    NSLineBreakByTruncatingTail,
+    NSMenu,
+    NSMenuItem,
+    NSNoBorder,
+    NSPasteboard,
+    NSPasteboardTypeString,
+    NSPopUpButton,
+    NSProgressIndicator,
+    NSProgressIndicatorStyleSpinning,
+    NSRunningApplication,
+    NSScrollView,
+    NSSegmentedControl,
+    NSShadow,
+    NSStackView,
+    NSStringDrawingUsesLineFragmentOrigin,
+    NSStepper,
+    NSSwitch,
+    NSTextAlignmentCenter,
+    NSTextAlignmentRight,
+    NSTextField,
+    NSTextFieldRoundedBezel,
+    NSTextView,
+    NSToolbar,
+    NSView,
+    NSVisualEffectBlendingModeBehindWindow,
+    NSVisualEffectMaterialSidebar,
+    NSVisualEffectStateFollowsWindowActiveState,
+    NSVisualEffectView,
+    NSViewHeightSizable,
+    NSWindow,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskFullSizeContentView,
+    NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskResizable,
+    NSWindowStyleMaskTitled,
+    NSWindowTitleHidden,
+    NSWindowToolbarStyleUnified,
+    NSWorkspace,
+)
+from AppKit import NSClipView, NSCursor, NSTerminateLater, NSTerminateNow  # noqa: E402
+from Foundation import (  # noqa: E402
+    NSAffineTransform,
+    NSBundle,
+    NSDistributedNotificationCenter,
+    NSEdgeInsets,
+    NSObject,
+    NSPointInRect,
+    NSProcessInfo,
+    NSRunLoop,
+    NSRunLoopCommonModes,
+    NSTimer,
+)
+from PyObjCTools import AppHelper  # noqa: E402
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 1. Paths and constants
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+POOL_DIR = mb.POOL_DIR
+STATE_DIR = POOL_DIR / 'state'
+PID_FILE = STATE_DIR / 'settings.pid'         # single instance: a locked file holding the running pid
+REQUEST_FILE = STATE_DIR / 'settings-request' # the pane a second launch asked for (also sent as a notification)
+SETUP_SHOWN = STATE_DIR / 'setup-shown'       # written by the menu bar app when it opens the assistant on first run
+LOGS_DIR = POOL_DIR / 'logs'
+
+BUNDLE_ID = 'com.codexpool.settings'
+SHOW_NOTE = 'com.codexpool.settings.show'     # a second launch asks the first to show a pane (object: the pane)
+CODEX_BUNDLE = 'com.openai.codex'
+CHROME_BUNDLE = 'com.google.Chrome'
+
+REPO_URL = 'https://github.com/memfactorduke/codex-load-balancer'
+SITE_URL = 'https://memfactorduke.github.io/codex-load-balancer/'
+DOCS_URL = REPO_URL + '/tree/main/docs'
+LANES_DOCS_URL = REPO_URL + '/blob/main/docs/LANES.md'
+ISSUES_URL = REPO_URL + '/issues/new/choose'
+
+LOGIN_TTL_S = 300          # sign-in links expire; the assistant counts down and offers Try Again
+NOTE_S = 8                 # how long a success note stays
+POLL_EVERY_S = 10          # how often the status file is checked
+REOPEN_TIMEOUT_S = 20      # how long Codex gets to quit before we give up
+QUIT_WAIT_S = 45           # how long quitting waits for a sign-in that is finishing (codexpool gives the pool 20 s)
+
+PANES = ('overview', 'seats', 'lanes', 'general', 'health', 'about')
+SETUP_PANES = ('setup-welcome', 'setup-accounts', 'setup-signin', 'setup-added', 'setup-again', 'setup-done')
+
+WIN_W, WIN_H, MIN_H = 820.0, 640.0, 480.0
+SIDEBAR_W = 220.0
+CONTENT_W = WIN_W - SIDEBAR_W
+MARGIN = 24.0                       # content side margin
+GROUP_W = CONTENT_W - 2 * MARGIN    # width of every section
+BAR_H = 52.0                        # the toolbar band (traffic lights, pane title)
+ROW_X = 12.0                        # horizontal padding inside a group row
+RADIUS = 10.0                       # group corner radius
+
+SETUP_W, SETUP_H = 640.0, 560.0
+SETUP_BODY_W = SETUP_W - 2 * 56.0
+
+DEMO_VERSION = '1.0.0'
+DEMO_SIGNIN_URL = ('https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_demo'
+                   '&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=demo')
+
+SNAPSHOT = False           # set in snapshot mode: nothing may run a command, open a URL or touch a file
+
+S = mb.fresh               # every str handed to AppKit goes through this (see codexpool_menubar.fresh)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 2. Running codexpool: in the background, never on the main thread
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+NEWER = 'This needs a newer codexpool. Run the installer again to update it, then try again.'
+
+
+@dataclass
+class Result:
+    args: list
+    code: int
+    out: str
+    err: str
+
+    @property
+    def ok(self) -> bool:
+        return self.code == 0
+
+    @property
+    def unknown(self) -> bool:
+        """argparse's answer to a command or flag this codexpool doesn't have yet (the NEW ones in the spec)."""
+        text = self.err + self.out
+        return self.code == 2 and ('invalid choice' in text or 'unrecognized arguments' in text)
+
+    def message(self) -> str:
+        if self.unknown:
+            return NEWER
+        lines = [ln.strip() for ln in (self.err or self.out).splitlines() if ln.strip()]
+        text = lines[-1] if lines else f'exit {self.code}'
+        return text[len('codexpool: '):] if text.startswith('codexpool: ') else text
+
+
+class Job:
+    """`codexpool <args>` in the background. on_line(line) gets each output line (stderr merged into stdout) when
+    given; on_done(Result) runs once at the end. Both run on the main thread."""
+
+    def __init__(self, args: list[str], on_done, on_line=None):
+        if SNAPSHOT:
+            raise RuntimeError('snapshot mode never runs codexpool')
+        self.args = list(args)
+        self.proc = None
+        self.stopped = False
+        stream = on_line is not None
+        script = mb.CODEXPOOL_SCRIPT
+        if not script.exists():
+            AppHelper.callAfter(on_done, Result(self.args, 127, '', f'{tilde(script)} is missing: codexpool is not '
+                                                                    'installed. Run the installer.'))
+            return
+        try:
+            self.proc = subprocess.Popen(
+                [*mb.codexpool_argv(), *self.args], cwd=str(POOL_DIR), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT if stream else subprocess.PIPE,
+                start_new_session=True, env={**os.environ, 'PYTHONUNBUFFERED': '1'})
+        except OSError as e:
+            AppHelper.callAfter(on_done, Result(self.args, 127, '', e.strerror or str(e)))
+            return
+
+        def work():
+            if stream:
+                lines = []
+                for raw in self.proc.stdout:
+                    line = raw.decode('utf-8', 'replace').rstrip('\n')
+                    lines.append(line)
+                    AppHelper.callAfter(on_line, line)
+                self.proc.wait()
+                out, err = '\n'.join(lines), ''
+            else:
+                o, e = self.proc.communicate()
+                out, err = o.decode('utf-8', 'replace'), e.decode('utf-8', 'replace')
+            AppHelper.callAfter(on_done, Result(self.args, self.proc.returncode, out, err))
+        threading.Thread(target=work, daemon=True).start()
+
+    def stop(self):
+        """Stops the command and everything it started (its own process group)."""
+        self.stopped = True
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
+def open_thing(target: str, *extra: str):
+    """`open` a URL, a folder or an app, without blocking."""
+    if SNAPSHOT:
+        return
+    mb.spawn(['/usr/bin/open', *extra, target])
+
+
+def open_private_chrome(url: str):
+    """A Chrome incognito window, for signing in to an account other than the browser's usual one."""
+    if not SNAPSHOT:
+        mb.spawn(['/usr/bin/open', '-na', 'Google Chrome', '--args', '--incognito', url])
+
+
+def app_installed(bundle_id: str) -> bool:
+    return NSWorkspace.sharedWorkspace().URLForApplicationWithBundleIdentifier_(bundle_id) is not None
+
+
+def copy_text(text: str):
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    pb.setString_forType_(S(text), NSPasteboardTypeString)
+
+
+def tilde(path) -> str:
+    p = str(path)
+    home = str(Path.home())
+    return '~' + p[len(home):] if p == home or p.startswith(home + '/') else p
+
+
+class CodexReopener:
+    """Quits the Codex app, waits for it to go, then opens it again (bundle id com.openai.codex)."""
+
+    def __init__(self, done):
+        self.done = done
+        self.apps = list(NSRunningApplication.runningApplicationsWithBundleIdentifier_(CODEX_BUNDLE) or [])
+        self.deadline = time.monotonic() + REOPEN_TIMEOUT_S
+        for a in self.apps:
+            a.terminate()
+        self.tick()
+
+    def tick(self):
+        if all(a.isTerminated() for a in self.apps):
+            open_thing(CODEX_BUNDLE, '-b')
+            self.done(True, 'Codex reopened')
+        elif time.monotonic() > self.deadline:
+            self.done(False, 'Codex did not quit. Quit it yourself, then open it again.')
+        else:
+            AppHelper.callLater(0.4, self.tick)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 3. Data: status.json (the menu bar app's model), doctor --json, lane list --json, version
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class Check:
+    status: str          # ok | warn | fail
+    text: str
+    fix: str
+
+
+@dataclass
+class Doctor:
+    ok: bool
+    problems: int
+    warnings: int
+    sections: list = field(default_factory=list)   # [(title, [Check])]
+
+
+def parse_doctor(d) -> Doctor | None:
+    d = mb.as_dict(d)
+    if 'sections' not in d:
+        return None
+    sections = []
+    for s in mb.as_list(d.get('sections')):
+        s = mb.as_dict(s)
+        checks = []
+        for c in mb.as_list(s.get('checks')):
+            c = mb.as_dict(c)
+            status = mb.as_str(c.get('status')).lower()
+            checks.append(Check(status if status in ('ok', 'warn', 'fail') else 'warn', mb.as_str(c.get('text')),
+                                mb.as_str(c.get('fix'))))
+        sections.append((mb.as_str(s.get('title'), 'Checks'), checks))
+    fails = sum(1 for _, cs in sections for c in cs if c.status == 'fail')
+    warns = sum(1 for _, cs in sections for c in cs if c.status == 'warn')
+    problems = int(mb.as_num(d.get('problems'), fails) or 0)
+    warnings = int(mb.as_num(d.get('warnings'), warns) or 0)
+    ok = d.get('ok') is True if isinstance(d.get('ok'), bool) else problems == 0
+    return Doctor(ok, problems, warnings, sections)
+
+
+@dataclass
+class LaneTest:
+    ok: bool
+    when: dt.datetime | None
+    reason: str
+
+
+@dataclass
+class Member:
+    id: str
+    provider: str
+    model: str
+    name: str
+    state: str
+    test: LaneTest | None
+
+
+@dataclass
+class Lane:
+    name: str
+    effort: str
+    role: str
+    members: list
+
+
+def parse_lanes(d) -> list | None:
+    d = mb.as_dict(d)
+    if 'lanes' not in d:
+        return None
+    lanes = []
+    for x in mb.as_list(d.get('lanes')):
+        x = mb.as_dict(x)
+        members = []
+        for m in mb.as_list(x.get('members')):
+            m = mb.as_dict(m)
+            t = m.get('last_test')
+            test = LaneTest(t.get('ok') is True, mb.parse_time(t.get('when')), mb.as_str(t.get('reason'))) \
+                if isinstance(t, dict) else None
+            members.append(Member(mb.as_str(m.get('id')), mb.as_str(m.get('provider')), mb.as_str(m.get('model')),
+                                  mb.as_str(m.get('name')) or mb.as_str(m.get('model')) or mb.as_str(m.get('id')),
+                                  mb.as_str(m.get('state'), 'unknown'), test))
+        lanes.append(Lane(mb.as_str(x.get('name'), 'lane'), mb.as_str(x.get('effort')), mb.as_str(x.get('role')),
+                          members))
+    return lanes
+
+
+def parse_json_output(text: str):
+    """The JSON a codexpool command printed (tolerating a line of preamble before it)."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        i = text.find('{')
+        if i > 0:
+            try:
+                return json.loads(text[i:])
+            except ValueError:
+                pass
+    return None
+
+
+class Store:
+    """What the window shows. status.json and history.jsonl (the pace line) come through the menu bar app's
+    DataSource (same parsing, same stale/down handling); doctor, lanes and version come from codexpool commands, or
+    from fixture files in snapshot mode. Listeners get called with what changed: 'status', 'doctor', 'lanes' or
+    'version'."""
+
+    def __init__(self, status_path: Path = mb.STATUS_FILE, now: dt.datetime | None = None,
+                 history_path: Path | None = mb.HISTORY_FILE):
+        self.source = mb.DataSource(status_path, history_path)
+        self.now = now
+        self.doctor: Doctor | None = None
+        self.doctor_note = ''
+        self.doctor_at: dt.datetime | None = None
+        self.doctor_busy = False
+        self.lanes: list | None = None
+        self.lanes_note = ''
+        self.lanes_busy = False
+        self.version: str | None = None
+        self.version_note = ''
+        self.listeners: list = []
+
+    def clock(self) -> dt.datetime:
+        return self.now or mb.utcnow()
+
+    def model(self) -> mb.Model:
+        return self.source.model(self.now)
+
+    def notify(self, what: str):
+        for fn in list(self.listeners):
+            fn(what)
+
+    def poll(self, force: bool = False):
+        if self.source.poll(force=force):
+            self.notify('status')
+
+    # -- command-backed data (live) --------------------------------------------------------------------
+    def fetch_doctor(self):
+        if self.doctor_busy:
+            return
+        self.doctor_busy = True
+        self.notify('doctor')
+
+        def done(r: Result):
+            self.doctor_busy = False
+            data = parse_doctor(parse_json_output(r.out)) if r.out.strip() else None
+            if data is not None:   # doctor exits non-zero when it finds problems; the JSON is still the answer
+                self.doctor, self.doctor_note, self.doctor_at = data, '', self.clock()
+            else:
+                self.doctor_note = r.message() if not r.ok or r.unknown else 'codexpool doctor printed no report.'
+            self.notify('doctor')
+        Job(['doctor', '--json'], done)
+
+    def fetch_lanes(self):
+        if self.lanes_busy:
+            return
+        self.lanes_busy = True
+        self.notify('lanes')
+
+        def done(r: Result):
+            self.lanes_busy = False
+            data = parse_lanes(parse_json_output(r.out)) if r.ok else None
+            if data is not None:
+                self.lanes, self.lanes_note = data, ''
+            else:
+                self.lanes_note = r.message() if not r.ok else 'codexpool lane list printed no lanes.'
+            self.notify('lanes')
+        Job(['lane', 'list', '--json'], done)
+
+    def fetch_version(self):
+        def done(r: Result):
+            m = re.search(r'codexpool\s+v?(\S+)', r.out) if r.ok else None
+            self.version, self.version_note = (m.group(1), '') if m else (None, r.message())
+            self.notify('version')
+        Job(['version'], done)
+
+    # -- fixtures (snapshot) ---------------------------------------------------------------------------
+    def load_fixtures(self, doctor: Path | None, lanes: Path | None):
+        self.source.poll(force=True)
+        if doctor:
+            self.doctor = parse_doctor(json.loads(doctor.read_text()))
+            self.doctor_at = self.clock()
+        if lanes:
+            self.lanes = parse_lanes(json.loads(lanes.read_text()))
+        self.version = DEMO_VERSION
+
+
+def doctor_checklist(doc: Doctor | None, m: mb.Model):
+    """The Setup assistant's three checks: (title, status ok|warn|fail|unknown, detail)."""
+    def find(pred):
+        return [c for title, cs in (doc.sections if doc else []) for c in cs if pred(title.lower(), c)]
+
+    def verdict(checks, fallback):
+        if not checks:
+            return fallback
+        worst = 'fail' if any(c.status == 'fail' for c in checks) else \
+            'warn' if any(c.status == 'warn' for c in checks) else 'ok'
+        bad = next((c for c in checks if c.status != 'ok'), None)
+        return worst, (bad.fix or bad.text) if bad else checks[0].text
+
+    running = m.status not in ('down', 'stale', 'missing')
+    pool = verdict(find(lambda t, c: t.startswith('pool')),
+                   ('ok', 'The pool is serving') if running else ('unknown', 'codexpool doctor checks this'))
+    codex = verdict(find(lambda t, c: t.startswith('codex app')), ('unknown', 'codexpool doctor checks this'))
+    menubar = verdict(find(lambda t, c: c.text.lower().startswith('menu bar')), ('unknown', 'codexpool doctor checks this'))
+    return [('Pool running', *pool), ('Codex app pointed at the pool', *codex), ('Menu bar running', *menubar)]
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 4. Look: colours beyond the menu bar app's, and the app icon (the capsule mark)
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+_DYN: dict = {}
+
+
+def dyn(name: str, light: tuple, dark: tuple):
+    """A dynamic sRGB colour with alpha: (r, g, b, a) in 0-255 / 0-1 for each appearance."""
+    if name not in _DYN:
+        def make(c):
+            return NSColor.colorWithSRGBRed_green_blue_alpha_(c[0] / 255, c[1] / 255, c[2] / 255, c[3])
+        lc, dc = make(light), make(dark)
+
+        def provider(appearance):
+            best = appearance.bestMatchFromAppearancesWithNames_([NSAppearanceNameAqua, NSAppearanceNameDarkAqua])
+            return dc if best == NSAppearanceNameDarkAqua else lc
+        _DYN[name] = (NSColor.colorWithName_dynamicProvider_(name, provider), provider)
+    return _DYN[name][0]
+
+
+class K:
+    """Colour roles for the window (the menu bar app's mb.C covers text, bars and pills)."""
+    group = staticmethod(lambda: dyn('settings.group', (0, 0, 0, 0.032), (255, 255, 255, 0.045)))
+    group_line = staticmethod(lambda: dyn('settings.groupline', (0, 0, 0, 0.075), (255, 255, 255, 0.085)))
+    rule = staticmethod(lambda: dyn('settings.rule', (0, 0, 0, 0.085), (255, 255, 255, 0.09)))
+    select = staticmethod(lambda: NSColor.controlAccentColor().colorWithAlphaComponent_(0.14))
+    sidebar_line = staticmethod(lambda: dyn('settings.sideline', (0, 0, 0, 0.07), (0, 0, 0, 0.45)))
+
+
+ICON_TINTS = {   # sidebar icon squares: (top, bottom) of the gradient
+    'green': (0x4CD964, 0x28B14A), 'blue': (0x3D9BFF, 0x0A6CFF), 'purple': (0xC77DFF, 0x9B4DDB),
+    'grey': (0xA2A2A8, 0x7C7C82), 'teal': (0x4FC3D9, 0x1E9DB5), 'indigo': (0x7A78F0, 0x4F4CD1),
+    'orange': (0xFFB340, 0xFF8A00), 'red': (0xFF6B61, 0xE8392E),
+}
+
+
+def draw_capsule_mark(x: float, y: float, w: float, h: float, top_pct: float = 64.0, bottom_pct: float = 44.0):
+    """The logo: two stacked rounded bars (the menu bar meter), in a w x h box (flipped coordinates)."""
+    th, bh, gap = h * 0.56, h * 0.30, h * 0.14
+    track = mb.srgb(0xFFFFFF, 0.20)
+    mb.fill_rounded(((x, y), (w, th)), th / 2, track)
+    mb.fill_rounded(((x, y + th + gap), (w, bh)), bh / 2, track)
+    NSGradient.alloc().initWithStartingColor_endingColor_(mb.srgb(0x5BE37D), mb.srgb(0x2FBF57)).drawInBezierPath_angle_(
+        mb.rounded(((x, y), (max(th, w * top_pct / 100), th)), th / 2), 90)
+    NSGradient.alloc().initWithStartingColor_endingColor_(mb.srgb(0x5BE37D), mb.srgb(0x2FBF57)).drawInBezierPath_angle_(
+        mb.rounded(((x, y + th + gap), (max(bh, w * bottom_pct / 100), bh)), bh / 2), 90)
+
+
+def draw_app_icon(s: float, shadow: bool = True):
+    """The app icon at s x s pt (flipped): a dark squircle on the macOS icon grid holding the capsule mark."""
+    inset = s * 0.098
+    box = ((inset, inset * 0.9), (s - 2 * inset, s - 2 * inset))
+    r = (s - 2 * inset) * 0.225
+    if shadow:
+        NSGraphicsContext.saveGraphicsState()
+        sh = NSShadow.alloc().init()
+        sh.setShadowBlurRadius_(s * 0.03)
+        sh.setShadowOffset_((0, -s * 0.012))
+        sh.setShadowColor_(mb.srgb(0x000000, 0.35))
+        sh.set()
+        mb.fill_rounded(box, r, mb.srgb(0x1B1E26))
+        NSGraphicsContext.restoreGraphicsState()
+    NSGradient.alloc().initWithStartingColor_endingColor_(mb.srgb(0x3A4050), mb.srgb(0x14161D)).drawInBezierPath_angle_(
+        mb.rounded(box, r), 90)
+    mb.stroke_rounded(box, r, mb.srgb(0xFFFFFF, 0.10), max(0.5, s / 256))
+    (bx, by), (bw, bhh) = box
+    mw, mh = bw * 0.60, bhh * 0.34
+    draw_capsule_mark(bx + (bw - mw) / 2, by + (bhh - mh) / 2, mw, mh)
+
+
+def app_icon_image(size: float = 512.0):
+    def handler(rect):
+        draw_app_icon(size)
+        return True
+    return NSImage.imageWithSize_flipped_drawingHandler_((size, size), True, handler)
+
+
+def draw_icon_square(x: float, y: float, s: float, symbol: str, tint: str):
+    """A System Settings sidebar icon: a white glyph on a coloured rounded square."""
+    top, bottom = ICON_TINTS.get(tint, ICON_TINTS['grey'])
+    path = mb.rounded(((x, y), (s, s)), s * 0.24)
+    NSGradient.alloc().initWithStartingColor_endingColor_(mb.srgb(top), mb.srgb(bottom)).drawInBezierPath_angle_(path, 90)
+    mb.draw_symbol(symbol, x + s / 2, y + s / 2, s * 0.56, mb.srgb(0xFFFFFF), NSFontWeightSemibold,
+                   fit=(s * 0.72, s * 0.66))
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 5. Building blocks: Auto Layout helpers, labels, groups and rows, custom-drawn bits
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+class ActionTarget(NSObject):
+    """Wraps a Python callable as a control's target (action 'fire:'). Owners keep a reference."""
+    fn = None
+
+    def fire_(self, sender):
+        if self.fn is not None:
+            self.fn(sender)
+
+
+def target(fn, keep: list):
+    t = ActionTarget.alloc().init()
+    t.fn = fn
+    keep.append(t)
+    return t
+
+
+class FlippedView(NSView):
+    def isFlipped(self):
+        return True
+
+
+class FlippedClipView(NSClipView):
+    def isFlipped(self):
+        return True
+
+
+class PaintView(NSView):
+    """Draws with self.paint(width, height) in flipped coordinates, under the view's appearance. ax (a string, or
+    a callable that returns one) is what VoiceOver reads for the drawing; without it the drawing is decoration."""
+    paint = None
+    ax = None
+
+    def isFlipped(self):
+        return True
+
+    def drawRect_(self, rect):
+        if self.paint is not None:
+            size = self.bounds().size
+            self.paint(size.width, size.height)
+
+    def isAccessibilityElement(self):
+        return bool(self.ax)
+
+    def accessibilityRole(self):
+        return 'AXStaticText'
+
+    def accessibilityValue(self):
+        text = self.ax() if callable(self.ax) else self.ax
+        return S(text) if text else None
+
+
+def auto(v):
+    v.setTranslatesAutoresizingMaskIntoConstraints_(False)
+    return v
+
+
+def activate(*constraints):
+    NSLayoutConstraint.activateConstraints_(list(constraints))
+
+
+def fix(v, w=None, h=None, min_h=None):
+    if w is not None:
+        v.widthAnchor().constraintEqualToConstant_(w).setActive_(True)
+    if h is not None:
+        v.heightAnchor().constraintEqualToConstant_(h).setActive_(True)
+    if min_h is not None:
+        v.heightAnchor().constraintGreaterThanOrEqualToConstant_(min_h).setActive_(True)
+    return v
+
+
+def pin(v, parent, t=0.0, l=0.0, b=0.0, r=0.0):
+    activate(v.topAnchor().constraintEqualToAnchor_constant_(parent.topAnchor(), t),
+             v.leadingAnchor().constraintEqualToAnchor_constant_(parent.leadingAnchor(), l),
+             v.trailingAnchor().constraintEqualToAnchor_constant_(parent.trailingAnchor(), -r),
+             v.bottomAnchor().constraintEqualToAnchor_constant_(parent.bottomAnchor(), -b))
+
+
+def canvas(paint, w=None, h=None, tip: str | None = None, ax=None):
+    v = auto(PaintView.alloc().initWithFrame_(((0, 0), (w or 10, h or 10))))
+    v.paint = paint
+    v.ax = ax
+    fix(v, w, h)
+    if tip:
+        v.setToolTip_(S(tip))
+    return v
+
+
+def vstack(views, spacing: float = 6.0, full: bool = True, insets=(0, 0, 0, 0)):
+    """Views top to bottom; with full, each spans the stack's width (minus insets)."""
+    s = auto(NSStackView.stackViewWithViews_([v for v in views if v is not None]))
+    s.setOrientation_(1)
+    s.setSpacing_(spacing)
+    s.setAlignment_(NSLayoutAttributeLeading)
+    s.setEdgeInsets_(NSEdgeInsets(*insets))
+    if full:
+        for v in s.arrangedSubviews():
+            v.widthAnchor().constraintEqualToAnchor_constant_(s.widthAnchor(), -(insets[1] + insets[3])).setActive_(True)
+    return s
+
+
+def hstack(leading, trailing=(), spacing: float = 8.0, insets=(0, 0, 0, 0), min_h=None, cluster: bool = False):
+    """A row: `leading` views from the left edge, `trailing` views against the right edge, centred vertically.
+    A full-width row lets the gap between the two groups take any extra width; a cluster (a row nested in another
+    row) keeps its natural size."""
+    s = auto(NSStackView.alloc().initWithFrame_(((0, 0), (100, 20))))
+    s.setOrientation_(0)
+    s.setSpacing_(spacing)
+    s.setAlignment_(NSLayoutAttributeCenterY)
+    s.setEdgeInsets_(NSEdgeInsets(*insets))
+    leading = [v for v in leading if v is not None]
+    for v in leading:
+        s.addView_inGravity_(v, 1)
+    if not cluster:   # the one flexible thing in a row: it wants no width, so it takes whatever is left over
+        if leading:
+            s.setCustomSpacing_afterView_(0, leading[-1])
+        gap = auto(NSView.alloc().initWithFrame_(((0, 0), (0, 0))))
+        gap.widthAnchor().constraintGreaterThanOrEqualToConstant_(0).setActive_(True)
+        c = gap.widthAnchor().constraintEqualToConstant_(0)
+        c.setPriority_(1)
+        c.setActive_(True)
+        s.addView_inGravity_(gap, 1)
+    for v in trailing:
+        if v is not None:
+            s.addView_inGravity_(v, 3)
+    for v in s.views():   # NSStackView treats the top and bottom insets as optional; make them hold
+        activate(v.topAnchor().constraintGreaterThanOrEqualToAnchor_constant_(s.topAnchor(), insets[0]),
+                 s.bottomAnchor().constraintGreaterThanOrEqualToAnchor_constant_(v.bottomAnchor(), insets[2]))
+    s.setHuggingPriority_forOrientation_(750 if cluster else 1, 0)
+    if min_h:
+        fix(s, min_h=min_h)
+    return s
+
+
+def padded(v, t=0.0, l=0.0, b=0.0, r=0.0):
+    box = auto(FlippedView.alloc().initWithFrame_(((0, 0), (10, 10))))
+    box.addSubview_(v)
+    pin(v, box, t, l, b, r)
+    return box
+
+
+class WrapLabel(NSTextField):
+    """A wrapping label that measures its own text. NSTextField's own measurement ignores the 2 pt the cell
+    insets on each side, so a line that nearly fills the width is measured as one line and drawn as two."""
+
+    def intrinsicContentSize(self):
+        w = self.preferredMaxLayoutWidth()
+        if w <= 0:
+            return objc.super(WrapLabel, self).intrinsicContentSize()
+        r = self.attributedStringValue().boundingRectWithSize_options_((w - 4, 100000.0),
+                                                                       NSStringDrawingUsesLineFragmentOrigin)
+        return (min(w, math.ceil(r.size.width) + 4), math.ceil(r.size.height) + 1)
+
+    def layout(self):
+        objc.super(WrapLabel, self).layout()
+        w = self.frame().size.width
+        if 0 < w < self.preferredMaxLayoutWidth() - 0.5:   # squeezed narrower than planned: wrap to the real width
+            self.setPreferredMaxLayoutWidth_(w)
+            self.invalidateIntrinsicContentSize()
+
+
+def label(text: str, size: float = 13.0, weight=NSFontWeightRegular, color=None, mono: bool = False,
+          wrap: float | None = None, align=None, select: bool = False, middle: bool = False):
+    if wrap:
+        t = WrapLabel.wrappingLabelWithString_(S(text))
+        t.setPreferredMaxLayoutWidth_(wrap)
+    else:
+        t = NSTextField.labelWithString_(S(text))
+        t.setLineBreakMode_(NSLineBreakByTruncatingMiddle if middle else NSLineBreakByTruncatingTail)
+        t.setContentCompressionResistancePriority_forOrientation_(250, 0)
+    t.setFont_(mb.font(size, weight, mono))
+    t.setTextColor_(color if color is not None else NSColor.labelColor())
+    if align is not None:
+        t.setAlignment_(align)
+    t.setSelectable_(select)
+    return auto(t)
+
+
+def secondary(text: str, size: float = 11.0, wrap: float | None = None, **kw):
+    return label(text, size, color=NSColor.secondaryLabelColor(), wrap=wrap, **kw)
+
+
+def text_field(text: str, width: float, placeholder: str | None = None, right: bool = False):
+    """An editable field with the rounded bezel System Settings uses; it commits on Return and on leaving it."""
+    f = auto(NSTextField.textFieldWithString_(S(text)))
+    f.setBezelStyle_(NSTextFieldRoundedBezel)
+    f.cell().setSendsActionOnEndEditing_(True)
+    if placeholder:
+        f.setPlaceholderString_(S(placeholder))
+    if right:
+        f.setAlignment_(NSTextAlignmentRight)
+    fix(f, width)
+    return f
+
+
+def button(title: str, fn, keep: list, primary: bool = False, enabled: bool = True, small: bool = False):
+    b = auto(NSButton.buttonWithTitle_target_action_(S(title), target(fn, keep), 'fire:'))
+    if small:
+        b.setControlSize_(NSControlSizeSmall)
+        b.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    if primary:
+        make_primary(b)
+    b.setEnabled_(enabled)
+    return b
+
+
+def link_button(title: str, fn, keep: list, size: float = 13.0):
+    """A borderless accent-coloured text button (like a link in System Settings)."""
+    b = auto(NSButton.buttonWithTitle_target_action_(S(title), target(fn, keep), 'fire:'))
+    b.setBordered_(False)
+    b.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(
+        S(title), {NSFontAttributeName: mb.font(size, NSFontWeightMedium if size < 13 else NSFontWeightRegular),
+                   NSForegroundColorAttributeName: NSColor.linkColor()}))
+    return b
+
+
+def make_primary(b):
+    """The default button (Return). A window that is not key draws it grey, and snapshots have no key window,
+    so there it is tinted by hand to look the way it does in use."""
+    b.setKeyEquivalent_('\r')
+    if SNAPSHOT:
+        b.setBezelColor_(NSColor.controlAccentColor())
+        b.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(
+            b.title(), {NSFontAttributeName: b.font(), NSForegroundColorAttributeName: NSColor.whiteColor()}))
+
+
+def spinner(small: bool = True):
+    size = 16.0 if small else 32.0
+    p = auto(NSProgressIndicator.alloc().initWithFrame_(((0, 0), (size, size))))
+    p.setStyle_(NSProgressIndicatorStyleSpinning)
+    p.setIndeterminate_(True)
+    if small:
+        p.setControlSize_(NSControlSizeSmall)
+    p.setDisplayedWhenStopped_(SNAPSHOT)   # snapshots can't animate; they show the spinner's still frame
+    if not SNAPSHOT:
+        p.startAnimation_(None)
+    fix(p, size, size)
+    return p
+
+
+def symbol_view(name: str, size: float, color, weight=NSFontWeightRegular, box: float | None = None):
+    img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+    if img is None:
+        img = NSImage.imageWithSystemSymbolName_accessibilityDescription_('circle', None)
+    img = img.imageWithSymbolConfiguration_(NSImageSymbolConfiguration.configurationWithPointSize_weight_(size, weight))
+    v = auto(NSImageView.imageViewWithImage_(img))
+    v.setContentTintColor_(color)
+    w, h = img.size()
+    fix(v, box or w, box or h)
+    return v
+
+
+def pill(text: str, fg, bg):
+    """A capsule like the popover's state pills; fg and bg are colour functions (resolved when drawn)."""
+    return canvas(lambda w, h: mb.draw_pill(text, 0, 0, fg(), bg()), mb.pill_width(text), mb.PILL_H, ax=text)
+
+
+def plan_pill(text: str):
+    return pill(text, mb.C.secondary, lambda: mb.C.wash(0.07))
+
+
+def dot(color_fn, d: float = 8.0, ring: bool = False):
+    def paint(w, h):
+        if ring:
+            mb.stroke_rounded(((w / 2 - d / 2, h / 2 - d / 2), (d, d)), d / 2, color_fn(), 1.5)
+        else:
+            mb.fill_circle(w / 2, h / 2, d / 2, color_fn())
+    return canvas(paint, d + 2, d + 2)
+
+
+class GroupView(NSView):
+    """A System Settings group: a rounded box whose rows are separated by inset hairlines."""
+    rows = ()
+    rules = True     # hairlines between rows
+
+    def isFlipped(self):
+        return True
+
+    def drawRect_(self, rect):
+        b = self.bounds()
+        mb.fill_rounded(b, RADIUS, K.group())
+        mb.stroke_rounded(b, RADIUS, K.group_line(), 1.0)
+        for v in self.rows[1:] if self.rules else ():
+            if v.isHidden():
+                continue
+            r = v.convertRect_toView_(v.bounds(), self)
+            y = round(r.origin.y)
+            mb.fill_rect(((ROW_X, y - 0.5), (b.size.width - 2 * ROW_X, 1.0)), K.rule())
+
+
+def group(rows, width: float = GROUP_W, rules: bool = True):
+    g = auto(GroupView.alloc().initWithFrame_(((0, 0), (width, 40))))
+    rows = [r for r in rows if r is not None]
+    g.rows = rows
+    g.rules = rules
+    s = vstack(rows, spacing=0)
+    g.addSubview_(s)
+    pin(s, g)
+    return g
+
+
+def row_text(title: str, subtitle: str | None, width: float, title_color=None, title_weight=NSFontWeightRegular):
+    views = [label(title, 13, title_weight, color=title_color)]
+    if subtitle:
+        views.append(secondary(subtitle, 11, wrap=width))
+    return vstack(views, spacing=2, full=False)
+
+
+def form_row(title: str, subtitle: str | None = None, accessory=(), leading=None, width: float = GROUP_W,
+             title_color=None, min_h: float = 40.0):
+    """label (+ subtitle) on the left, controls on the right."""
+    accessory = [a for a in (accessory if isinstance(accessory, (list, tuple)) else [accessory]) if a is not None]
+    used = sum(a.fittingSize().width + 8 for a in accessory) + (leading.fittingSize().width + 10 if leading else 0)
+    text = row_text(title, subtitle, max(120.0, width - 2 * ROW_X - used - 12), title_color)
+    return hstack([leading, text] if leading else [text], accessory, spacing=10,
+                  insets=(8, ROW_X, 8, ROW_X), min_h=min_h)
+
+
+def section(body, header: str | None = None, footer: str | None = None, header_right=None, width: float = GROUP_W):
+    parts = []
+    if header or header_right is not None:
+        parts.append(hstack([label(header or '', 13, NSFontWeightSemibold)],
+                            [header_right] if header_right is not None else [], insets=(0, 4, 0, 2)))
+    parts.append(body)
+    if footer:
+        parts.append(padded(secondary(footer, 11, wrap=width - 8), 0, 4, 0, 4))
+    return vstack(parts, spacing=7)
+
+
+def note_row(note, width: float = GROUP_W):
+    """Feedback for the last action: ('busy'|'ok'|'error', text)."""
+    if not note:
+        return None
+    kind, text = note
+    icon = spinner() if kind == 'busy' else symbol_view(
+        'checkmark.circle.fill' if kind == 'ok' else 'exclamationmark.triangle.fill', 13,
+        mb.C.green_text() if kind == 'ok' else mb.C.orange_text(), NSFontWeightMedium)
+    color = NSColor.secondaryLabelColor() if kind == 'busy' else (
+        NSColor.labelColor() if kind == 'ok' else mb.C.orange_text())
+    return hstack([icon, label(text, 12, color=color, wrap=width - 2 * ROW_X - 30)], spacing=8,
+                  insets=(9, ROW_X, 9, ROW_X), min_h=36)
+
+
+def empty_state(symbol: str, tint: str, title: str, body: str, actions=(), width: float = GROUP_W):
+    icon = canvas(lambda w, h: draw_icon_square(0, 0, 44, symbol, tint), 44, 44)
+    parts = [icon, label(title, 15, NSFontWeightSemibold, align=NSTextAlignmentCenter),
+             secondary(body, 12, wrap=min(420.0, width - 60), align=NSTextAlignmentCenter)]
+    if actions:
+        parts.append(hstack(list(actions), spacing=8, cluster=True))
+    s = auto(NSStackView.stackViewWithViews_(parts))
+    s.setOrientation_(1)
+    s.setAlignment_(9)   # centre X
+    s.setSpacing_(8)
+    s.setCustomSpacing_afterView_(12, icon)
+    if actions:
+        s.setCustomSpacing_afterView_(14, parts[2])
+    s.setEdgeInsets_(NSEdgeInsets(26, 20, 24, 20))
+    return group([s], width)
+
+
+# -- seat bits shared by Overview, Seats and the Setup assistant -----------------------------------------
+
+def state_style(seat: mb.Seat, m: mb.Model):
+    """(text, fg, bg or None) for a seat's state, as the popover shows it: capsules for Serving, Out, Parked and
+    Blocked; plain text for Ready and Off."""
+    text = mb.STATE_PILL.get(seat.state, seat.state.title() or 'Unknown')
+    if seat.state in (mb.READY, 'disabled') or text not in ('Serving', 'Out', 'Parked', 'Blocked'):
+        return text, (mb.C.tertiary if seat.state == 'disabled' else mb.C.secondary), None
+    if not m.reporting or text == 'Out' or (seat.serving and not m.serving_now):
+        return text, mb.C.secondary, lambda: mb.C.wash(0.07)
+    if seat.serving:
+        if seat.reserve:
+            return text, mb.C.red_text, lambda: mb.C.soft(mb.C.red())
+        return text, mb.C.green_text, lambda: mb.C.soft(mb.C.green())
+    if seat.state == 'parked':
+        return text, mb.C.orange_text, lambda: mb.C.soft(mb.C.orange())
+    return text, mb.C.red_text, lambda: mb.C.soft(mb.C.red())
+
+
+def state_view(seat: mb.Seat, m: mb.Model):
+    text, fg, bg = state_style(seat, m)
+    if bg is None:
+        return label(text, 12, NSFontWeightMedium, color=fg())
+    return pill(text, fg, bg)
+
+
+def seat_dot_color(seat: mb.Seat, m: mb.Model):
+    if not m.reporting:
+        return mb.C.grey
+    if seat.serving:
+        return mb.C.red if seat.reserve else mb.C.green
+    return {'ready': mb.C.green, 'parked': mb.C.orange, 'blocked': mb.C.red}.get(seat.state, mb.C.grey)
+
+
+def seat_title_row(seat: mb.Seat, m: mb.Model, name_weight=NSFontWeightSemibold, resets: bool = True):
+    """dot · name · plan · Reserve ...................... ↺ n · state"""
+    dim = not m.reporting or seat.unavailable
+    left = [dot(seat_dot_color(seat, m), ring=seat.state == 'disabled' and m.reporting),
+            label(seat.label, 13, name_weight, color=NSColor.secondaryLabelColor() if dim else None)]
+    if seat.plan:
+        left.append(plan_pill(seat.plan))
+    if seat.reserve:
+        hot = seat.serving and m.serving_now
+        left.append(pill('Reserve', mb.C.red_text if hot else mb.C.secondary,
+                         (lambda: mb.C.soft(mb.C.red())) if hot else (lambda: mb.C.wash(0.07))))
+    right = []
+    if resets and seat.resets and m.reporting:
+        blue = seat.unavailable and seat.state != 'disabled'
+        color = mb.C.blue_text() if blue else NSColor.secondaryLabelColor()
+        right.append(hstack([symbol_view('arrow.counterclockwise', 10, color, NSFontWeightSemibold),
+                             label(str(seat.resets), 12, NSFontWeightMedium, color=color)], spacing=3,
+                            cluster=True))
+        right[-1].setToolTip_(S(f'{seat.resets} banked free reset{"s" if seat.resets != 1 else ""}'
+                                + (f', soonest expires {mb.fmt_day(seat.reset_expiry)}' if seat.reset_expiry else '')))
+    right.append(state_view(seat, m))
+    return left, right
+
+
+def window_line(m: mb.Model, seat: mb.Seat, win: mb.Window | None, name: str) -> str:
+    used = win.used if win else None
+    parts = [f'{mb.fmt_pct(m.shown(used))} {m.word}']
+    reset = win.reset_at if win else None
+    out = seat.state in mb.OUT_STATES + ('parked',) and (used or 0) >= 99.5
+    back = seat.until or reset
+    if out and back and back > m.now:
+        parts.append(f'back in {mb.fmt_span((back - m.now).total_seconds())}')
+    elif reset and reset > m.now:
+        parts.append(f'resets in {mb.fmt_span((reset - m.now).total_seconds())}')
+    return ' · '.join(parts)
+
+
+def seat_meters(seat: mb.Seat, m: mb.Model, width: float):
+    """'Week ▬▬▬▬▬▬▬▬▬▬▬░░░░ 56% left · resets in 6d 13h' and, for seats with one, the 5-hour window."""
+    wins = [('Week', seat.week)] + ([('5h', seat.short)] if seat.short else [])
+    line_h, gap = 15.0, 5.0
+    dim = not m.reporting or seat.unavailable
+    cap_f, val_f = mb.font(11), mb.font(11, mono=False)
+    lines = [(name, win, window_line(m, seat, win, name)) for name, win in wins]
+    text_w = max(mb.text_width(t, val_f) for _, _, t in lines) + 4
+    text_w = min(max(text_w, 150.0), width * 0.45)
+
+    def paint(w, h):
+        y = 0.0
+        for name, win, text in lines:
+            used = win.used if win else None
+            mb.draw_text(name, 0, y, cap_f, mb.C.secondary())
+            bx, bw = 40.0, w - 40.0 - text_w - 12
+            mb.draw_bar(bx, y + (line_h - 6) / 2, bw, 6.0, m.shown(used), mb.bar_fill(used, dim))
+            mb.draw_text(text, w - text_w, y, val_f, mb.C.secondary() if dim else mb.C.label(), width=text_w,
+                         align='right')
+            y += line_h + gap
+    ax = '. '.join(f'{"Weekly" if name == "Week" else "5-hour"}: {text.replace(" · ", ", ")}'
+                   for name, _, text in lines)
+    return canvas(paint, width, len(lines) * line_h + (len(lines) - 1) * gap, ax=ax)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 6. Panes. Each builds its sections from the Store; the window rebuilds the pane when the data changes.
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+class Pane:
+    key = ''
+    title = ''
+    symbol = 'circle'
+    tint = 'grey'
+
+    def __init__(self, app):
+        self.app = app              # the controller: store, run(), ask(), open_setup(), rebuild()
+        self.keep: list = []        # targets of this build's controls
+        self.note = None            # ('busy'|'ok'|'error', text) of the last action, shown inline
+        self.note_at = 0.0
+
+    @property
+    def store(self) -> Store:
+        return self.app.store
+
+    def shown(self):
+        """The pane became visible (fetch what it needs)."""
+
+    def say(self, kind: str, text: str):
+        self.note, self.note_at = (kind, text), time.monotonic()
+        self.app.rebuild(self)
+
+    def note_now(self):
+        if self.note and self.note[0] == 'ok' and time.monotonic() - self.note_at > NOTE_S:
+            self.note = None
+        return self.note
+
+    def build(self) -> list:
+        raise NotImplementedError
+
+    def run(self, args, doing: str, done: str, then=None):
+        """Runs `codexpool <args>`, notes progress and the outcome, and refreshes status.json after a change."""
+        self.say('busy', doing)
+
+        def finished(r: Result):
+            if r.ok:
+                self.say('ok', done)
+                self.app.after_change()
+            else:
+                self.say('error', r.message())
+            if then:
+                then(r)
+        self.app.run(args, finished)
+
+
+# -- Overview ---------------------------------------------------------------------------------------------
+
+class OverviewPane(Pane):
+    key, title, symbol, tint = 'overview', 'Overview', 'gauge.with.dots.needle.67percent', 'green'
+
+    def build(self):
+        m = self.store.model()
+        out = []
+        problem = self.problem(m)
+        if problem is not None:
+            out.append(problem)
+        if m.seats and m.headline is not None:
+            out.append(section(self.hero(m)))
+        if m.seats:
+            out.append(section(group([self.seat_row(s, m) for s in m.seats]), 'Seats',
+                               footer=self.footer(m),
+                               header_right=secondary('Priority order', 11)))
+        return out
+
+    def problem(self, m: mb.Model):
+        k = self.keep
+        if m.status == 'down':
+            return empty_state('exclamationmark.triangle.fill', 'orange', 'The pool is down',
+                               'Codex requests fail until the pool is running again.',
+                               [button('Restart Pool…', lambda _: self.app.restart_pool(self), k)])
+        if m.status in ('stale', 'missing'):
+            body = ('The guard has stopped writing status.json, so these numbers may be out of date.'
+                    if m.status == 'stale' else 'There is no status report yet. The guard writes one every minute.')
+            return empty_state('exclamationmark.triangle.fill', 'grey', 'Pool not reporting', body,
+                               [button('Check Health', lambda _: self.app.show_pane('health'), k)])
+        if m.status == 'empty':
+            return empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
+                               'Add your ChatGPT accounts. Each one becomes a seat, and Codex moves to the next '
+                               'when one runs out.',
+                               [button('Add a ChatGPT Account…', lambda _: self.app.open_setup('setup-accounts'), k,
+                                       primary=True)])
+        return None
+
+    def hero(self, m: mb.Model):
+        color = mb.headline_text
+        number = f'{round(m.shown(m.headline)):d}'
+        caption = f'{m.word} this week · {m.scope}'
+        big, unit, cap_f = mb.font(40, NSFontWeightSemibold, mono=True), mb.font(22, NSFontWeightSemibold), mb.font(13)
+        pill_text, pill_fg, pill_bg = self.status_pill(m)
+        inner = GROUP_W - 2 * 16
+
+        def paint(w, h):
+            base = round(big.ascender())
+            nw = mb.text_width(number, big)
+            mb.draw_text(number, 0, 0, big, color(m))
+            mb.draw_text('%', nw, base - unit.ascender(), unit, color(m))
+            mb.draw_text(caption, nw + mb.text_width('%', unit) + 8, base - cap_f.ascender(), cap_f, mb.C.secondary())
+            pw = mb.pill_width(pill_text)
+            mb.draw_pill(pill_text, w - pw, base - cap_f.ascender() - 1, pill_fg(), pill_bg())
+            mb.draw_bar(0, base + 12, w, 8.0, m.shown(m.headline), mb.headline_fill(m))
+        big_h = round(big.ascender()) + 12 + 8
+        top = canvas(paint, inner, big_h, tip=mb.headline_breakdown(m),
+                     ax=f'{number}% {m.word} this week, {m.scope}. {pill_text}')
+
+        facts = self.facts(m)
+        col_w = inner / len(facts)
+        grid = auto(NSGridView.gridViewWithViews_([
+            [secondary(c, 11) for c, _, _ in facts],
+            [label(v, 13, NSFontWeightMedium, color=vc) for _, v, vc in facts]]))
+        grid.setRowSpacing_(3)
+        grid.setColumnSpacing_(0)
+        for i in range(len(facts)):
+            grid.columnAtIndex_(i).setWidth_(col_w)
+        lines = [top, grid]
+        extra = []
+        resettable = [s for s in m.seats if s.resets and s.unavailable and s.state != 'disabled'] \
+            if m.reporting else []
+        if resettable:   # a link to the seat, where Redeem Reset… lives
+            first = resettable[0]
+            extra.append(link_button(f'Reset available for {", ".join(s.label for s in resettable)} ›',
+                                     lambda _: self.app.show_seat(first.name or first.label), self.keep, size=12))
+        pace = mb.pace_text(m)
+        if pace:
+            extra.append(secondary(pace, 12))
+        if extra:
+            lines.append(vstack(extra, spacing=3, full=False))
+        box = vstack(lines, spacing=16, full=False, insets=(18, 16, 16, 16))
+        return group([box])
+
+    @staticmethod
+    def status_pill(m: mb.Model):
+        if m.status == 'regular':
+            return 'Regular', mb.C.green_text, lambda: mb.C.soft(mb.C.green(), 0.16)
+        if m.status == 'reserve':
+            return 'Reserve', mb.C.red_text, lambda: mb.C.soft(mb.C.red(), 0.16)
+        word = {'allout': 'All out', 'down': 'Down', 'stale': 'Stale', 'empty': 'No seats'}.get(m.status, 'No data')
+        return word, mb.C.secondary, lambda: mb.C.wash(0.08)
+
+    @staticmethod
+    def facts(m: mb.Model):
+        """(caption, value, colour) for the four columns under the headline."""
+        label_c = NSColor.labelColor()
+        if not m.reporting:   # the numbers are old: say nothing about who serves or comes back
+            return [('New threads', '—', NSColor.secondaryLabelColor()),
+                    ('Regular seats', f'{m.regular_ready} of {m.regular_total} ready' if m.regular_total else '—',
+                     label_c),
+                    ('Reserve', '—' if not m.reserve_seats else f'{len(m.reserve_seats)} seat'
+                     f'{"s" if len(m.reserve_seats) != 1 else ""}', label_c),
+                    ('Next back', '—', NSColor.secondaryLabelColor())]
+        serving = m.serving.label if m.serving and m.serving_now else 'Nothing available'
+        serving_c = (mb.C.red_text() if m.status == 'reserve' else label_c) if m.serving_now else \
+            NSColor.secondaryLabelColor()
+        ready = f'{m.regular_ready} of {m.regular_total} ready' if m.regular_total else 'None'
+        if not m.reserve_seats:
+            reserve = 'None'
+        elif len(m.reserve_seats) == 1:
+            r = m.reserve_seats[0]
+            reserve = (mb.STATE_PILL.get(r.state, r.state) if r.unavailable else
+                       f'{mb.fmt_pct(m.shown(r.week.used if r.week else None))} {m.word}')
+        else:
+            reserve = f'{len(m.reserve_seats)} seats'
+        if m.next_back and m.reporting:
+            who, at = m.next_back
+            nxt = f'{who} · {mb.fmt_span((at - m.now).total_seconds())}'
+        else:
+            nxt = 'Nothing out'
+        return [('New threads', f'→ {serving}', serving_c), ('Regular seats', ready, label_c),
+                ('Reserve', reserve, label_c), ('Next back', nxt, label_c)]
+
+    def seat_row(self, seat: mb.Seat, m: mb.Model):
+        inner = GROUP_W - 2 * ROW_X
+        left, right = seat_title_row(seat, m)
+        parts = [hstack(left, right, spacing=7), padded(seat_meters(seat, m, inner - 20), 0, 20, 0, 0)]
+        if seat.state == 'blocked':
+            parts.append(padded(label(f'Re-login needed · {seat.detail or "needs attention"}', 11,
+                                      color=mb.C.red_text(), middle=True), 0, 20, 0, 0))
+        v = vstack(parts, spacing=7, insets=(11, ROW_X, 12, ROW_X))
+        if seat.serving and m.serving_now:
+            v.setToolTip_(S('New threads land on this seat'))
+        return v
+
+    @staticmethod
+    def footer(m: mb.Model) -> str:
+        updated = f'Updated {mb.fmt_age(m.age)}' if m.age is not None else 'Not updated yet'
+        return f'{updated}. The headline weighs each seat by its size: Plus and Team 1×, Business 5×, Pro 20×.'
+
+
+# -- Seats ------------------------------------------------------------------------------------------------
+
+SIZES = (1, 2, 5, 10, 20)
+
+
+class SeatListRow(NSView):
+    """A selectable row inside a group: highlights when selected, calls on_click on mouse down. For VoiceOver it
+    is one radio button (the seat list picks one seat), labelled with ax_title."""
+    selected = False
+    on_click = None
+    ax_title = ''
+
+    def isFlipped(self):
+        return True
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def drawRect_(self, rect):
+        if self.selected:
+            b = self.bounds()
+            mb.fill_rounded(((4, 3), (b.size.width - 8, b.size.height - 6)), 7, K.select())
+
+    def mouseDown_(self, event):
+        if self.on_click is not None:
+            self.on_click()
+
+    def isAccessibilityElement(self):
+        return True
+
+    def accessibilityRole(self):
+        return 'AXRadioButton'
+
+    def accessibilityLabel(self):
+        return S(self.ax_title)
+
+    def accessibilityValue(self):
+        return 1 if self.selected else 0
+
+    def accessibilityChildren(self):
+        return []   # its labels and pills are in ax_title
+
+    def accessibilityPerformPress(self):
+        if self.on_click is not None:
+            self.on_click()
+        return True
+
+
+class SeatsPane(Pane):
+    key, title, symbol, tint = 'seats', 'Seats', 'person.2.fill', 'blue'
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.selected: str | None = None   # seat file name
+        self.commit_timer = None
+
+    def build(self):
+        m = self.store.model()
+        k = self.keep
+        if not m.seats:
+            return [empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
+                                'Each ChatGPT account you add becomes a seat. When one hits its usage limit, the '
+                                'next one picks up the same thread.',
+                                [button('Add a ChatGPT Account…', lambda _: self.app.open_setup('setup-accounts'), k,
+                                        primary=True)])]
+        names = [s.name or s.label for s in m.seats]
+        if self.selected not in names:
+            self.selected = names[0]
+        seat = m.seats[names.index(self.selected)]
+        rows = [self.list_row(s, m) for s in m.seats]
+        add = hstack([secondary('Seats fill in priority order: the highest first.', 11)],
+                     [button('Add Account…', lambda _: self.app.open_setup('setup-accounts'), k)],
+                     insets=(8, ROW_X, 8, ROW_X - 2), min_h=40)
+        return [section(group(rows + [add])),
+                section(self.details(seat, m), seat.label,
+                        footer='Changes run codexpool commands and take effect at once.')]
+
+    def list_row(self, seat: mb.Seat, m: mb.Model):
+        key = seat.name or seat.label
+        left, right = seat_title_row(seat, m, name_weight=NSFontWeightMedium)
+        usage = seat.week.used if seat.week else None
+        right.insert(0, secondary(f'{mb.fmt_pct(m.shown(usage))} {m.word}', 11))
+        inner = hstack(left, right, spacing=7, insets=(0, ROW_X, 0, ROW_X))
+        r = auto(SeatListRow.alloc().initWithFrame_(((0, 0), (GROUP_W, 38))))
+        r.addSubview_(inner)
+        pin(inner, r)
+        fix(r, h=38)
+        r.selected = key == self.selected
+
+        def pick():
+            self.selected = key
+            self.note = None
+            self.app.rebuild(self)
+        r.on_click = pick
+        r.setToolTip_(S(f'{seat.label} ({seat.name})' if seat.name else seat.label))
+        r.ax_title = ', '.join(t for t in (seat.label, seat.plan, 'reserve' if seat.reserve else '',
+                                           f'{mb.fmt_pct(m.shown(usage))} {m.word} this week',
+                                           state_style(seat, m)[0]) if t)
+        return r
+
+    def details(self, seat: mb.Seat, m: mb.Model):
+        k = self.keep
+        busy = bool(self.note and self.note[0] == 'busy')
+        name = seat.name or seat.label
+
+        # Name: commits on Return or when the field loses focus
+        field = text_field(seat.label, 190)
+
+        def rename(sender):
+            new = str(sender.stringValue()).strip()
+            if new.startswith('-'):
+                sender.setStringValue_(S(seat.label))
+                self.say('error', 'A seat name can\u2019t start with a dash.')
+            elif new and new != seat.label:
+                self.run(['label', name, new], f'Renaming {seat.label}…', f'{seat.label} is now {new}')
+        field.setTarget_(target(rename, k))
+        field.setAction_('fire:')
+
+        # Size (weight)
+        size = auto(NSPopUpButton.alloc().initWithFrame_pullsDown_(((0, 0), (90, 26)), False))
+        current = seat.weight or 1.0
+        values = sorted(set(SIZES) | {current})
+        size.addItemsWithTitles_([S(f'{v:g}×') for v in values])
+        size.selectItemAtIndex_(values.index(current))
+
+        def resize(sender):
+            v = values[sender.indexOfSelectedItem()]
+            if v != current:
+                self.run(['weight', name, f'{v:g}'], f'Resizing {seat.label}…', f'{seat.label} now counts {v:g}×')
+        size.setTarget_(target(resize, k))
+        size.setAction_('fire:')
+
+        # Priority: a number field and a stepper (a burst of clicks commits once)
+        prio = int(seat.priority) if seat.priority is not None else 0
+        pfield = text_field(str(prio), 64, right=True)
+        stepper = auto(NSStepper.alloc().initWithFrame_(((0, 0), (19, 27))))
+        stepper.setMinValue_(-100000)
+        stepper.setMaxValue_(100000)
+        stepper.setIncrement_(10)
+        stepper.setValueWraps_(False)
+        stepper.setIntegerValue_(prio)
+
+        def commit_priority(value: int):
+            if value != prio:
+                self.run(['priority', name, str(value)], f'Moving {seat.label}…',
+                         f'{seat.label} priority {prio} → {value}')
+
+        def typed(sender):
+            if self.commit_timer is not None:   # a typed value wins over a stepper burst still waiting to commit
+                self.commit_timer.invalidate()
+                self.commit_timer = None
+            try:
+                commit_priority(int(str(sender.stringValue()).strip()))
+            except ValueError:
+                sender.setStringValue_(S(str(prio)))
+
+        def stepped(sender):
+            pfield.setStringValue_(S(str(sender.integerValue())))
+            if self.commit_timer is not None:
+                self.commit_timer.invalidate()
+            value = int(sender.integerValue())
+            self.commit_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.9, target(lambda _t: commit_priority(value), k), 'fire:', None, False)
+        pfield.setTarget_(target(typed, k))
+        pfield.setAction_('fire:')
+        stepper.setTarget_(target(stepped, k))
+        stepper.setAction_('fire:')
+
+        # Reserve and in-rotation switches
+        reserve = auto(NSSwitch.alloc().init())
+        reserve.setControlSize_(NSControlSizeSmall)
+        reserve.setState_(1 if seat.reserve else 0)
+
+        def toggle_reserve(sender):
+            on = sender.state() == 1
+            self.run(['reserve', name] + ([] if on else ['--off']), f'Updating {seat.label}…',
+                     f'{seat.label} is {"now" if on else "no longer"} a reserve seat')
+        reserve.setTarget_(target(toggle_reserve, k))
+        reserve.setAction_('fire:')
+
+        rotation = auto(NSSwitch.alloc().init())
+        rotation.setControlSize_(NSControlSizeSmall)
+        rotation.setState_(0 if seat.state in ('disabled', 'parked') else 1)
+
+        def toggle_rotation(sender):
+            if sender.state() == 1:
+                if seat.state == 'parked':
+                    sender.setState_(0)
+                    self.app.ask(f'Enable {seat.label} and spend credits?',
+                                 f'The credit guard parked {seat.label} because its plan limit is used up and more '
+                                 'requests would spend credits. Enabling it overrides the guard until the limit '
+                                 'resets.', 'Enable',
+                                 lambda: self.run(['enable', name], f'Enabling {seat.label}…',
+                                                  f'{seat.label} enabled; it may spend credits'))
+                else:
+                    self.run(['enable', name], f'Enabling {seat.label}…', f'{seat.label} is back in rotation')
+            else:
+                self.run(['disable', name], f'Disabling {seat.label}…', f'{seat.label} is out of rotation')
+        rotation.setTarget_(target(toggle_rotation, k))
+        rotation.setAction_('fire:')
+
+        for c in (field, size, pfield, stepper, reserve, rotation):
+            c.setEnabled_(not busy)
+
+        exp = f', soonest expires {mb.fmt_day(seat.reset_expiry)}' if seat.reset_expiry else ''
+        reset_sub = (f'{seat.resets} banked free reset{"s" if seat.resets != 1 else ""}{exp}.' if seat.resets
+                     else 'None banked. ChatGPT sometimes grants free resets; they show up here.')
+        state_sub = {'parked': 'Parked by the credit guard: its plan limit is used up.',
+                     'blocked': f'Needs a new sign-in: {seat.detail or "the login stopped working"}.',
+                     'disabled': 'Out of rotation. Threads on it moved to the next seat.'}.get(
+            seat.state, 'Takes new threads in priority order.')
+        rows = [
+            form_row('Name', f'Seat file {seat.name}' if seat.name else None, field),
+            form_row('Size', 'Its share of the headline. Plus and Team 1×, Business 5×, Pro 20×.', size),
+            form_row('Priority', 'Higher is used first.', hstack([pfield, stepper], spacing=4, cluster=True)),
+            form_row('Reserve', 'Used last. The menu bar turns red while it serves.', reserve),
+            form_row('In rotation', state_sub, rotation),
+            form_row('Banked resets', reset_sub,
+                     button('Redeem Reset…', lambda _: self.confirm_reset(seat), k,
+                            enabled=bool(seat.resets) and not busy)),
+            form_row('ChatGPT sign-in', 'Sign in again if the seat is blocked or you changed its password.',
+                     button('Sign In Again…', lambda _: self.app.open_setup(
+                         'setup-accounts', label=seat.label,
+                         priority=None if seat.priority is None else int(seat.priority)), k, enabled=not busy)),
+            form_row('Remove from pool', 'Deletes the seat file. The ChatGPT login itself is not revoked.',
+                     button('Remove…', lambda _: self.confirm_remove(seat), k, enabled=not busy)),
+        ]
+        note = note_row(self.note_now())
+        if note is not None:
+            rows.append(note)
+        return group(rows)
+
+    def confirm_reset(self, seat: mb.Seat):
+        n = seat.resets
+        exp = f' The soonest expires {mb.fmt_day(seat.reset_expiry)}.' if seat.reset_expiry else ''
+        self.app.ask(f'Use a reset on {seat.label}?',
+                     f'{seat.label}’s weekly and 5-hour limits go back to full right away, and the pool can use '
+                     f'it again. This spends 1 of {n} banked free reset{"s" if n != 1 else ""}.{exp} It never buys '
+                     'a reset.', 'Use Reset',
+                     lambda: self.run(['reset', seat.name or seat.label, '--yes'], f'Resetting {seat.label}…',
+                                      f'{seat.label} is back to full usage'))
+
+    def confirm_remove(self, seat: mb.Seat):
+        self.app.ask(f'Remove {seat.label} from the pool?',
+                     f'This deletes the seat file {seat.name}. The ChatGPT login itself is not revoked, and you can '
+                     'add the account again later.', 'Remove',
+                     lambda: self.run(['remove', seat.name or seat.label, '--yes'], f'Removing {seat.label}…',
+                                      f'{seat.label} removed'), destructive=True)
+
+
+# -- Lanes ------------------------------------------------------------------------------------------------
+
+LANE_STATE = {   # member state from `lane list` -> (label, colour role)
+    'ready': ('Ready', 'green'), 'bridge ok': ('Bridge OK', 'green'), 'active': ('Serving', 'green'),
+    'cooldown': ('Cooling down', 'orange'), 'exhausted': ('Out', 'orange'), 'disabled': ('Off', 'grey'),
+    'no key': ('No key', 'red'), 'bridge down': ('Bridge down', 'red'), 'not in bridge': ('Not in bridge', 'red'),
+    'missing': ('Not signed in', 'red'), 'blocked': ('Blocked', 'red'), 'unknown': ('Unknown', 'grey'),
+}
+
+
+class LanesPane(Pane):
+    key, title, symbol, tint = 'lanes', 'Lanes', 'arrow.triangle.branch', 'purple'
+
+    def shown(self):
+        if not SNAPSHOT and self.store.lanes is None and not self.store.lanes_busy:
+            self.store.fetch_lanes()
+
+    def build(self):
+        st, k = self.store, self.keep
+        docs = button('Open Docs', lambda _: open_thing(LANES_DOCS_URL), k)
+        if st.lanes is None:
+            if st.lanes_busy:
+                return [group([hstack([spinner(), secondary('Reading lanes…', 12)], spacing=8,
+                                      insets=(14, ROW_X, 14, ROW_X))])]
+            return [empty_state('arrow.triangle.branch', 'purple', 'Lanes aren’t available',
+                                st.lanes_note or NEWER,
+                                [button('Try Again', lambda _: st.fetch_lanes(), k), docs])]
+        if not st.lanes:
+            return [empty_state('arrow.triangle.branch', 'purple', 'No lanes yet',
+                                'A lane hands token-heavy work, like sweeps, bulk edits and second opinions, to a '
+                                'model from another provider, as a native Codex subagent. Its tokens count against '
+                                'that provider, not your seats. Lanes are optional.',
+                                [button('Read About Lanes', lambda _: open_thing(LANES_DOCS_URL), k)])]
+        out = [padded(secondary('Lanes hand token-heavy work to a model from another provider, as a native Codex '
+                                'subagent. The pool serves each lane from its members in order.', 12,
+                                wrap=GROUP_W - 8), 0, 4, 0, 4)]
+        for lane in st.lanes:
+            out.append(self.lane_section(lane))
+        apply_row = form_row('Apply lanes', 'Regenerates the lane config and Codex role files from lanes.json.',
+                             button('Apply…', lambda _: self.confirm_apply(), k,
+                                    enabled=not (self.note and self.note[0] == 'busy')))
+        rows = [apply_row, form_row('Documentation', 'How lanes work, providers, and lanes.json.', docs)]
+        note = note_row(self.note_now())
+        if note is not None:
+            rows.append(note)
+        out.append(section(group(rows)))
+        return out
+
+    def lane_section(self, lane: Lane):
+        k = self.keep
+        rows = []
+        if lane.role:
+            rows.append(padded(secondary(lane.role, 12, wrap=GROUP_W - 2 * ROW_X), 11, ROW_X, 11, ROW_X))
+        for i, mem in enumerate(lane.members, 1):
+            rows.append(self.member_row(i, mem))
+        title = hstack([label(lane.name, 13, NSFontWeightSemibold),
+                        secondary(f'effort {lane.effort}' if lane.effort else '', 11)], spacing=8, cluster=True)
+        test = button('Test…', lambda _: self.confirm_test(lane), k, small=True)
+        head = hstack([title], [test], insets=(0, 4, 0, 2))
+        return vstack([head, group(rows)], spacing=7)
+
+    def member_row(self, i: int, mem: Member):
+        now = self.store.clock()
+        text, role = LANE_STATE.get(mem.state, (mem.state.title() or 'Unknown', 'grey'))
+        fg = {'green': mb.C.green_text, 'orange': mb.C.orange_text, 'red': mb.C.red_text}.get(role, mb.C.secondary)
+        bg = {'green': lambda: mb.C.soft(mb.C.green()), 'orange': lambda: mb.C.soft(mb.C.orange()),
+              'red': lambda: mb.C.soft(mb.C.red())}.get(role, lambda: mb.C.wash(0.07))
+        num = canvas(lambda w, h: (mb.fill_circle(w / 2, h / 2, 9, mb.C.wash(0.08)),
+                                   mb.draw_text(str(i), 0, (h - mb.line_height(mb.font(11, NSFontWeightSemibold))) / 2,
+                                                mb.font(11, NSFontWeightSemibold), mb.C.secondary(), width=w,
+                                                align='center')), 20, 20)
+        names = vstack([label(mem.name, 13, NSFontWeightMedium),
+                        secondary(f'{mem.provider} · {mem.model}', 11)], spacing=2, full=False)
+        if mem.test is None:
+            test_icon, test_text, tc = 'minus.circle', 'Never tested', NSColor.secondaryLabelColor()
+        elif mem.test.ok:
+            ago = mb.fmt_age((now - mem.test.when).total_seconds()) if mem.test.when else ''
+            test_icon, test_text, tc = 'checkmark.circle.fill', f'Passed {ago}'.strip(), mb.C.green_text()
+        else:
+            test_icon, test_text, tc = 'xmark.circle.fill', f'Failed: {mem.test.reason or "see lane test"}', \
+                mb.C.red_text()
+        test = hstack([symbol_view(test_icon, 11, tc, NSFontWeightMedium),
+                       label(test_text, 11, color=NSColor.secondaryLabelColor() if mem.test is None else None)],
+                      spacing=4, cluster=True)
+        if mem.test and not mem.test.ok and mem.test.reason:
+            test.setToolTip_(S(mem.test.reason))
+        return hstack([num, names], [test, pill(text, fg, bg)], spacing=10, insets=(9, ROW_X, 9, ROW_X), min_h=48)
+
+    def confirm_test(self, lane: Lane):
+        self.app.ask(f'Test the {lane.name} lane?',
+                     'This spawns real subagents through Codex, one for each member and then the lane. It spends '
+                     'lane-provider quota and a little seat quota, and it can take a few minutes.', 'Run Test',
+                     lambda: self.app.stream_sheet(f'Testing {lane.name}', ['lane', 'test', lane.name],
+                                                   lambda r: self.store.fetch_lanes()))
+
+    def confirm_apply(self):
+        self.app.ask('Apply lanes?',
+                     'codexpool writes the lanes block in the pool config, the bridge config, the Codex role files in '
+                     '~/.codex/agents and the lanes block in ~/.codex/AGENTS.md from lanes.json.', 'Apply',
+                     lambda: self.run(['lane', 'apply'], 'Applying lanes…', 'Lanes applied',
+                                      then=lambda r: self.store.fetch_lanes()))
+
+
+# -- General ----------------------------------------------------------------------------------------------
+
+class GeneralPane(Pane):
+    key, title, symbol, tint = 'general', 'General', 'gearshape.fill', 'grey'
+
+    def build(self):
+        m, k = self.store.model(), self.keep
+        busy = bool(self.note and self.note[0] == 'busy')
+        display = auto(NSSegmentedControl.segmentedControlWithLabels_trackingMode_target_action_(
+            ['Left', 'Used'], 0, target(lambda s: self.set_value('display', ('left', 'used')[s.selectedSegment()]),
+                                        k), 'fire:'))
+        display.setSelectedSegment_(0 if m.left else 1)
+        headline = auto(NSPopUpButton.alloc().initWithFrame_pullsDown_(((0, 0), (140, 26)), False))
+        headline.addItemsWithTitles_(['All seats', 'Regular seats'])
+        headline.selectItemAtIndex_(0 if m.headline_mode == 'all' else 1)
+        headline.setTarget_(target(lambda s: self.set_value('headline', ('all', 'regular')[s.indexOfSelectedItem()]),
+                                   k))
+        headline.setAction_('fire:')
+        for c in (display, headline):
+            c.setEnabled_(not busy)
+        sample = f'{mb.fmt_pct(m.shown(m.headline))} {m.word}' if m.headline is not None else '54% left'
+        menubar = [
+            form_row('Numbers show', f'Left counts down from 100%, used counts up. Now: {sample}.', display),
+            form_row('Headline covers', 'Regular seats leaves the reserve out of the number.', headline),
+        ]
+        note = note_row(self.note_now())
+        if note is not None:
+            menubar.append(note)
+        pool = [
+            form_row('Restart the pool', 'Codex requests fail for a few seconds while it restarts.',
+                     button('Restart…', lambda _: self.app.restart_pool(self), k, enabled=not busy)),
+            form_row('Logs', tilde(LOGS_DIR), button('Open Logs', lambda _: open_thing(str(LOGS_DIR)), k)),
+            form_row('Codex app', 'Quit and reopen it after adding seats or changing lanes.',
+                     button('Reopen Codex…', lambda _: self.app.reopen_codex(self), k, enabled=not busy)),
+        ]
+        setup = [form_row('Setup assistant', 'Add ChatGPT accounts and check the install.',
+                          button('Open…', lambda _: self.app.open_setup('setup-welcome'), k))]
+        return [section(group(menubar), 'Menu bar'), section(group(pool), 'Pool'), section(group(setup), 'Setup')]
+
+    def set_value(self, key: str, value: str):
+        m = self.store.model()
+        if value == {'display': m.display, 'headline': m.headline_mode}.get(key):
+            return   # the current choice clicked again
+        words = {'left': 'what is left', 'used': 'what is used', 'all': 'all seats', 'regular': 'the regular seats'}
+        self.run(['set', key, value], 'Saving…', f'The menu bar now shows {words.get(value, value)}')
+
+
+# -- Health -----------------------------------------------------------------------------------------------
+
+CHECK_ICON = {'ok': ('checkmark.circle.fill', 'green'), 'warn': ('exclamationmark.triangle.fill', 'orange'),
+              'fail': ('xmark.octagon.fill', 'red'), 'unknown': ('questionmark.circle', 'grey')}
+
+
+def check_color(status: str):
+    """Status symbols are fills, so they take the system colours (text uses the darker *_text ones)."""
+    return {'green': mb.C.green, 'orange': mb.C.orange, 'red': mb.C.red}.get(
+        CHECK_ICON.get(status, CHECK_ICON['unknown'])[1], mb.C.grey)()
+
+
+class HealthPane(Pane):
+    key, title, symbol, tint = 'health', 'Health', 'stethoscope', 'teal'
+
+    def shown(self):
+        if not SNAPSHOT and self.store.doctor is None and not self.store.doctor_busy:
+            self.store.fetch_doctor()
+
+    def build(self):
+        st, k = self.store, self.keep
+        doc = st.doctor
+        again = button('Run Again', lambda _: st.fetch_doctor(), k, enabled=not st.doctor_busy)
+        copy = button('Copy Report', lambda _: self.copy_report(), k, enabled=doc is not None)
+        if doc is None and not st.doctor_busy:
+            return [empty_state('stethoscope', 'teal', 'No health report',
+                                st.doctor_note or 'codexpool doctor has not run yet.',
+                                [again, button('Run in Terminal', lambda _: mb.open_in_terminal(mb.cp_command('doctor')),
+                                               k)])]
+        if doc is None:
+            head_icon = spinner(small=False)
+            title, sub = 'Checking…', 'codexpool doctor is looking at the pool, Codex, seats and the guard.'
+        else:
+            status = 'fail' if doc.problems else 'warn' if doc.warnings else 'ok'
+            head_icon = symbol_view({'ok': 'checkmark.seal.fill', 'warn': 'exclamationmark.triangle.fill',
+                                     'fail': 'xmark.octagon.fill'}[status], 26, check_color(status), NSFontWeightMedium,
+                                    box=32)
+            if status == 'ok':
+                title = 'Everything looks good'
+            else:
+                bits = []
+                if doc.problems:
+                    bits.append(f'{doc.problems} problem{"s" if doc.problems != 1 else ""}')
+                if doc.warnings:
+                    bits.append(f'{doc.warnings} warning{"s" if doc.warnings != 1 else ""}')
+                title = ', '.join(bits)
+            when = mb.fmt_age((st.clock() - st.doctor_at).total_seconds()) if st.doctor_at else ''
+            sub = f'Checked {when} by codexpool doctor.'
+            if st.doctor_busy:
+                sub = 'Checking again…'
+        head = hstack([head_icon, vstack([label(title, 15, NSFontWeightSemibold), secondary(sub, 11, wrap=300)],
+                                         spacing=2, full=False)],
+                      [copy, again], spacing=12, insets=(14, 14, 14, ROW_X), min_h=60)
+        out = [group([head, note_row(self.note_now())])]   # note: 'Report copied'
+        if st.doctor_note and doc is not None:
+            out.append(group([note_row(('error', st.doctor_note))]))
+        for title, checks in (doc.sections if doc else []):
+            if checks:
+                out.append(section(group([self.check_row(c) for c in checks]), title))
+        return out
+
+    @staticmethod
+    def check_row(c: Check):
+        name, _ = CHECK_ICON.get(c.status, CHECK_ICON['unknown'])
+        icon = symbol_view(name, 13, check_color(c.status), NSFontWeightMedium, box=16)
+        width = GROUP_W - 2 * ROW_X - 26
+        text = [label(c.text, 13, wrap=width)]
+        if c.fix and c.status != 'ok':
+            text.append(label(f'Fix: {c.fix}', 11, color=NSColor.secondaryLabelColor(), wrap=width, select=True))
+        col = vstack(text, spacing=3, full=False)
+        r = hstack([icon, col], spacing=10, insets=(8, ROW_X, 8, ROW_X), min_h=34)
+        r.setAlignment_(3)   # top: the icon sits on the first line
+        return r
+
+    def copy_report(self):
+        doc = self.store.doctor
+        if doc is None:
+            return
+        mark = {'ok': '✓', 'warn': '!', 'fail': '✗'}
+        lines = [f'codexpool doctor ({self.store.clock().astimezone().strftime("%Y-%m-%d %H:%M")})']
+        for title, checks in doc.sections:
+            lines += ['', title] + [f' {mark.get(c.status, "?")} {c.text}' + (
+                f'\n     → {c.fix}' if c.fix and c.status != 'ok' else '') for c in checks]
+        lines += ['', 'OK' if not doc.problems else f'{doc.problems} problem(s)']
+        copy_text('\n'.join(lines) + '\n')
+        self.say('ok', 'Report copied')
+
+
+# -- About ------------------------------------------------------------------------------------------------
+
+class AboutPane(Pane):
+    key, title, symbol, tint = 'about', 'About', 'info.circle.fill', 'indigo'
+
+    def build(self):
+        st = self.store
+        m = st.model()
+        icon = canvas(lambda w, h: draw_app_icon(w), 96, 96)
+        version = f'Version {st.version}' if st.version else ('Version unknown' if st.version_note else 'Version …')
+        cpa = m.version.split('-gate')[0].split('+gate')[0]
+        head = [icon, label('codexpool', 26, NSFontWeightSemibold, align=NSTextAlignmentCenter),
+                secondary(version + (f'  ·  CLIProxyAPI {cpa}' if cpa else ''), 12, align=NSTextAlignmentCenter),
+                label('Every ChatGPT seat you have, behind one Codex.', 13, align=NSTextAlignmentCenter)]
+        hs = auto(NSStackView.stackViewWithViews_(head))
+        hs.setOrientation_(1)
+        hs.setAlignment_(9)
+        hs.setSpacing_(4)
+        hs.setCustomSpacing_afterView_(12, icon)
+        hs.setCustomSpacing_afterView_(10, head[2])
+        hs.setEdgeInsets_(NSEdgeInsets(6, 0, 4, 0))
+
+        def link(title, sub, url, symbol):
+            r = form_row(title, sub, symbol_view('arrow.up.right', 11, NSColor.tertiaryLabelColor(), NSFontWeightSemibold),
+                         leading=canvas(lambda w, h: draw_icon_square(0, 0, 22, symbol, 'grey'), 22, 22), min_h=38)
+            click = clickable(r, lambda: open_thing(url), title)
+            click.setToolTip_(S(url))
+            return click
+        links = group([link('Website', None, SITE_URL, 'globe'),
+                       link('Source code', 'github.com/memfactorduke/codex-load-balancer', REPO_URL,
+                            'chevron.left.forwardslash.chevron.right'),
+                       link('Documentation', None, DOCS_URL, 'book.fill'),
+                       link('Report an issue', None, ISSUES_URL, 'exclamationmark.bubble.fill')])
+        legal = [
+            'Free and source-available under the PolyForm Noncommercial License 1.0.0: free for personal and '
+            'other noncommercial use; commercial use needs permission.',
+            'codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT '
+            'are trademarks of OpenAI. Use it only with accounts you own, and follow the terms that apply to them.',
+        ]
+        fine = vstack([secondary(t, 11, wrap=GROUP_W - 40, align=NSTextAlignmentCenter) for t in legal], spacing=8,
+                      full=False)
+        fs = padded(fine, 0, 20, 0, 20)
+        return [hs, links, fs]
+
+
+class LinkRowView(NSView):
+    """Makes a whole row clickable (a link row), with a pointing-hand cursor. VoiceOver sees one link, ax_title."""
+    on_click = None
+    ax_title = ''
+
+    def isFlipped(self):
+        return True
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def hitTest_(self, point):
+        return self if NSPointInRect(point, self.frame()) else None   # the row's controls are decoration
+
+    def resetCursorRects(self):
+        self.addCursorRect_cursor_(self.bounds(), NSCursor.pointingHandCursor())
+
+    def mouseUp_(self, event):
+        p = self.convertPoint_fromView_(event.locationInWindow(), None)
+        b = self.bounds()
+        if self.on_click is not None and 0 <= p.x <= b.size.width and 0 <= p.y <= b.size.height:
+            self.on_click()
+
+    def isAccessibilityElement(self):
+        return True
+
+    def accessibilityRole(self):
+        return 'AXLink'
+
+    def accessibilityLabel(self):
+        return S(self.ax_title)
+
+    def accessibilityChildren(self):
+        return []   # the row's text and icons are decoration
+
+    def accessibilityPerformPress(self):
+        if self.on_click is not None:
+            self.on_click()
+        return True
+
+
+def clickable(view, fn, ax_title: str = ''):
+    v = auto(LinkRowView.alloc().initWithFrame_(((0, 0), (10, 10))))
+    v.addSubview_(view)
+    pin(view, v)
+    v.on_click = fn
+    v.ax_title = ax_title
+    return v
+
+
+PANE_CLASSES = (OverviewPane, SeatsPane, LanesPane, GeneralPane, HealthPane, AboutPane)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 7. The Settings window: sidebar (icon squares, like System Settings) + content (toolbar title, scrolling
+#    sections)
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+class SettingsWindow(NSWindow):
+    pass
+
+
+class KeyLookWindow(SettingsWindow):
+    """Snapshots only: draws as the key, main window (coloured traffic lights, accent controls), which an
+    offscreen window never is."""
+
+    def isKeyWindow(self):
+        return True
+
+    def isMainWindow(self):
+        return True
+
+    def _hasActiveAppearance(self):
+        return True
+
+    def _hasActiveAppearanceIgnoringKeyFocus(self):
+        return True
+
+    def _hasKeyAppearance(self):
+        return True
+
+    def _hasMainAppearance(self):
+        return True
+
+
+def make_window(w: float, h: float, title: str, toolbar: bool, resizable: bool):
+    style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | \
+        NSWindowStyleMaskFullSizeContentView | (NSWindowStyleMaskResizable if resizable else 0)
+    cls = KeyLookWindow if SNAPSHOT else SettingsWindow
+    origin = (-20000, -20000) if SNAPSHOT else (0, 0)
+    win = cls.alloc().initWithContentRect_styleMask_backing_defer_((origin, (w, h)), style, NSBackingStoreBuffered,
+                                                                   False)
+    win.setReleasedWhenClosed_(False)
+    win.setTitle_(S(title))
+    win.setTitlebarAppearsTransparent_(True)
+    win.setTitleVisibility_(NSWindowTitleHidden)
+    if toolbar:   # an empty unified toolbar: a 52 pt band with the traffic lights centred in it
+        tb = NSToolbar.alloc().initWithIdentifier_(S(f'codexpool.{title}'))
+        tb.setShowsBaselineSeparator_(False)
+        win.setToolbar_(tb)
+        win.setToolbarStyle_(NSWindowToolbarStyleUnified)
+    root = FlippedView.alloc().initWithFrame_(((0, 0), (w, h)))
+    win.setContentView_(root)
+    return win, root
+
+
+class SidebarItem(NSView):
+    """One sidebar row: icon square + title; accent highlight when selected (grey when the window isn't key)."""
+    key = ''
+    title = ''
+    symbol = ''
+    tint = 'grey'
+    selected = False
+    on_click = None
+
+    def isFlipped(self):
+        return True
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def drawRect_(self, rect):
+        b = self.bounds()
+        key_window = self.window() is not None and self.window().isKeyWindow()
+        if self.selected:
+            color = NSColor.selectedContentBackgroundColor() if key_window else \
+                NSColor.unemphasizedSelectedContentBackgroundColor()
+            mb.fill_rounded(((10, 1), (b.size.width - 20, b.size.height - 2)), 6, color)
+        draw_icon_square(18, (b.size.height - 20) / 2, 20, self.symbol, self.tint)
+        f = mb.font(13)
+        fg = NSColor.whiteColor() if self.selected and key_window else NSColor.labelColor()
+        mb.draw_text(self.title, 46, (b.size.height - mb.line_height(f)) / 2, f, fg, width=b.size.width - 56)
+
+    def mouseDown_(self, event):
+        if self.on_click is not None:
+            self.on_click(self.key)
+
+    def accessibilityRole(self):
+        return 'AXButton'
+
+    def accessibilityLabel(self):
+        return self.title
+
+    def isAccessibilityElement(self):
+        return True
+
+    def accessibilityPerformPress(self):
+        if self.on_click is not None:
+            self.on_click(self.key)
+        return True
+
+
+class SidebarHeader(NSView):
+    """The top of the sidebar: the app icon, the wordmark and one line of status (clicks open Overview)."""
+    line = ''
+    line_color = None
+    on_click = None
+
+    def isFlipped(self):
+        return True
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def drawRect_(self, rect):
+        b = self.bounds()
+        NSGraphicsContext.saveGraphicsState()
+        t = NSAffineTransform.transform()
+        t.translateXBy_yBy_(12, (b.size.height - 38) / 2)
+        t.concat()
+        draw_app_icon(38, shadow=False)
+        NSGraphicsContext.restoreGraphicsState()
+        tf, sf = mb.font(13, NSFontWeightSemibold), mb.font(11)
+        y = (b.size.height - mb.line_height(tf) - mb.line_height(sf)) / 2
+        mb.draw_text('codexpool', 54, y, tf, mb.C.label(), width=b.size.width - 64)
+        mb.draw_text(self.line, 54, y + mb.line_height(tf), sf, (self.line_color or mb.C.secondary)(),
+                     width=b.size.width - 64)
+
+    def mouseDown_(self, event):
+        if self.on_click is not None:
+            self.on_click('overview')
+
+
+def sidebar_status(m: mb.Model):
+    """(line, colour function) under the wordmark."""
+    if m.status in ('regular', 'reserve') and m.headline is not None:
+        who = m.serving.label if m.serving else ''
+        return (f'{mb.fmt_pct(m.shown(m.headline))} {m.word} · {who}',
+                mb.C.red_text if m.status == 'reserve' else mb.C.green_text)
+    return ({'allout': 'Every seat is out', 'down': 'Pool is down', 'stale': 'Not reporting',
+             'missing': 'Not reporting', 'empty': 'No seats yet'}.get(m.status, m.status), mb.C.secondary)
+
+
+class SettingsView:
+    """Builds and updates the Settings window."""
+
+    GROUPS = (('overview', 'seats', 'lanes'), ('general', 'health', 'about'))
+
+    def __init__(self, app, panes: dict, height: float = WIN_H):
+        self.app = app
+        self.panes = panes
+        self.current = 'overview'
+        self.win, root = make_window(WIN_W, height, 'codexpool Settings', toolbar=True, resizable=True)
+        self.win.setContentMinSize_((WIN_W, MIN_H))
+        self.win.setContentMaxSize_((WIN_W, 4000))
+        if not SNAPSHOT:
+            self.win.setFrameAutosaveName_('codexpool.settings')
+        # sidebar
+        side = NSVisualEffectView.alloc().initWithFrame_(((0, 0), (SIDEBAR_W, height)))
+        side.setMaterial_(NSVisualEffectMaterialSidebar)
+        side.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        side.setState_(NSVisualEffectStateFollowsWindowActiveState)
+        side.setAutoresizingMask_(NSViewHeightSizable)
+        root.addSubview_(side)
+        line = PaintView.alloc().initWithFrame_(((SIDEBAR_W - 1, 0), (1, height)))
+        line.paint = lambda w, h: mb.fill_rect(((0, 0), (w, h)), K.sidebar_line())
+        line.setAutoresizingMask_(NSViewHeightSizable)
+        root.addSubview_(line)
+        self.header = SidebarHeader.alloc().initWithFrame_(((0, BAR_H), (SIDEBAR_W, 50)))
+        self.header.on_click = self.select
+        root.addSubview_(self.header)
+        self.items = {}
+        y = BAR_H + 50 + 14
+        for keys in self.GROUPS:
+            for key in keys:
+                pane = panes[key]
+                item = SidebarItem.alloc().initWithFrame_(((0, y), (SIDEBAR_W, 30)))
+                item.key, item.title, item.symbol, item.tint = key, pane.title, pane.symbol, pane.tint
+                item.on_click = self.select
+                root.addSubview_(item)
+                self.items[key] = item
+                y += 30
+            y += 14
+        # content: the toolbar title, then the scrolling sections
+        self.title = label('', 15, NSFontWeightBold)
+        self.title.setTranslatesAutoresizingMaskIntoConstraints_(True)
+        self.title.setFrame_(((SIDEBAR_W + MARGIN, (BAR_H - 20) / 2), (CONTENT_W - 2 * MARGIN, 20)))
+        root.addSubview_(self.title)
+        sv = self.scroll = NSScrollView.alloc().initWithFrame_(((SIDEBAR_W, BAR_H), (CONTENT_W, height - BAR_H)))
+        sv.setContentView_(FlippedClipView.alloc().initWithFrame_(((0, 0), (CONTENT_W, height - BAR_H))))
+        sv.setDrawsBackground_(False)
+        sv.contentView().setDrawsBackground_(False)
+        sv.setBorderType_(NSNoBorder)
+        sv.setHasVerticalScroller_(not SNAPSHOT)   # an overlay scroller would show up in snapshots
+        sv.setAutohidesScrollers_(True)
+        sv.setAutoresizingMask_(NSViewHeightSizable)
+        root.addSubview_(sv)
+        self.doc = auto(FlippedView.alloc().initWithFrame_(((0, 0), (CONTENT_W, 100))))
+        sv.setDocumentView_(self.doc)
+        clip = sv.contentView()
+        activate(self.doc.leadingAnchor().constraintEqualToAnchor_(clip.leadingAnchor()),
+                 self.doc.topAnchor().constraintEqualToAnchor_(clip.topAnchor()),
+                 self.doc.widthAnchor().constraintEqualToConstant_(CONTENT_W))
+        self.body = None
+
+    def select(self, key: str):
+        if key not in self.panes:
+            return
+        changed = key != self.current
+        self.current = key
+        pane = self.panes[key]
+        pane.shown()
+        self.render(reset_scroll=changed)
+
+    def render(self, reset_scroll: bool = False):
+        pane = self.panes[self.current]
+        for key, item in self.items.items():
+            item.selected = key == self.current
+            item.setNeedsDisplay_(True)
+        m = self.app.store.model()
+        self.header.line, self.header.line_color = sidebar_status(m)
+        self.header.setNeedsDisplay_(True)
+        self.title.setStringValue_(S(pane.title))
+        self.win.setTitle_(S(f'{pane.title} · codexpool'))
+        y = 0.0 if reset_scroll else self.scroll.contentView().bounds().origin.y
+        pane.keep = []
+        sections = [s for s in pane.build() if s is not None]
+        body = vstack(sections, spacing=22, insets=(6, MARGIN, 28, MARGIN))
+        if self.body is not None:
+            self.body.removeFromSuperview()
+        self.body = body
+        self.doc.addSubview_(body)
+        pin(body, self.doc)
+        self.doc.layoutSubtreeIfNeeded()
+        self.doc.scrollPoint_((0, y))
+
+    def content_height(self) -> float:
+        self.doc.layoutSubtreeIfNeeded()
+        return self.doc.fittingSize().height
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 8. Setup assistant: Welcome (checklist) → Add accounts (sign-in links) → Done
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+STEPS = ('welcome', 'accounts', 'done')
+
+
+@dataclass
+class Login:
+    """One `codexpool login LABEL --no-open` run and what the assistant shows for it."""
+    phase: str = 'idle'        # idle | starting | waiting | finishing | added | again | failed | expired
+    label: str = ''
+    priority: int | None = None
+    relogin: bool = False      # Sign In Again on a seat (Settings › Seats), not a new account
+    before: dict = field(default_factory=dict)   # seat file -> label, when the sign-in started
+    url: str = ''
+    deadline: float = 0.0      # time.monotonic() when the link expires
+    job: Job | None = None
+    seat_file: str = ''
+    plan: str = ''             # 'Business 5×', from status.json once the guard has seen the seat
+    message: str = ''
+    reserve_done: bool = False
+    lines: list = field(default_factory=list)
+
+
+def first_url(text: str) -> str:
+    m = re.search(r'https://[^\s<>"\']+', text)
+    return m.group(0).rstrip('.,)') if m else ''
+
+
+class SetupAssistant:
+    def __init__(self, app, step: str = 'welcome'):
+        self.app = app
+        self.step = step if step in STEPS else 'welcome'
+        self.login = Login()
+        self.keep: list = []
+        self.countdown = None      # the label that ticks while a link is waiting
+        self.timer = None
+        self.tick_target = target(lambda _t: self.tick(), [])
+        self.default_label = ''
+        self.chrome = None         # Google Chrome installed (asked once, when a link first shows)
+        self.win, root = make_window(SETUP_W, SETUP_H, 'Set Up codexpool', toolbar=False, resizable=False)
+        self.root = root
+        self.dots = PaintView.alloc().initWithFrame_((((SETUP_W - 120) / 2, 7), (120, 16)))
+        self.dots.paint = self.paint_dots
+        self.dots.ax = lambda: f'Step {STEPS.index(self.step) + 1} of {len(STEPS)}'
+        root.addSubview_(self.dots)
+        self.body = None
+        self.bottom = None
+
+    # -- chrome -----------------------------------------------------------------------------------------
+    def paint_dots(self, w, h):
+        i = STEPS.index(self.step)
+        d, gap = 8.0, 10.0
+        x = (w - (3 * d + 2 * gap)) / 2
+        for k in range(3):
+            color = NSColor.controlAccentColor() if k == i else (
+                NSColor.controlAccentColor().colorWithAlphaComponent_(0.45) if k < i else mb.C.wash(0.18))
+            mb.fill_circle(x + d / 2 + k * (d + gap), h / 2, d / 2, color)
+
+    def show(self, step: str | None = None, label: str | None = None, priority: int | None = None):
+        if step in STEPS:
+            self.step = step
+        if label is not None and self.login.phase in ('idle', 'added', 'again', 'failed', 'expired'):
+            self.login = Login(label=label, priority=priority, relogin=True)
+            self.default_label = label
+        self.render()
+
+    def go(self, step: str):
+        self.step = step
+        if step == 'welcome' and not SNAPSHOT:
+            self.app.store.fetch_doctor()
+        self.render()
+
+    def render(self):
+        self.keep = []
+        self.countdown = None
+        for v in (self.body, self.bottom):
+            if v is not None:
+                v.removeFromSuperview()
+        self.dots.setNeedsDisplay_(True)
+        body = {'welcome': self.welcome, 'accounts': self.accounts, 'done': self.done}[self.step]()
+        self.body = vstack(body, spacing=16, insets=(0, 0, 0, 0))
+        self.root.addSubview_(self.body)
+        self.bottom = self.bottom_bar()
+        self.root.addSubview_(self.bottom)
+        activate(self.bottom.leadingAnchor().constraintEqualToAnchor_(self.root.leadingAnchor()),
+                 self.bottom.trailingAnchor().constraintEqualToAnchor_(self.root.trailingAnchor()),
+                 self.bottom.bottomAnchor().constraintEqualToAnchor_(self.root.bottomAnchor()),
+                 self.body.topAnchor().constraintGreaterThanOrEqualToAnchor_constant_(self.root.topAnchor(), 50),
+                 self.body.leadingAnchor().constraintEqualToAnchor_constant_(self.root.leadingAnchor(), 56),
+                 self.body.widthAnchor().constraintEqualToConstant_(SETUP_BODY_W))
+        # Welcome and Done sit in the middle of the space; Accounts stays at the top, since it changes height
+        self.body.setHuggingPriority_forOrientation_(750, 1)
+        if self.step == 'accounts':
+            self.body.topAnchor().constraintEqualToAnchor_constant_(self.root.topAnchor(), 50).setActive_(True)
+        else:
+            centre = self.body.centerYAnchor().constraintEqualToAnchor_constant_(self.root.centerYAnchor(), -18)
+            centre.setPriority_(500)
+            centre.setActive_(True)
+        self.fit_height()
+        self.root.layoutSubtreeIfNeeded()
+
+    def fit_height(self):
+        """Grows the window (top edge fixed, never shrinking while open) when a step needs more room than it has,
+        e.g. a long seat list above a sign-in link."""
+        need = 50 + self.body.fittingSize().height + 20 + self.bottom.fittingSize().height
+        have = self.root.frame().size.height
+        screen = self.win.screen()
+        limit = screen.visibleFrame().size.height - 40 if screen is not None else 900.0
+        if need > have + 0.5:
+            grow = min(need, max(have, limit)) - have
+            f = self.win.frame()
+            self.win.setFrame_display_(((f.origin.x, f.origin.y - grow), (f.size.width, f.size.height + grow)), True)
+
+    def heading(self, title: str, body: str, icon=None):
+        parts = ([icon] if icon is not None else []) + [
+            label(title, 22, NSFontWeightBold, align=NSTextAlignmentCenter),
+            secondary(body, 13, wrap=SETUP_BODY_W - 40, align=NSTextAlignmentCenter)]
+        s = auto(NSStackView.stackViewWithViews_(parts))
+        s.setOrientation_(1)
+        s.setAlignment_(9)
+        s.setSpacing_(6)
+        if icon is not None:
+            s.setCustomSpacing_afterView_(14, icon)
+        return s
+
+    def bottom_bar(self):
+        k = self.keep
+        left, right = [], []
+        busy = self.login.phase in ('starting', 'waiting', 'finishing')
+        if self.step == 'welcome':
+            left.append(button('Open Settings', lambda _: self.app.show_settings(), k))
+            right.append(button('Continue', lambda _: self.go('accounts'), k, primary=True))
+        elif self.step == 'accounts':
+            right.append(button('Back', lambda _: self.go('welcome'), k, enabled=not busy))
+            retry = self.login.phase in ('failed', 'expired') and bool(self.login.label)   # Try Again is the default
+            right.append(button('Continue', lambda _: self.go('done'), k,
+                                primary=self.has_seats() and not busy and not retry, enabled=not busy))
+        else:
+            left.append(button('Open Settings', lambda _: self.app.show_settings(close_setup=True), k))
+            right.append(button('Back', lambda _: self.go('accounts'), k))
+            right.append(button('Done', lambda _: self.win.close(), k, primary=True))
+        bar = hstack(left, right, spacing=10, insets=(14, 20, 16, 20), min_h=62)
+        rule = canvas(lambda w, h: mb.fill_rect(((0, 0), (w, 1)), K.rule()), None, 1)
+        return vstack([rule, bar], spacing=0)
+
+    def has_seats(self) -> bool:
+        return bool(self.app.store.model().seats) or self.login.phase in ('added', 'again')
+
+    # -- step 1 -----------------------------------------------------------------------------------------
+    def welcome(self):
+        st = self.app.store
+        icon = canvas(lambda w, h: draw_app_icon(w), 72, 72)
+        head = self.heading('Welcome to codexpool',
+                            'codexpool pools your ChatGPT accounts behind the Codex app and CLI. When one seat runs '
+                            'out, the next one picks up the same thread.', icon)
+        rows = []
+        for title, status, detail in doctor_checklist(st.doctor, st.model()):
+            name, _ = CHECK_ICON.get(status, CHECK_ICON['unknown'])
+            icon_v = spinner() if st.doctor_busy and st.doctor is None else \
+                symbol_view(name, 14, check_color(status), NSFontWeightMedium, box=18)
+            rows.append(form_row(title, None if status == 'ok' else detail, (), leading=icon_v, width=SETUP_BODY_W,
+                                 min_h=40))
+        k = self.keep
+        again = link_button('Check again', lambda _: st.fetch_doctor(), k)
+        foot = hstack([secondary('From codexpool doctor.', 11)], [again], insets=(0, 4, 0, 0))
+        return [head, padded(vstack([group(rows, SETUP_BODY_W), foot], spacing=6), 8, 0, 0, 0)]
+
+    # -- step 2 -----------------------------------------------------------------------------------------
+    def accounts(self):
+        m = self.app.store.model()
+        head = self.heading('Add your ChatGPT accounts',
+                            'Each account becomes a seat. Add every account you want Codex to use: personal, work, '
+                            'team or Pro.')
+        seats = list(m.seats)
+        if seats:
+            rows = []
+            shown = seats if len(seats) <= 6 else seats[:5]
+            for s in shown:
+                left, right = seat_title_row(s, m, name_weight=NSFontWeightMedium, resets=False)
+                rows.append(hstack(left, right, spacing=7, insets=(0, ROW_X, 0, ROW_X), min_h=36))
+            if len(shown) < len(seats):
+                rows.append(hstack([secondary(f'and {len(seats) - len(shown)} more (see Settings › Seats)', 12)],
+                                   insets=(0, ROW_X + 17, 0, ROW_X), min_h=34))
+            listing = section(group(rows, SETUP_BODY_W),
+                              f'In the pool ({len(seats)} seat{"s" if len(seats) != 1 else ""})', width=SETUP_BODY_W)
+        else:
+            listing = group([hstack([symbol_view('person.crop.circle.badge.questionmark', 16,
+                                                 NSColor.secondaryLabelColor()),
+                                     secondary('No seats yet. Add your first account below.', 12)], spacing=10,
+                                    insets=(12, ROW_X, 12, ROW_X))], SETUP_BODY_W)
+        return [head, listing, self.login_card()]
+
+    def login_card(self):
+        lg, k = self.login, self.keep
+        W = SETUP_BODY_W
+        if lg.phase in ('idle', 'failed', 'expired'):   # the name field
+            field = text_field(lg.label or self.default_label, 230, 'Seat name, e.g. Work or Personal')
+            field.cell().setSendsActionOnEndEditing_(False)   # Return starts the sign-in; leaving the field doesn't
+
+            def start(_sender):
+                self.start_login(str(field.stringValue()).strip())
+            field.setTarget_(target(start, k))
+            field.setAction_('fire:')
+            again = lg.phase in ('failed', 'expired') and bool(lg.label)
+            go = button('Try Again' if again else 'Get Sign-In Link', start, k, primary=again or not self.has_seats())
+            rows = [hstack([label('Name', 13), field], [go], spacing=10, insets=(10, ROW_X, 10, ROW_X), min_h=44)]
+            if lg.phase in ('failed', 'expired'):
+                rows.append(note_row(('error', lg.message)))
+            return section(group(rows, W), 'Add a ChatGPT account', width=W,
+                           footer='You sign in on chatgpt.com in your browser; codexpool never sees your password.')
+        if lg.phase == 'again':
+            rows = [hstack([symbol_view('arrow.triangle.2.circlepath', 16, NSColor.secondaryLabelColor(),
+                                        NSFontWeightMedium, box=18),
+                            vstack([label(f'That was {lg.label} again', 13, NSFontWeightSemibold),
+                                    secondary('The same ChatGPT account and workspace: its sign-in is refreshed and '
+                                              'nothing was added. For another account, open the link in a private '
+                                              'window.', 11, wrap=W - 200)], spacing=2, full=False)],
+                           [button('Add Another…', lambda _: self.reset_login(), k)], spacing=10,
+                           insets=(12, ROW_X, 12, ROW_X), min_h=56)]
+            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+        if lg.phase == 'added':
+            verb = 'Signed in again:' if lg.relogin else 'Added'
+            text = f'{verb} {lg.label or lg.seat_file}' + (f' · {lg.plan}' if lg.plan else '')
+            reserve = None if lg.relogin else button('Mark as Reserve', lambda _: self.mark_reserve(), k,
+                                                     enabled=not lg.reserve_done)
+            another = button('Add Another…', lambda _: self.reset_login(), k)
+            rows = [hstack([symbol_view('checkmark.circle.fill', 18, mb.C.green_text(), NSFontWeightMedium),
+                            vstack([label(text, 13, NSFontWeightSemibold),
+                                    secondary('A reserve seat is used last.' if not lg.reserve_done else
+                                              f'{lg.label} is now a reserve seat.', 11, wrap=W - 300)],
+                                   spacing=2, full=False)],
+                           [reserve, another], spacing=10, insets=(12, ROW_X, 12, ROW_X), min_h=56)]
+            if lg.message:
+                rows.append(note_row(('error', lg.message)))
+            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+        if lg.phase == 'finishing':
+            rows = [hstack([spinner(), label(f'Signed in. Adding {lg.label or "the seat"}…', 13,
+                                             NSFontWeightSemibold)], spacing=8, insets=(12, ROW_X, 12, ROW_X),
+                           min_h=48)]
+            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+        # starting / waiting
+        who = f'the account for “{lg.label}”' if lg.label else 'the account to add'
+        title = hstack([spinner(), label(f'Sign in as {who}', 13, NSFontWeightSemibold)], spacing=8, cluster=True)
+        if lg.phase == 'starting':
+            rows = [hstack([title], [button('Cancel', lambda _: self.cancel_login(), k)], spacing=10,
+                           insets=(12, ROW_X, 12, ROW_X), min_h=48)]
+            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+        self.countdown = secondary(self.countdown_text(), 11)
+        url = label(lg.url, 11, color=NSColor.secondaryLabelColor(), mono=True, middle=True, select=True)
+        url.setToolTip_(S(lg.url))
+        buttons = [button('Open in Browser', lambda _: open_thing(lg.url), k)]
+        if self.chrome is None:
+            self.chrome = True if SNAPSHOT else app_installed(CHROME_BUNDLE)
+        if self.chrome:
+            buttons.append(button('Open in Private Chrome Window', lambda _: open_private_chrome(lg.url), k))
+        buttons.append(button('Copy Link', lambda _: (copy_text(lg.url), self.flash_copied()), k))
+        rows = [
+            hstack([title], [self.countdown], spacing=10, insets=(12, ROW_X, 4, ROW_X)),
+            padded(secondary('To add a different account than the one your browser is signed in to, use a private '
+                             'window.', 12, wrap=W - 2 * ROW_X), 0, ROW_X, 6, ROW_X),
+            hstack(buttons, spacing=8, insets=(4, ROW_X, 8, ROW_X)),
+            hstack([url], [link_button('Cancel', lambda _: self.cancel_login(), k)], spacing=10,
+                   insets=(4, ROW_X, 10, ROW_X)),
+        ]
+        return section(group(rows, W, rules=False), 'Add a ChatGPT account', width=W)
+
+    def countdown_text(self) -> str:
+        left = max(0, int(self.login.deadline - self.clock()))
+        return f'Link expires in {left // 60}:{left % 60:02d}'
+
+    def clock(self) -> float:
+        return self.snapshot_clock if SNAPSHOT else time.monotonic()
+
+    snapshot_clock = 0.0
+
+    def flash_copied(self):
+        if self.countdown is not None:
+            self.countdown.setStringValue_('Link copied')
+            AppHelper.callLater(1.5, self.tick)
+
+    # -- login flow ------------------------------------------------------------------------------------
+    def start_login(self, name: str):
+        if not name:
+            self.login = Login(phase='failed', message='Give the seat a name first, e.g. Work or Personal.')
+            self.render()
+            return
+        if name.startswith('-'):
+            self.login = Login(phase='failed', label=name, message='A seat name can’t start with a dash.')
+            self.render()
+            return
+        same = self.login.label == name
+        pr = self.login.priority if same else None
+        lg = self.login = Login(phase='starting', label=name, priority=pr, relogin=self.login.relogin and same,
+                                before={s.name: s.label for s in self.app.store.model().seats if s.name})
+        args = ['login', name, '--no-open'] + (['--priority', str(pr)] if pr is not None else [])
+
+        def line(text: str):
+            if lg is not self.login:
+                return
+            lg.lines.append(text)
+            if 'Authentication saved to ' in text and lg.phase in ('starting', 'waiting'):
+                # Signed in: codexpool is writing the seat's name (and priority). Never stop it now.
+                lg.phase = 'finishing'
+                self.stop_timer()
+                self.render()
+                return
+            if not lg.url:
+                url = first_url(text)
+                if url:
+                    lg.url, lg.phase, lg.deadline = url, 'waiting', time.monotonic() + LOGIN_TTL_S
+                    self.render()
+                    self.start_timer()
+
+        def done(r: Result):
+            if lg is not self.login:
+                return
+            self.stop_timer()
+            seat = next((ln.strip() for ln in lg.lines if ln.strip().startswith('seat ')), '')
+            if lg.phase == 'expired' or (lg.job is not None and lg.job.stopped):
+                return   # an attempt that was cancelled or ran out of time: already shown
+            if r.ok and seat:
+                m = re.match(r'seat\s+(\S+?):', seat)
+                lg.seat_file = m.group(1) if m else ''
+                plan = re.search(r'\bplan=(\S+)', seat)
+                lg.phase, lg.plan = 'added', mb.plan_badge(plan.group(1), None) if plan else ''
+                old = lg.before.get(lg.seat_file)
+                if old is not None and not lg.relogin:
+                    # The browser signed in to an account that is already a seat: its login was refreshed and
+                    # `login LABEL` renamed it. Nothing was added; give it its name back.
+                    lg.phase = 'again'
+                    if old != lg.label:
+                        self.app.run(['label', lg.seat_file, old], lambda r: self.app.after_change())
+                    lg.label = old
+                self.render()
+                self.app.after_change(lambda: self.fill_plan(lg))
+            else:
+                lg.phase, lg.message = 'failed', r.message() if not r.ok else 'The sign-in did not complete.'
+                self.render()
+        def ended(r: Result):
+            done(r)
+            self.app.login_ended()   # a quit that was waiting for this sign-in can go ahead
+        lg.job = Job(args, ended, line)
+        self.render()
+
+    def fill_plan(self, lg: Login):
+        """After the guard has seen the new seat: its plan and the size the pool gave it."""
+        seat = next((s for s in self.app.store.model().seats if s.name == lg.seat_file), None)
+        if seat is not None and lg is self.login:
+            lg.plan = seat.plan
+            self.render()
+
+    def start_timer(self):
+        self.stop_timer()
+        self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0, self.tick_target, 'fire:', None, True)
+
+    def stop_timer(self):
+        if self.timer is not None:
+            self.timer.invalidate()
+            self.timer = None
+
+    def tick(self):
+        lg = self.login
+        if lg.phase != 'waiting':
+            return
+        if time.monotonic() >= lg.deadline:
+            lg.phase, lg.message = 'expired', 'The sign-in link expired. Links last 5 minutes; get a new one.'
+            if lg.job:
+                lg.job.stop()
+            self.stop_timer()
+            self.render()
+        elif self.countdown is not None:
+            self.countdown.setStringValue_(S(self.countdown_text()))
+
+    def cancel_login(self):
+        lg = self.login
+        if lg.job:
+            lg.job.stop()
+        self.stop_timer()
+        self.login = Login(label=lg.label, priority=lg.priority)
+        self.render()
+
+    def reset_login(self):
+        self.login = Login()
+        self.default_label = ''
+        self.render()
+
+    def mark_reserve(self):
+        lg = self.login
+
+        def done(r: Result):
+            if r.ok:
+                lg.reserve_done, lg.message = True, ''
+                self.app.after_change()
+            else:
+                lg.message = r.message()
+            self.render()
+        self.app.run(['reserve', lg.seat_file or lg.label], done)
+
+    # -- step 3 -----------------------------------------------------------------------------------------
+    def done(self):
+        k = self.keep
+        icon = symbol_view('checkmark.circle.fill', 54, mb.C.green_text(), NSFontWeightMedium, box=64)
+        head = self.heading('You’re all set',
+                            'Quit and reopen the Codex app so it uses the pool. Your threads stay where they are.',
+                            icon)
+        reopen = button('Quit and Reopen Codex…', lambda _: self.app.reopen_codex(None, self), k)
+        note = note_row(self.done_note) if self.done_note else None
+        rows = [form_row('Codex app', 'Picks up the pool when it starts.', reopen, width=SETUP_BODY_W)]
+        if note is not None:
+            rows.append(note)
+        tips = group([
+            form_row('Settings', 'Seats, lanes, the menu bar display and health checks. Click the menu bar meter, '
+                     'then Settings… (⌘,).', (), leading=canvas(lambda w, h: draw_icon_square(0, 0, 22,
+                                                                                               'gearshape.fill', 'grey'),
+                                                               22, 22), width=SETUP_BODY_W),
+            form_row('Menu bar meter', 'The number is what is left this week across every seat: green while a '
+                     'regular seat serves, red once the reserve takes over, grey when the pool needs attention.', (),
+                     leading=canvas(lambda w, h: draw_icon_square(0, 0, 22, 'gauge.with.dots.needle.67percent',
+                                                                  'green'), 22, 22), width=SETUP_BODY_W),
+        ], SETUP_BODY_W)
+        return [head, group(rows, SETUP_BODY_W), tips]
+
+    done_note = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 9. App controller: single instance, windows, menus, the Dock icon, confirmations, command plumbing
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+_LOCK_FD = None
+
+
+def claim_single_instance(pane: str | None) -> bool:
+    """True if this process is the one Settings process. Otherwise the running one is asked to show `pane` (a
+    distributed notification) and brought forward, and this one should exit."""
+    global _LOCK_FD
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(PID_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            pid = int(os.read(fd, 32).decode().strip() or 0)
+        except ValueError:
+            pid = 0
+        os.close(fd)
+        try:   # for a first instance still starting up, which isn't listening yet
+            tmp = REQUEST_FILE.with_suffix('.tmp')
+            tmp.write_text(f'{pane or "front"}\n')
+            os.replace(tmp, REQUEST_FILE)
+        except OSError:
+            pass
+        NSDistributedNotificationCenter.defaultCenter().postNotificationName_object_userInfo_deliverImmediately_(
+            SHOW_NOTE, S(pane or 'front'), None, True)
+        other = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid) if pid else None
+        if other is not None:
+            other.activateWithOptions_(0)
+        return False
+    os.ftruncate(fd, 0)
+    os.write(fd, f'{os.getpid()}\n'.encode())
+    _LOCK_FD = fd
+    return True
+
+
+def take_request() -> str | None:
+    """The pane a second launch asked for in state/settings-request, if any (and removes the file)."""
+    try:
+        fresh = time.time() - REQUEST_FILE.stat().st_mtime < 30   # older: left behind by an instance that quit
+        pane = REQUEST_FILE.read_text().strip()
+        REQUEST_FILE.unlink()
+    except OSError:
+        return None
+    return pane if fresh and pane in PANES + SETUP_PANES + ('front',) else None
+
+
+def release_single_instance():
+    global _LOCK_FD
+    if _LOCK_FD is not None:
+        try:
+            os.ftruncate(_LOCK_FD, 0)
+            os.close(_LOCK_FD)
+        except OSError:
+            pass
+        _LOCK_FD = None
+
+
+class SettingsController(NSObject):
+    def init(self):
+        self = objc.super(SettingsController, self).init()  # noqa: PLW0642 (the PyObjC init idiom)
+        if self is None:
+            return None
+        self.store = None
+        self.panes = {}
+        self.view = None
+        self.setup = None
+        self.keep = []
+        self.start_pane = 'overview'
+        self.sheet = None
+        self.stream_job = None     # the lane test streaming into a sheet, stopped on quit
+        self.quitting = False      # a quit is waiting for a sign-in to finish (NSTerminateLater)
+        self.last_status = None
+        return self
+
+    # -- construction ----------------------------------------------------------------------------------
+    @objc.python_method
+    def configure(self, store: Store, pane: str, height: float = WIN_H):
+        self.store = store
+        self.start_pane = pane
+        self.panes = {cls.key: cls(self) for cls in PANE_CLASSES}
+        store.listeners.append(self.data_changed)
+        self.height = height
+
+    @objc.python_method
+    def ensure_view(self):
+        if self.view is None:
+            self.view = SettingsView(self, self.panes, self.height)
+            self.view.win.setDelegate_(self)
+        return self.view
+
+    @objc.python_method
+    def ensure_setup(self):
+        if self.setup is None:
+            self.setup = SetupAssistant(self)
+            self.setup.win.setDelegate_(self)
+        return self.setup
+
+    # -- lifecycle (live) ------------------------------------------------------------------------------
+    def applicationDidFinishLaunching_(self, note):
+        app = NSApplication.sharedApplication()
+        app.setApplicationIconImage_(app_icon_image())
+        self.build_menus()
+        NSDistributedNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+            self, 'showRequested:', SHOW_NOTE, None)
+        self.store.poll(force=True)
+        self.last_status = self.store.model().status
+        self.store.fetch_version()
+        # The default run loop mode only: no rebuild while a pop-up menu is open or the window is being resized.
+        timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(POLL_EVERY_S, self, 'tick:',
+                                                                                         None, True)
+        timer.setTolerance_(2.0)
+        self.open_pane(self.start_pane)
+        pending = take_request()   # a second launch that came before the observer above was registered
+        if pending and pending != self.start_pane:
+            self.handle_request(pending)
+        mb.activate_app()
+
+    def applicationShouldTerminateAfterLastWindowClosed_(self, app):
+        return True
+
+    def applicationShouldTerminate_(self, app):
+        """Quitting (or closing the last window) while a sign-in is finishing waits for it: codexpool is naming
+        the seat and, for Sign In Again, waiting up to 20 s for the pool to load it to restore its priority.
+        Stopping it then, or closing the pipe it prints to, would lose the name or the priority."""
+        if not self.login_finishing():
+            return NSTerminateNow
+        self.quitting = True
+        for w in (self.view.win if self.view else None, self.setup.win):
+            if w is not None:
+                w.orderOut_(None)
+        # the run loop is in the modal panel mode until the reply, so the timer goes in the common modes
+        timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+            QUIT_WAIT_S, target(lambda _t: self.finish_quit(), self.keep), 'fire:', None, False)
+        NSRunLoop.currentRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+        return NSTerminateLater
+
+    @objc.python_method
+    def login_finishing(self) -> bool:
+        return self.setup is not None and self.setup.login.phase == 'finishing'
+
+    @objc.python_method
+    def login_ended(self):
+        if self.quitting:
+            AppHelper.callAfter(self.finish_quit)   # after the rest of the login's own callback
+
+    @objc.python_method
+    def finish_quit(self):
+        if self.quitting:
+            self.quitting = False
+            NSApplication.sharedApplication().replyToApplicationShouldTerminate_(True)
+
+    def applicationWillTerminate_(self, note):
+        lg = self.setup.login if self.setup is not None else None
+        if lg is not None and lg.job is not None and lg.phase in ('starting', 'waiting'):
+            lg.job.stop()   # a sign-in still waiting for the browser (once signed in, it is never stopped)
+        if self.stream_job is not None:
+            self.stream_job.stop()   # a lane test, and the subagents it started, would run on with no reader
+        release_single_instance()
+
+    def showRequested_(self, note):
+        take_request()
+        self.handle_request(str(note.object() or 'front'))
+        mb.activate_app()
+
+    @objc.python_method
+    def handle_request(self, pane: str):
+        """A pane another launch asked for (the menu bar, the installer, `codexpool gui`). An open Setup assistant
+        is only brought forward when the request would move it back to Welcome or away from a sign-in in
+        progress: the installer and the menu bar's first run can both ask for it within a minute."""
+        s = self.setup
+        if pane.startswith('setup-') and s is not None and s.win.isVisible() and (
+                pane == 'setup-welcome' or s.login.phase in ('starting', 'waiting', 'finishing')):
+            s.win.makeKeyAndOrderFront_(None)
+            s.win.orderFrontRegardless()
+            return
+        self.open_pane(pane if pane != 'front' else None)
+
+    def tick_(self, timer):
+        self.store.poll()
+        status = self.store.model().status   # it can change with no new file: the guard stopped writing (stale)
+        if status != self.last_status:
+            self.last_status = status
+            self.store.notify('status')
+        if self.view is not None and self.view.current in ('overview', 'seats', 'general', 'health', 'lanes'):
+            pane = self.panes[self.view.current]
+            if pane.note and pane.note[0] == 'ok' and time.monotonic() - pane.note_at > NOTE_S:
+                pane.note = None
+                self.rebuild(pane)
+
+    def windowDidBecomeKey_(self, note):
+        if self.view is not None and note.object() == self.view.win:
+            for item in self.view.items.values():
+                item.setNeedsDisplay_(True)
+
+    def windowDidResignKey_(self, note):
+        self.windowDidBecomeKey_(note)
+
+    # -- windows ---------------------------------------------------------------------------------------
+    @objc.python_method
+    def open_pane(self, pane: str | None):
+        if pane and pane.startswith('setup-'):
+            step = {'setup-welcome': 'welcome', 'setup-done': 'done'}.get(pane, 'accounts')
+            self.open_setup(pane, step=step)
+            return
+        view = self.ensure_view()
+        view.select(pane if pane in self.panes else view.current)
+        if not view.win.isVisible():
+            view.win.center()
+        view.win.makeKeyAndOrderFront_(None)
+        view.win.orderFrontRegardless()
+
+    @objc.python_method
+    def show_pane(self, key: str):
+        self.open_pane(key)
+
+    @objc.python_method
+    def show_seat(self, name: str):
+        self.panes['seats'].selected = name
+        self.open_pane('seats')
+
+    @objc.python_method
+    def show_settings(self, close_setup: bool = False):
+        self.open_pane(self.view.current if self.view else 'overview')
+        if close_setup and self.setup is not None:
+            self.setup.win.close()
+
+    @objc.python_method
+    def open_setup(self, pane: str = 'setup-welcome', step: str | None = None, label: str | None = None,
+                   priority: int | None = None):
+        setup = self.ensure_setup()
+        step = step or {'setup-welcome': 'welcome', 'setup-accounts': 'accounts', 'setup-done': 'done'}.get(pane,
+                                                                                                         'accounts')
+        if step == 'welcome' and not SNAPSHOT and self.store.doctor is None:
+            self.store.fetch_doctor()
+        was_visible = setup.win.isVisible()
+        setup.show(step, label, priority)
+        if not was_visible:
+            if self.view is not None and self.view.win.isVisible():
+                f = self.view.win.frame()
+                setup.win.setFrameTopLeftPoint_((f.origin.x + (f.size.width - SETUP_W) / 2,
+                                                 f.origin.y + f.size.height - 40))
+            else:
+                setup.win.center()
+        setup.win.makeKeyAndOrderFront_(None)
+        setup.win.orderFrontRegardless()
+
+    def windowWillClose_(self, note):
+        # A sign-in still waiting for the browser stops, and starts over next time (its callbacks are ignored).
+        # One that is finishing keeps running: its result shows when the assistant opens again, and a quit
+        # waits for it (applicationShouldTerminate_).
+        if self.setup is not None and note.object() == self.setup.win and \
+                self.setup.login.phase in ('starting', 'waiting'):
+            self.setup.cancel_login()
+
+    # -- data ------------------------------------------------------------------------------------------
+    @objc.python_method
+    def data_changed(self, what: str):
+        if self.view is not None:
+            relevant = {'status': ('overview', 'seats', 'general', 'about'), 'doctor': ('health',),
+                        'lanes': ('lanes',), 'version': ('about',)}.get(what, ())
+            if self.view.current in relevant and not self.editing():
+                self.view.render()
+            elif what == 'status':   # the sidebar's status line
+                self.view.header.line, self.view.header.line_color = sidebar_status(self.store.model())
+                self.view.header.setNeedsDisplay_(True)
+        if self.setup is not None and self.setup.win.isVisible() and what in ('status', 'doctor') and \
+                self.setup.login.phase not in ('waiting', 'starting') and not self.editing(self.setup.win):
+            self.setup.render()
+
+    @objc.python_method
+    def editing(self, win=None) -> bool:
+        """A text field is being edited: don't rebuild under the user's cursor."""
+        win = win or (self.view.win if self.view else None)
+        if win is None:
+            return False
+        fr = win.firstResponder()
+        return fr is not None and fr.isKindOfClass_(NSTextView) and fr.isFieldEditor()
+
+    @objc.python_method
+    def rebuild(self, pane: Pane):
+        if self.view is not None and self.view.current == pane.key:
+            self.view.render()
+
+    @objc.python_method
+    def run(self, args, done):
+        Job(args, done)
+
+    @objc.python_method
+    def after_change(self, then=None):
+        """One guard pass so status.json shows the change at once (like the menu bar app after an action)."""
+        if self.quitting:
+            return   # the guard runs every minute anyway; a pass started now would outlive its reader
+
+        def finished(r: Result):
+            self.store.poll(force=True)
+            if then:
+                then()
+        Job(['guard'], finished)
+
+    # -- confirmations and long commands ---------------------------------------------------------------
+    @objc.python_method
+    def front_window(self):
+        for w in (self.setup.win if self.setup else None, self.view.win if self.view else None):
+            if w is not None and w.isKeyWindow():
+                return w
+        return self.view.win if self.view and self.view.win.isVisible() else (self.setup.win if self.setup else None)
+
+    @objc.python_method
+    def ask(self, title: str, text: str, button_title: str, then, destructive: bool = False):
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(S(title))
+        alert.setInformativeText_(S(text))
+        alert.setAlertStyle_(NSAlertStyleWarning)
+        b = alert.addButtonWithTitle_(S(button_title))
+        if destructive:
+            b.setHasDestructiveAction_(True)
+        alert.addButtonWithTitle_('Cancel')
+        alert.setIcon_(app_icon_image(128))
+
+        def answered(code):
+            if code == NSAlertFirstButtonReturn:
+                then()
+        win = self.front_window()
+        if win is not None:
+            alert.beginSheetModalForWindow_completionHandler_(win, answered)
+        else:
+            answered(alert.runModal())
+
+    @objc.python_method
+    def stream_sheet(self, title: str, args: list, finished=None):
+        """Runs a long command (lane test) with its output streaming into a sheet; Stop ends it."""
+        win = self.front_window()
+        w, h = 620.0, 420.0
+        sheet = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(((0, 0), (w, h)), NSWindowStyleMaskTitled,
+                                                                              NSBackingStoreBuffered, False)
+        root = FlippedView.alloc().initWithFrame_(((0, 0), (w, h)))
+        sheet.setContentView_(root)
+        keep: list = []
+        head_spin = spinner()
+        head = label(S(f'{title}…'), 15, NSFontWeightSemibold)
+        sub = secondary('Output from codexpool lane test. This can take a few minutes.', 11)
+        scroll = NSTextView.scrollableTextView()
+        text = scroll.documentView()
+        text.setEditable_(False)
+        text.setFont_(mb.font(11, mono=True))
+        text.setTextContainerInset_((6, 8))
+        auto(scroll)
+        state = {'job': None, 'done': False}
+        stop = button('Stop', None, keep)
+
+        def append(line: str):
+            text.textStorage().appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(
+                S(line + '\n'), {NSFontAttributeName: mb.font(11, mono=True),
+                                 NSForegroundColorAttributeName: NSColor.labelColor()}))
+            text.scrollToEndOfDocument_(None)
+
+        def close(_sender):
+            if not state['done'] and state['job'] is not None:
+                state['job'].stop()
+                return
+            win.endSheet_(sheet)
+            self.sheet = None
+
+        def done(r: Result):
+            state['done'] = True
+            self.stream_job = None
+            head_spin.stopAnimation_(None)
+            head.setStringValue_(S(f'{title}: passed' if r.ok else (f'{title}: stopped' if state['job'].stopped else
+                                                                    f'{title}: failed ({r.message()})')))
+            stop.setTitle_('Close')
+            make_primary(stop)
+            if finished:
+                finished(r)
+        stop.setTarget_(target(close, keep))
+        top = hstack([head_spin, vstack([head, sub], spacing=2, full=False)], spacing=10, cluster=True)
+        body = vstack([top, scroll, hstack([], [stop])], spacing=12, insets=(18, 20, 16, 20))
+        fix(scroll, h=h - 130)
+        root.addSubview_(body)
+        pin(body, root)
+        self.sheet = (sheet, keep)
+        win.beginSheet_completionHandler_(sheet, None)
+        state['job'] = self.stream_job = Job(args, done, append)
+
+    # -- pool and Codex actions used by several panes --------------------------------------------------
+    @objc.python_method
+    def restart_pool(self, pane: Pane):
+        self.ask('Restart the pool?', 'Codex requests fail for a few seconds while the pool restarts.', 'Restart',
+                 lambda: pane.run(['restart'], 'Restarting the pool…', 'Pool restarted'))
+
+    @objc.python_method
+    def reopen_codex(self, pane: Pane | None, setup: SetupAssistant | None = None):
+        if not app_installed(CODEX_BUNDLE):
+            msg = ('error', 'The Codex app isn’t installed.')
+            if pane is not None:
+                pane.say(*msg)
+            if setup is not None:
+                setup.done_note = msg
+                setup.render()
+            return
+
+        def go():
+            def done(ok: bool, text: str):
+                if pane is not None:
+                    pane.say('ok' if ok else 'error', text)
+                if setup is not None:
+                    setup.done_note = ('ok' if ok else 'error', text)
+                    setup.render()
+            if pane is not None:
+                pane.say('busy', 'Reopening Codex…')
+            if setup is not None:
+                setup.done_note = ('busy', 'Reopening Codex…')
+                setup.render()
+            CodexReopener(done)
+        self.ask('Quit and reopen the Codex app?',
+                 'Codex quits and opens again, so it picks up the pool. Finish or save what you are typing in Codex '
+                 'first.', 'Reopen', go)
+
+    # -- menus -----------------------------------------------------------------------------------------
+    @objc.python_method
+    def build_menus(self):
+        main = NSMenu.alloc().init()
+
+        def submenu(title):
+            item = main.addItemWithTitle_action_keyEquivalent_(S(title), None, '')
+            menu = NSMenu.alloc().initWithTitle_(S(title))
+            item.setSubmenu_(menu)
+            return menu
+
+        def add(menu, title, action, key='', target_=None, mask=None, tag=0):
+            item = menu.addItemWithTitle_action_keyEquivalent_(S(title), action, key)
+            if target_ is not None:
+                item.setTarget_(target_)
+            if mask is not None:
+                item.setKeyEquivalentModifierMask_(mask)
+            item.setTag_(tag)
+            return item
+        app_menu = submenu('codexpool')
+        add(app_menu, 'About codexpool', 'showPaneItem:', '', self, tag=PANES.index('about'))
+        app_menu.addItem_(NSMenuItem.separatorItem())
+        add(app_menu, 'Settings…', 'showPaneItem:', ',', self, tag=PANES.index('overview'))
+        add(app_menu, 'Setup Assistant…', 'openSetupItem:', '', self)
+        app_menu.addItem_(NSMenuItem.separatorItem())
+        add(app_menu, 'Hide codexpool', 'hide:', 'h')
+        add(app_menu, 'Hide Others', 'hideOtherApplications:', 'h', mask=(1 << 19) | (1 << 20))
+        add(app_menu, 'Show All', 'unhideAllApplications:')
+        app_menu.addItem_(NSMenuItem.separatorItem())
+        add(app_menu, 'Quit codexpool', 'terminate:', 'q')
+        edit = submenu('Edit')
+        add(edit, 'Undo', 'undo:', 'z')
+        add(edit, 'Redo', 'redo:', 'Z')
+        edit.addItem_(NSMenuItem.separatorItem())
+        for title, action, key in (('Cut', 'cut:', 'x'), ('Copy', 'copy:', 'c'), ('Paste', 'paste:', 'v'),
+                                   ('Select All', 'selectAll:', 'a')):
+            add(edit, title, action, key)
+        view = submenu('View')
+        for i, cls in enumerate(PANE_CLASSES):
+            add(view, cls.title, 'showPaneItem:', str(i + 1), self, tag=i)
+        window = submenu('Window')
+        add(window, 'Minimize', 'performMiniaturize:', 'm')
+        add(window, 'Close', 'performClose:', 'w')
+        help_menu = submenu('Help')
+        add(help_menu, 'codexpool Documentation', 'openDocsItem:', '?', self)
+        add(help_menu, 'Report an Issue', 'openIssuesItem:', '', self)
+        app = NSApplication.sharedApplication()
+        app.setMainMenu_(main)
+        app.setWindowsMenu_(window)
+        app.setHelpMenu_(help_menu)
+
+    def showPaneItem_(self, item):
+        self.open_pane(PANES[item.tag()])
+
+    def openSetupItem_(self, item):
+        self.open_setup('setup-welcome')
+
+    def openDocsItem_(self, item):
+        open_thing(DOCS_URL)
+
+    def openIssuesItem_(self, item):
+        open_thing(ISSUES_URL)
+
+
+def patch_identity():
+    """The process's name in the menu bar and Dock, and its defaults domain, before AppKit starts."""
+    info = NSBundle.mainBundle().infoDictionary()
+    try:
+        info['CFBundleIdentifier'] = BUNDLE_ID
+        info['CFBundleName'] = 'codexpool'
+    except (TypeError, AttributeError):
+        pass
+    NSProcessInfo.processInfo().setProcessName_('codexpool')
+
+
+def run_app(pane: str):
+    if not claim_single_instance(pane):
+        return
+    patch_identity()
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    controller = SettingsController.alloc().init()
+    controller.configure(Store(), pane)
+    app.setDelegate_(controller)
+    AppHelper.runEventLoop(unexpectedErrorAlert=lambda: True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 10. Snapshot mode and main()
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+def render_window(win) -> tuple:
+    """The window's frame view (title bar, traffic lights, content) cached offscreen at 2x."""
+    win.contentView().layoutSubtreeIfNeeded()
+    win.displayIfNeeded()
+    frame = win.contentView().superview()
+    size = frame.bounds().size
+    rep = mb.new_bitmap(size.width, size.height)
+    frame.cacheDisplayInRect_toBitmapImageRep_(frame.bounds(), rep)
+    return rep, size.width, size.height
+
+
+def compose_snapshot(rep, w: float, h: float, dark: bool, appearance, out: str):
+    """The window on a soft backdrop with rounded corners, a hairline and a shadow, like the popover shots."""
+    margin, radius = 34.0, 12.0
+    W, H = w + 2 * margin, h + 2 * margin
+    card = ((margin, margin), (w, h))
+
+    def compose():
+        top, bottom = ((0x2A, 0x2E, 0x3A), (0x14, 0x16, 0x1D)) if dark else ((0xCD, 0xD6, 0xE6), (0xB6, 0xC1, 0xD8))
+        NSGradient.alloc().initWithStartingColor_endingColor_(
+            mb.rgb(*(c / 255 for c in top)), mb.rgb(*(c / 255 for c in bottom))).drawInRect_angle_(((0, 0), (W, H)), 90)
+        NSGraphicsContext.saveGraphicsState()
+        sh = NSShadow.alloc().init()
+        sh.setShadowBlurRadius_(30)
+        sh.setShadowOffset_((0, -12))
+        sh.setShadowColor_(mb.rgb(0, 0, 0, 0.5 if dark else 0.25))
+        sh.set()
+        mb.fill_rounded(card, radius, mb.rgb(0.16, 0.16, 0.17) if dark else mb.rgb(0.96, 0.96, 0.96))
+        NSGraphicsContext.restoreGraphicsState()
+        NSGraphicsContext.saveGraphicsState()
+        mb.rounded(card, radius).addClip()
+        rep.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+            card, ((0, 0), (0, 0)), NSCompositingOperationSourceOver, 1.0, True, None)
+        NSGraphicsContext.restoreGraphicsState()
+        mb.stroke_rounded(card, radius, mb.rgb(1, 1, 1, 0.14) if dark else mb.rgb(0, 0, 0, 0.16), 1.0)
+        if dark:   # the inner light edge dark windows have
+            mb.stroke_rounded(((margin + 1, margin + 1), (w - 2, h - 2)), radius - 1, mb.rgb(1, 1, 1, 0.05), 1.0)
+
+    mb.write_png(mb.render_offscreen(compose, W, H, appearance), out)
+
+
+def snapshot(args):
+    global SNAPSHOT
+    SNAPSHOT = True
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyProhibited)
+    dark = args.appearance == 'dark'
+    appearance = NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua if dark else NSAppearanceNameAqua)
+    app.setAppearance_(appearance)
+    raw, _ = mb.load_status(args.status)
+    now = mb.parse_time(args.now) if args.now else None
+    if now is None and raw is not None:
+        generated = mb.parse_time(raw.get('generated_at'))
+        now = generated + dt.timedelta(seconds=12) if generated else None
+    store = Store(args.status, now or mb.utcnow(), args.history)   # no --history: no pace line (deterministic)
+    store.load_fixtures(args.doctor, args.lanes)
+    controller = SettingsController.alloc().init()
+    controller.configure(store, args.pane, args.height or WIN_H)
+
+    if args.pane.startswith('setup-'):
+        setup = controller.ensure_setup()
+        setup.win.setAppearance_(appearance)
+        step = {'setup-welcome': 'welcome', 'setup-done': 'done'}.get(args.pane, 'accounts')
+        if args.pane == 'setup-signin':
+            setup.snapshot_clock = 1000.0
+            setup.login = Login(phase='waiting', label='Work C', url=DEMO_SIGNIN_URL, deadline=1000.0 + 252)
+        elif args.pane == 'setup-added':
+            setup.login = Login(phase='added', label='Work C', seat_file='codex-work-c.json', plan='Business 5×')
+        elif args.pane == 'setup-again':
+            setup.login = Login(phase='again', label='Personal', seat_file='codex-personal.json', plan='Plus')
+        setup.show(step)
+        rep, w, h = render_window(setup.win)
+    else:
+        view = controller.ensure_view()
+        view.win.setAppearance_(appearance)
+        view.select(args.pane)
+        if not args.height:   # fit the content, like a window the user sized to it
+            want = BAR_H + view.content_height()
+            h = max(MIN_H, min(900.0, want))
+            view.win.setContentSize_((WIN_W, h))
+            view.render()
+        rep, w, h = render_window(view.win)
+    compose_snapshot(rep, w, h, dark, appearance, args.snapshot)
+    print(args.snapshot)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog='codexpool-settings', description='codexpool Settings window and Setup assistant')
+    p.add_argument('--pane', default='overview', choices=PANES + SETUP_PANES,
+                   help='the pane or Setup assistant step to open')
+    p.add_argument('--snapshot', metavar='OUT.png', help='render the window to a PNG and exit (runs no command)')
+    p.add_argument('--appearance', choices=('light', 'dark'), default='light', help='(snapshot)')
+    p.add_argument('--status', type=Path, default=mb.STATUS_FILE, help='status.json to render (snapshot)')
+    p.add_argument('--doctor', type=Path, help='codexpool doctor --json output to render (snapshot)')
+    p.add_argument('--lanes', type=Path, help='codexpool lane list --json output to render (snapshot)')
+    p.add_argument('--history', type=Path, help='history.jsonl for the pace line (snapshot; default: none)')
+    p.add_argument('--now', help='pretend the time is this ISO-8601 instant (snapshot)')
+    p.add_argument('--height', type=float, help='window height in pt (snapshot; default: fit the content)')
+    args = p.parse_args(argv)
+    if args.snapshot:
+        snapshot(args)
+        return
+    run_app(args.pane)
+
+
+if __name__ == '__main__':
+    main()

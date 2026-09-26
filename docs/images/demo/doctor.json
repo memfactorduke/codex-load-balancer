@@ -1,0 +1,64 @@
+{
+  "ok": true,
+  "problems": 0,
+  "warnings": 1,
+  "sections": [
+    {
+      "title": "Pool process",
+      "checks": [
+        {"status": "ok", "text": "launchd job com.codexpool.pool running (pid 4242)", "fix": null},
+        {"status": "ok", "text": "listening on 127.0.0.1:8319", "fix": null},
+        {"status": "ok", "text": "running build: 7.3.18+gate.1a2b3c4d5e (installed 7.3.18+gate.1a2b3c4d5e)", "fix": null},
+        {"status": "ok", "text": "origin gate: Codex-like request 200, browser request 403", "fix": null},
+        {"status": "ok", "text": "bound to loopback only", "fix": null},
+        {"status": "ok", "text": "management API reachable (Keychain key ok)", "fix": null}
+      ]
+    },
+    {
+      "title": "Codex app",
+      "checks": [
+        {"status": "ok", "text": "openai_base_url = http://127.0.0.1:8319/v1", "fix": null},
+        {"status": "ok", "text": "built-in openai provider (thread history visible)", "fix": null},
+        {"status": "ok", "text": "live model catalog (no static model_catalog_json)", "fix": null}
+      ]
+    },
+    {
+      "title": "Seats",
+      "checks": [
+        {"status": "ok", "text": "5 Codex seats in the pool", "fix": null},
+        {"status": "ok", "text": "Work A: exhausted (usage limit reached), back Sat 23:52", "fix": null},
+        {"status": "ok", "text": "Work B: active", "fix": null},
+        {"status": "ok", "text": "Team: ready", "fix": null},
+        {"status": "ok", "text": "Personal: ready", "fix": null},
+        {"status": "warn", "text": "Personal holds 40 credits (spent silently past 100%)", "fix": "turn off auto top-up in ChatGPT billing; the credit guard parks the seat at 100% meanwhile"},
+        {"status": "ok", "text": "Pro 20x: ready", "fix": null},
+        {"status": "ok", "text": "login files are private (mode 600): 5 checked", "fix": null},
+        {"status": "ok", "text": "new threads land on: Work B", "fix": null}
+      ]
+    },
+    {
+      "title": "Guard and visibility",
+      "checks": [
+        {"status": "ok", "text": "launchd job com.codexpool.guard loaded", "fix": null},
+        {"status": "ok", "text": "guard last completed 12s ago", "fix": null},
+        {"status": "ok", "text": "menu bar app running (pid 4243)", "fix": null},
+        {"status": "ok", "text": "no interrupted selftest", "fix": null}
+      ]
+    },
+    {
+      "title": "Lanes",
+      "checks": [
+        {"status": "ok", "text": "lanes.json: 1 lane (bulk), 2 members", "fix": null},
+        {"status": "ok", "text": "bridge serving lane-bulk-muse on 127.0.0.1:8320", "fix": null},
+        {"status": "ok", "text": "every lane is offered by the pool (/v1/models)", "fix": null}
+      ]
+    },
+    {
+      "title": "Recent pool errors (last 24h of logs)",
+      "checks": [
+        {"status": "ok", "text": "no invalid_encrypted_content or thinking_signature_invalid", "fix": null},
+        {"status": "ok", "text": "no refresh_token_reused", "fix": null}
+      ]
+    }
+  ]
+}

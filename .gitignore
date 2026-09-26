@@ -11,6 +11,9 @@
 /bin/current
 /bin/.current.tmp
 /build/codexpool-src-*/
+/lanes.json
+/lanes/bridge.json
+/lanes/secrets/
 
 # Python
 .venv/

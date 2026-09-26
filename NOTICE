@@ -1,0 +1,45 @@
+codexpool (Codex Load Balancer)
+https://github.com/memfactorduke/codex-load-balancer
+
+Required Notice: Copyright 2026 memfactorduke (https://github.com/memfactorduke/codex-load-balancer)
+
+codexpool is licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE). It is free for personal
+and other noncommercial use; commercial use needs the licensor's permission.
+
+codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are
+trademarks of OpenAI.
+
+
+Third-party software
+====================
+
+None of the software below is vendored in this repository. Each keeps its own license.
+
+CLIProxyAPI
+  https://github.com/router-for-me/CLIProxyAPI
+  License: MIT
+  codexpool downloads CLIProxyAPI's upstream release source from GitHub at install and upgrade time and builds
+  it with one added file, build/codexpool_gate.go (the origin gate), and a one-line change to
+  cmd/server/main.go that registers the gate. CLIProxyAPI is not vendored here, and its MIT license applies
+  to it.
+
+PyObjC (pyobjc-core, pyobjc-framework-Cocoa)
+  https://github.com/ronaldoussoren/pyobjc
+  License: MIT
+  Installed from PyPI into codexpool's own Python environment at install time, for the menu bar app, the
+  Settings window and the Setup assistant.
+
+Go
+  https://go.dev
+  License: BSD 3-Clause
+  The official Go toolchain is downloaded from go.dev at install time, checked against its published SHA-256,
+  and used only to build CLIProxyAPI.
+
+uv
+  https://github.com/astral-sh/uv
+  License: Apache-2.0 or MIT
+  install.sh installs uv from Astral only on a Mac with no Python 3.11 or newer, and only after asking (or
+  with --yes); uv then provides that Python.
+
+CodexBar
+  The menu bar design borrows CodexBar's visual language. No CodexBar code is used.

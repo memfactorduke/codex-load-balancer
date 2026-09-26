@@ -1,26 +1,105 @@
-# Codex Load Balancer
+# codexpool
 
-**codexpool** pools every ChatGPT seat you have behind one Codex desktop app, on macOS.
+**Every ChatGPT seat you have, behind one Codex.**
+
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-lightgrey)](#requirements)
+[![CI](https://github.com/memfactorduke/codex-load-balancer/actions/workflows/ci.yml/badge.svg)](https://github.com/memfactorduke/codex-load-balancer/actions/workflows/ci.yml)
 
 ![The Codex Pool menu bar item and its popover: 54% of the weekly quota left across all seats, five seats in priority order, one of them out with a free reset available](docs/images/hero.png)
 
-You keep one Codex app and one thread history. When the seat in use runs out, the next request goes to the
-next seat, in the middle of a turn if need be, and you never switch accounts. A menu bar item shows how much of
-the week's quota you have left, which seat is serving, and when the next one comes back.
+codexpool pools your ChatGPT accounts behind the Codex desktop app and CLI on your Mac. When the seat in use hits
+its usage limit, the next one picks up the same request, in the middle of a turn if need be, so you keep one app
+and one thread history and never switch accounts. A menu bar meter shows how much of the week's quota is left
+across all of them. More on the [website](https://memfactorduke.github.io/codex-load-balancer/).
 
-- [How it works](#how-it-works)
-- [Requirements](#requirements) and [Quickstart](#quickstart)
+## Install
+
+You need macOS 13 or later, the Codex desktop app (signed in) and two or more ChatGPT accounts with Codex access.
+Paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash
+```
+
+Then add your accounts in the Setup assistant, then reopen Codex:
+
+1. The installer checks your Mac and builds the pool from source, then opens the **Setup assistant**.
+2. **Add your ChatGPT accounts** there, one by one; each becomes a seat. For an account your browser is not signed
+   in to, open the sign-in link in a private window.
+3. **Quit the Codex app fully (⌘Q) and reopen it.** Your threads are all there, and the meter sits next to the
+   clock. From then on the **Settings window** (Settings… in the menu bar, or `codexpool gui`) manages your seats.
+
+<p>
+  <img src="docs/images/setup-accounts-light.png" width="48%" alt="The Setup assistant's Add your ChatGPT accounts step: five seats already in the pool with their plan and size, and a name field with a Get Sign-In Link button to add another">
+  <img src="docs/images/settings-overview-light.png" width="48%" alt="The Settings window, Overview pane: 54% left this week across all seats, new threads going to Work B, and every seat with its plan, size, weekly and 5-hour bars and reset times">
+</p>
+
+The installer never uses sudo and never edits your shell profile. If your Mac has no Python 3.11 or later, it
+asks before installing [uv](https://docs.astral.sh/uv/), which provides one. To see the plan first, replace the
+final `bash` with `bash -s -- --dry-run`: it prints every step and changes nothing. Its other options are
+`--version TAG`, `--no-gui` (don't open the Setup assistant) and `--yes`. [Read the script first](install.sh).
+Run it again at any time to upgrade in place.
+
+**Prefer the terminal?** `codexpool setup` walks through the same steps in Terminal: it checks that the pool
+answers, signs in one ChatGPT account after another, asks whether each one is the reserve, runs `codexpool doctor`
+and offers to reopen the Codex app. To add seats one command at a time, see
+[Adding seats by hand](#adding-seats-by-hand).
+
+**Manual install from a clone.** The same install without the one-liner (details in
+[Setup in detail](#setup-in-detail)):
+
+```sh
+git clone https://github.com/memfactorduke/codex-load-balancer.git
+cd codex-load-balancer                # from the ZIP download: cd codex-load-balancer-main
+./bin/codexpool install --dry-run     # optional: print every step without changing anything
+./bin/codexpool install
+~/.local/bin/codexpool setup          # or the Setup assistant: ~/.local/bin/codexpool gui setup-welcome
+```
+
+Once `~/.local/bin` is on your `PATH`, plain `codexpool` works.
+
+## Features
+
+- **Automatic failover, mid-thread.** A seat that runs out is replaced on the same request after a pause of a
+  second or two. One seat serves at a time, highest priority first, so resets are staggered and prompt caching
+  keeps working.
+- **One thread history.** Codex keeps its built-in provider, so every thread stays where it was. Encrypted
+  reasoning and native compactions carry across seats, and `codexpool selftest` checks any pair of yours.
+- **Menu bar meter.** One number for the week across every seat, weighted by seat size: green while a regular
+  seat serves, red once the reserve has taken over, grey when the pool is down. It can count used instead, or
+  leave the reserve out.
+- **Settings window and Setup assistant.** Native macOS windows to add accounts and to rename, resize, reorder,
+  reserve, enable, disable or remove seats, redeem resets, test lanes and read the health report, without a
+  terminal.
+- **Banked resets.** Free resets banked on an account show on its seat, and one click redeems one. codexpool
+  never buys a reset.
+- **Subagent lanes** (optional). Token-heavy subagent work, such as codebase sweeps and bulk edits, can run on
+  models from other providers, with fallback between them. The main agent stays on your seats.
+- **Secure by design.** Loopback only, an origin gate compiled into the pool that refuses browser requests, a
+  management key in the Keychain, and seat tokens that only the pool holds. No telemetry.
+- **A doctor.** `codexpool doctor` checks the whole setup and says how to fix every problem it finds.
+
+Also: a credit guard that parks a seat before it would spend credits, automatic refresh of seats blocked by auth
+errors, notifications when the pool changes seat, pool upgrades that are tested before use and rolled back on
+failure, and an uninstall that restores your Codex config.
+
+## Contents
+
+- [How it works](#how-it-works) and [Setup in detail](#setup-in-detail)
 - [Everyday use](#everyday-use)
 - [The headline number, weights and the reserve](#the-headline-number-weights-and-the-reserve)
-- [Resets](#resets)
-- [How a seat change works](#how-a-seat-change-works)
-- [Security model](#security-model)
-- [Terms of service and risk](#terms-of-service-and-risk)
+- [Resets](#resets) and [How a seat change works](#how-a-seat-change-works)
+- [Subagent lanes (optional)](#subagent-lanes-optional)
+- [Security model](#security-model) and [Terms of service and risk](#terms-of-service-and-risk)
 - [Configuration](#configuration), [Upgrade](#upgrade), [Uninstall](#uninstall)
-- [FAQ](#faq), [Troubleshooting](docs/TROUBLESHOOTING.md), [Credits](#credits)
+- [FAQ](#faq), [Troubleshooting](#troubleshooting), [Credits](#credits), [License](#license)
 
 More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (why it is built this way),
-[docs/MENUBAR.md](docs/MENUBAR.md) (the menu bar app), [AGENTS.md](AGENTS.md) (for coding agents).
+[docs/MENUBAR.md](docs/MENUBAR.md) (the menu bar app, the Settings window and the Setup assistant),
+[docs/LANES.md](docs/LANES.md) (subagent lanes), [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md),
+[CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and
+[AGENTS.md](AGENTS.md) (for coding agents).
 
 ## How it works
 
@@ -36,86 +115,66 @@ More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (why it is built this way),
 
 The only thing in the request path is [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), an
 open-source proxy that tracks Codex releases closely. codexpool builds it from the upstream release source and
-adds a single file, [`build/codexpool_gate.go`](build/codexpool_gate.go), which refuses browser and non-loopback
-requests. Codex reaches it through its built-in `openai` provider with one line of config, so every existing
-thread stays visible and nothing in Codex is patched.
+adds one file, [`build/codexpool_gate.go`](build/codexpool_gate.go), which refuses browser and non-loopback
+requests, plus a one-line hook in `cmd/server/main.go` that installs it. Codex reaches the pool through its
+built-in `openai` provider with one line of config, so every existing thread stays visible and nothing in Codex is
+patched.
 
-Beside the request path, three pieces run as your user under launchd:
+Beside the request path:
 
 | Piece | What it does |
 |---|---|
-| **guard** (`codexpool guard`, every 60 s) | Polls each seat's usage and banked resets, parks a seat that would start spending credits, retries seats blocked by auth errors, notifies you when the pool changes seat, reaches the reserve or runs dry, and writes `state/status.json` plus a usage sample every 10 minutes to `state/history.jsonl`. |
-| **menu bar app** (`menubar/`) | A native macOS item next to the clock with a popover for every seat. It only reads those two files: no Keychain, no network. |
-| **`codexpool`** | The command you use: install, add seats, status, doctor, resets, upgrades. |
+| **guard** (`codexpool guard`, every 60 s under launchd) | Polls each seat's usage and banked resets, parks a seat that would start spending credits, retries seats blocked by auth errors, notifies you when the pool changes seat, reaches the reserve or runs dry, and writes `state/status.json` plus a usage sample every 10 minutes to `state/history.jsonl`. |
+| **menu bar app** (`menubar/codexpool_menubar.py`, under launchd) | A native macOS item next to the clock with a popover for every seat. It reads those two files: no Keychain, no network. |
+| **Settings window and Setup assistant** (`menubar/codexpool_settings.py`) | Opened on demand: from the menu bar, by `codexpool gui`, or by the installer. Every change they make is a `codexpool` command. Same rules as the menu bar app. |
+| **`codexpool`** | The command you use: install, setup, add seats, status, doctor, resets, upgrades, lanes. |
 
-If the guard or the menu bar app stops, requests keep flowing. If the pool stops, launchd restarts it.
+If the guard, the menu bar app or the Settings window stops, requests keep flowing. If the pool stops, launchd
+restarts it.
 
-### Features
+## Setup in detail
 
-- **One app, many seats.** Fill-first by priority: one seat is used at a time, so resets are staggered and
-  prompt caching keeps working.
-- **Failover inside a turn.** A seat that runs out is replaced on the same request after a pause of a second or two.
-- **Threads survive seat changes.** Encrypted reasoning and native compactions carry across seats; tested live,
-  and `codexpool selftest` checks any pair of your seats.
-- **One number for the week.** How much of the week's quota is left across all your seats, weighted by seat
-  size, green while a regular seat serves and red once the reserve seat has taken over. It can count used instead,
-  or leave the reserve out.
-- **Resets, tracked and one click away.** Banked free resets show on each seat; the menu bar redeems one when you
-  click. codexpool never buys one.
-- **Credit guard.** A seat at 100% that would keep answering by spending credits is parked until it resets.
-- **Self-healing and notifications.** Auth-blocked seats are refreshed automatically; you hear about seat
-  changes, the reserve, an empty pool and a seat that needs a new sign-in.
-- **Hardened.** Loopback only, an origin gate, a management key in the Keychain, seat tokens that only the pool
-  holds.
-- **Stock upstream.** Upgrades build the new release from source, run an 11-case gate self-test, switch,
-  health-check, and switch back on failure.
-- **One-command install**, with `--dry-run`, and an uninstall that restores your Codex config.
+### Requirements
 
-## Requirements
-
-- **A Mac.** Built and tested on Apple Silicon with a current macOS. Intel Macs should work but are untested.
+- **A Mac with macOS 13 or later.** Built and tested on Apple silicon. Intel Macs should work but are untested.
   Linux and Windows are not supported (launchd, the Keychain and AppKit are macOS-only).
 - **The Codex desktop app** from OpenAI (`ChatGPT.app` or `Codex.app`, found by its bundle id), signed in.
   codexpool uses the `codex` CLI inside the app for its self-test; a `codex` on your `PATH` also works.
 - **Two or more ChatGPT seats with Codex access**, for example Plus, Pro, Business or Team accounts or
   workspaces that you are entitled to use.
-- **A working `python3` (3.9 or newer) to start the installer**, plus Python 3.11+ or
+- **Python.** The one-line installer finds a Python 3.11 or newer on your Mac, or gets one through uv. From a
+  clone you need a working `python3` (3.9 or newer) to start the installer, plus Python 3.11+ or
   [uv](https://docs.astral.sh/uv/) for codexpool itself. The installer makes its own venv in `~/.codexpool/.venv`
   (with uv it fetches Python 3.13 itself). On a fresh Mac, `/usr/bin/python3` is only a stub that offers to
   install the Xcode Command Line Tools; get a real one from `xcode-select --install`, Homebrew
   (`brew install python@3.13`) or python.org, or use uv alone (see below).
-- **git** to clone (it comes with the Command Line Tools), or download the ZIP from GitHub.
-- **Internet access during install** (go.dev, proxy.golang.org, api.github.com and codeload.github.com) and about
-  1 GB of disk, mostly the Go toolchain used to build CLIProxyAPI. No Xcode, no Homebrew and no Go install needed.
+- **git** to clone (it comes with the Command Line Tools), or download the ZIP from GitHub. The one-liner needs
+  neither.
+- **Internet access during install** (GitHub, go.dev, the Go module proxy and checksum database, and PyPI for
+  PyObjC; astral.sh only if uv has to be installed) and about 1 GB of disk, mostly the Go toolchain used to
+  build CLIProxyAPI. No Xcode, no Homebrew and no Go install needed.
 
-**Before you start**, check that Python and git run:
+**Installing from a clone?** Check first that Python and git run:
 
 ```sh
 python3 --version && git --version
 ```
 
 If either says "You have not agreed to the Xcode license agreements", run `sudo xcodebuild -license accept`
-first. If `python3` offers to install the Command Line Tools, let it (or install Homebrew Python or uv).
-
-## Quickstart
-
-Budget 20 to 30 minutes for five seats, most of it signing in. The install itself takes a minute or two on a
-fast connection (measured on an Apple Silicon Mac: 8 s for the Go download, 25 s to build CLIProxyAPI and run
-the gate self-test); each seat's sign-in takes a minute or two after that.
-
-**1. Install.**
-
-```sh
-git clone https://github.com/memfactorduke/codex-load-balancer.git
-cd codex-load-balancer                # from the ZIP download: cd codex-load-balancer-main
-./bin/codexpool install --dry-run     # optional: print every step without changing anything
-./bin/codexpool install
-```
-
-With uv and no usable `python3`, start it with
+first. If `python3` offers to install the Command Line Tools, let it (or install Homebrew Python or uv). With uv
+and no usable `python3`, start the install with
 `uv run --managed-python --no-project --python 3.13 python ./bin/codexpool install`.
 
-The installer checks first and then does seven steps, each safe to re-run:
+### What the installer does
+
+Budget 20 to 30 minutes for five seats, most of it signing in. The install itself takes a minute or two on a
+fast connection (measured on an Apple silicon Mac: 8 s for the Go download, 25 s to build CLIProxyAPI and run
+the gate self-test); each seat's sign-in takes a minute or two after that.
+
+The one-liner (`install.sh`) checks the Mac (macOS 13 or later, not run as root, the Codex app), finds or gets a
+Python 3.11+, downloads the source of the latest release from GitHub, runs `bin/codexpool install` from it and
+opens the Setup assistant. `codexpool install`, from the one-liner or a clone, checks first and then does seven
+steps, each safe to re-run:
 
 1. Preflight: macOS, the Codex app, Python 3.11+ or uv, network, a free port (8319). It copies the code to
    `~/.codexpool`, writes `~/.codexpool/settings.json` with the defaults and creates the venv. If it started
@@ -125,24 +184,29 @@ The installer checks first and then does seven steps, each safe to re-run:
    port, and points `bin/current` at it.
 4. Mints a random management key into the Keychain (`codexpool-management-key`) and writes `config.yaml`
    (loopback, fill-first, 24 h session affinity).
-5. Installs the three launchd agents (pool, guard, menu bar) and PyObjC for the menu bar app. macOS shows a
-   "Background Items Added" notification; they appear in System Settings → General → Login Items & Extensions
-   under names like `python3.13` and `cli-proxy-api`. Leave them on: with the pool switched off, Codex can't
-   reach the model.
+5. Installs the three launchd agents (pool, guard, menu bar), plus the lane bridge when a lane needs it, and
+   PyObjC for the menu bar app and the Settings window. macOS shows a "Background Items Added" notification; they
+   appear in System Settings → General → Login Items & Extensions under names like `python3.13` and
+   `cli-proxy-api`. Leave them on: with the pool switched off, Codex can't reach the model.
 6. Backs up `~/.codex/config.toml`, records the keys it may change, and sets
    `openai_base_url = "http://127.0.0.1:8319/v1"`. If your config has `model_provider` or `model_catalog_json`,
    it warns; re-run with `--fix-config` to remove them (uninstall puts them back).
 7. Writes the `codexpool` command to `~/.local/bin` and runs `codexpool doctor`.
 
 The doctor run at the end reports "0 Codex seats in the pool" as a problem: expected, since you haven't added
-any yet. **From here until you add a seat, Codex requests fail.** Add seats now, or run
-`codexpool uninstall --yes` to undo the install.
+any yet. **From here until you add a seat, Codex requests fail.** Add seats now (the Setup assistant,
+`codexpool setup` or `codexpool login`), or run `codexpool uninstall --yes` to undo the install. The menu bar app
+also opens the Setup assistant by itself the first time it finds the pool running with no seats.
 
 If `~/.local/bin` is not on your `PATH`, the installer says so: add it and open a new terminal.
 
-**2. Add each seat.** Each `login` opens the ChatGPT sign-in; sign in and pick the workspace for that seat.
-Higher priority is used first, so give the seat you want drained first the highest number and the reserve the
-lowest.
+### Adding seats by hand
+
+The Setup assistant and `codexpool setup` add seats in the order you add them, and the reserve last. To add them
+by hand instead, run one `login` per seat. Each `login` opens the ChatGPT sign-in; sign in and pick the workspace
+for that seat. Higher priority is used first, so give the seat you want drained first the highest number and the
+reserve the lowest. Without `--priority`, a new seat fills after the seats already in the pool and before the
+reserve.
 
 ```sh
 codexpool login "Work A" --priority 400
@@ -156,13 +220,15 @@ Your browser is usually signed in to one account. For every other account use `-
 link in a private window; the link expires after a few minutes. `--device` uses a device code instead, which only
 works where device-code sign-in is enabled in the account's ChatGPT security settings. The label is optional:
 without one, the seat is named from its email and plan (`codexpool label` renames it later). `login` prints the
-seat's `plan=`, which sets its default size in step 4.
+seat's `plan=`, which sets its default size.
 
-**3. Quit the Codex app fully (⌘Q) and reopen it**, so it picks up `openai_base_url`. The app still shows its own
-account and its own usage meter; that is expected.
+Then **quit the Codex app fully (⌘Q) and reopen it**, so it picks up `openai_base_url`. The app still shows its
+own account and its own usage meter; that is expected.
 
-**4. Check sizes and set the reserve.** `codexpool status` shows each seat's size in the `size` column. The
-default comes from the plan that `login` printed:
+### Sizes and the reserve
+
+`codexpool status` shows each seat's size in the `size` column. The default comes from the plan that `login`
+printed:
 
 | `plan=` | Size |
 |---|---|
@@ -176,36 +242,47 @@ codexpool weight Team 2          # only if a seat's default size is wrong for it
 codexpool reserve "Pro 20x"      # the fallback seat: red when it serves
 ```
 
-**5. Check that Codex goes through the pool.** Send Codex one prompt. Then:
+The Seats pane of the Settings window does the same with a Size menu and a Reserve switch.
+
+### Check that Codex goes through the pool
+
+Send Codex one prompt. Then:
 
 - the top seat shows **Serving** in the menu bar, or `active` in `codexpool status`;
 - `codexpool logs -n 20` shows the request;
-- `codexpool doctor` ends with `OK`.
+- `codexpool doctor` ends with `OK` (the Health pane in the Settings window shows the same report).
 
-The menu bar item sits next to the clock. From now on, use Codex as usual.
+From now on, use Codex as usual.
 
 ## Everyday use
+
+Most of this is also in the menu bar popover and the [Settings window](docs/MENUBAR.md#the-settings-window).
 
 | You want to | Run |
 |---|---|
 | See seats, usage and resets | the menu bar, or `codexpool` (same as `codexpool status`; `--live` polls every seat now, `--json` for scripts) |
-| Check everything is healthy | `codexpool doctor` (must end with `OK`) |
+| Add ChatGPT accounts, guided | `codexpool setup` in the terminal, or `codexpool gui setup-welcome` for the Setup assistant |
+| Check everything is healthy | `codexpool doctor` (must end with `OK`; `--json` prints the checks as JSON for scripts) |
+| Open the Settings window | `codexpool gui`, or `codexpool gui <pane>` for `overview`, `seats`, `lanes`, `general`, `health`, `about` |
+| Change what the menu bar number shows | `codexpool set display left` or `used`, `codexpool set headline all` or `regular` (`codexpool set` alone prints both) |
 | Use a banked free reset | click the seat in the menu bar → **Use reset now…**, or `codexpool reset <seat>` |
 | Take a seat out / put it back | `codexpool disable <seat>` / `codexpool enable <seat>` |
 | Change the fill order (higher first) | `codexpool priority <seat> <n>` |
-| Rename, resize, mark the reserve | `codexpool label <seat> <name>`, `codexpool weight <seat> <n>`, `codexpool reserve <seat>` (`--off` to undo) |
+| Rename, resize, mark the reserve | `codexpool label <seat> <name>`, `codexpool weight <seat> <n>`, `codexpool reserve <seat>` (moves it last in the fill order; `--off` to undo) |
 | Fix a seat that says blocked | `codexpool refresh <seat>`, then if needed `codexpool login "<Label>" --priority <n> --no-open` |
 | Remove a seat | `codexpool remove <seat> --yes` (deletes its login file; does not sign the account out) |
 | Watch requests | `codexpool logs -f` (`--guard` for the guard's log) |
 | Restart the pool | `codexpool restart` |
 | Test that threads move between two seats | `codexpool selftest <from> <to> --compact` |
 | Upgrade CLIProxyAPI | `codexpool upgrade latest` |
+| Run subagents on models from other providers | `codexpool lane` to list lanes (`lane list --json` for scripts); `lane add`, `lane apply`, `lane test` (see [Subagent lanes](#subagent-lanes-optional)) |
+| Print the version | `codexpool version` (or `codexpool --version`) |
 
 `<seat>` is a label (quote names with spaces: `"Work A"`), a seat file name, an email, or any part of one of
 those that matches a single seat.
 
 A re-login of an existing seat rewrites its login file, which is where the priority lives, so pass `--priority`
-again. The menu bar's **Re-login…** does that for you.
+again. The menu bar's **Re-login…** and the Settings window's **Sign In Again…** do that for you.
 
 ## The headline number, weights and the reserve
 
@@ -222,23 +299,26 @@ average weighted by seat size. It counts down as you work and jumps back up when
   figure on the line below the number ("reserve 66% left").
 - Seats you turned off are left out. A seat that is out or blocked and reports no numbers counts as spent (0% left).
 
-In the screenshot above: Work A 5× has 0% left, Work B 5× 56%, Team 1× 24%, Personal 1× 91% and the Pro 20× reserve
-66%, which gives (0 + 280 + 24 + 91 + 1320) / 32 = **54%** left. Hover over the number in the popover to see this
-breakdown, seat by seat. `codexpool status` prints it under its table:
+In the screenshot at the top: Work A 5× has 0% left, Work B 5× 56%, Team 1× 24%, Personal 1× 91% and the
+Pro 20× reserve 66%, which gives (0 + 280 + 24 + 91 + 1320) / 32 = **54%** left. Hover over the number in the
+popover to see this breakdown, seat by seat. `codexpool status` prints it under its table:
 
 ```
 Left this week, weighted by size: Work A 5× 0% · Work B 5× 56% · Team 1× 24% ·
     Personal 1× 91% · Pro 20x 20× 66% reserve → 54% left
 ```
 
-Two settings in `~/.codexpool/settings.json` change what the number means (see [Configuration](#configuration)):
+Two settings in `~/.codexpool/settings.json` change what the number means (see [Configuration](#configuration)).
+`codexpool set headline regular` and `codexpool set display used` change them for you, as does the General pane
+of the Settings window:
 
 - **`"headline": "regular"`** leaves reserve seats out, so the number covers only the seats meant to be used
   first. In the example that is (0 + 280 + 24 + 91) / 12 = 33% left.
 - **`"display": "used"`** counts up instead: every number shows how much is used (46% in the example), and bars
   fill rather than drain. With both settings, the number is the regular seats' weekly use: 67% used.
 
-`codexpool status` shows a change at once, the menu bar after the guard's next pass (within a minute).
+After `codexpool set`, the menu bar shows the change within a few seconds. After an edit by hand, `codexpool status`
+shows it at once and the menu bar after the guard's next pass (within a minute).
 
 The colour tells you what is serving:
 
@@ -250,8 +330,11 @@ The small meter left of the number has two bars: the number itself on top (red, 
 reserve serves), the serving seat's week below. Both drain as the quota is used (or fill, with
 `"display": "used"`).
 
-The reserve flag changes what you see, not the order seats are used in. Order comes only from priority, so give
-the reserve the lowest priority.
+Order comes only from priority, so the reserve needs the lowest. `codexpool reserve <seat>` moves the seat below
+every regular seat when it would otherwise be used before one of them, and `codexpool reserve <seat> --off` moves
+it back above the reserves. The Setup assistant, `codexpool setup`, and `codexpool login` without `--priority`
+put a new seat after the seats already in the pool and before the reserve, moving the reserve down when there is
+no room left above it. `codexpool priority` still sets any order you like.
 
 ## Resets
 
@@ -263,7 +346,7 @@ tracks them for every seat and lets you spend one when it helps.
   when an out seat has a reset the popover says "Reset available for Work A · click the seat".
 - **One click.** Click the seat and choose **Use reset now… (1 banked, expires Oct 3)**. The app asks first, then
   runs `codexpool reset <seat> --yes`. The seat's weekly and 5-hour limits go back to full and it can serve again
-  at once.
+  at once. **Redeem Reset…** in the Settings window's Seats pane does the same.
 - **From a terminal.** `codexpool reset <seat>` shows the seat's current usage, how many resets are banked and
   which one it will use, then asks `[y/N]`. `--yes` skips the question.
 
@@ -304,6 +387,30 @@ spends credits. The pool can't tell, so the guard parks such a seat (takes it ou
 resets) and notifies you. `codexpool enable <seat>` overrides that until the next reset. Turning off auto top-up
 on every seat avoids the question.
 
+## Subagent lanes (optional)
+
+codexpool can also serve models from other providers as native Codex subagents, called lanes. The main agent
+stays on your seats. For work that spends many tokens but doesn't need the most capable model (codebase sweeps,
+bulk edits, log digging, second opinions), it spawns a lane subagent, which runs on, for example, an xAI model
+and falls back to an OpenCode model when the first is unavailable or used up. A lane subagent's tokens count
+against those providers' quotas or bills, not your seats'.
+
+```sh
+codexpool lane login xai            # or, for a key-based provider: codexpool lane key opencode-go
+codexpool lane add bulk --member xai:<model> --member opencode-go:<model> --role "<what the lane is for>"
+codexpool lane test bulk            # a real subagent per member; spends a little quota
+```
+
+Then start a new Codex thread. `codexpool lane apply` (which `lane add` runs) generates everything from
+`~/.codexpool/lanes.json`: a marked block in the pool's `config.yaml`, a small local bridge for providers that
+need their requests adapted (a fourth launchd agent), a Codex role file per lane in `~/.codex/agents/`, and a
+short block in `~/.codex/AGENTS.md` that tells the main agent what each lane is for. The Codex model picker shows
+one entry per lane. Seat traffic never touches any of it. Without `lanes.json`, nothing changes. The Lanes pane of
+the Settings window lists your lanes and runs `lane test` and `lane apply`.
+
+[docs/LANES.md](docs/LANES.md) covers the supported providers, setup, what `lane apply` generates and why, fallback
+between providers, the known limits, privacy, and a prompt you can give your own coding agent to set lanes up.
+
 ## Security model
 
 The pool holds working logins for all your seats, so it is locked down.
@@ -328,23 +435,27 @@ they can use the pool as well.
 **Management key.** A random key, stored in your login Keychain as `codexpool-management-key` and written there
 through `security -i` so it never appears in the process list. CLIProxyAPI replaces it in `config.yaml` with a
 hash on first start. codexpool's calls to the pool bypass any HTTP proxy so the key never leaves loopback. The
-menu bar app never touches the Keychain.
+menu bar app and the Settings window never touch the Keychain.
 
 **Seat logins and token rotation.** Each seat's OAuth login lives in `~/.codexpool/auth/` (directory mode 700),
 and only the pool refreshes it. codexpool reads nothing from a seat file except its identity claims (email, plan,
 account id) and never prints or sends tokens: usage and reset calls go through the pool, which inserts the token
 itself. The rules that keep this working:
 
-1. **Add seats only with `codexpool login`.** Never copy a seat file or `~/.codex/auth.json` anywhere, and never
-   point another tool at `~/.codexpool/auth`. ChatGPT refresh tokens rotate on use: when two programs hold the
-   same login, one refresh invalidates the other copy and one of them gets signed out (`refresh_token_reused`).
+1. **Add seats only through codexpool** (the Setup assistant, `codexpool setup` or `codexpool login`). Never copy
+   a seat file or `~/.codex/auth.json` anywhere, and never point another tool at `~/.codexpool/auth`. ChatGPT
+   refresh tokens rotate on use: when two programs hold the same login, one refresh invalidates the other copy
+   and one of them gets signed out (`refresh_token_reused`).
 2. **Keep the Codex app signed in.** Its own login is separate from the seat logins, even for the same account,
    and still serves its usage meter, cloud tasks, plugins and sign-in. Signing out revokes it.
 3. **Don't add `model_provider` or `model_catalog_json` to `~/.codex/config.toml`.** A custom provider hides every
    existing thread, and a static catalog freezes the model picker. Only `openai_base_url` points at the pool.
 
-**What leaves your Mac.** Model traffic and usage/reset calls go to chatgpt.com through the pool. Install and
-upgrades download from go.dev and GitHub. There is no telemetry.
+**What leaves your Mac.** Model traffic and usage/reset calls go to chatgpt.com through the pool, and adding a
+seat signs in with OpenAI. Install and upgrades download from GitHub, go.dev, the Go module proxy and checksum
+database (proxy.golang.org, sum.golang.org) and PyPI (PyObjC), plus astral.sh for uv if your Mac has no Python
+3.11 or later. If you set up [lanes](#subagent-lanes-optional), lane subagents' requests go to the lane providers
+you chose. There is no telemetry.
 
 ## Terms of service and risk
 
@@ -352,9 +463,9 @@ OpenAI's terms prohibit circumventing usage limits, and its business terms forbi
 avoid them. Having one app draw on several seats you pay for may fall under that, and it isn't hidden: every seat
 is used from the same IP address and the same Codex installation. There is no known public case of an account
 being suspended for pooling its own seats, but that is not a guarantee. Whether to run this is your call, and the
-risk is yours.
+risk is yours. Use it only with accounts you own, and follow the terms that apply to them.
 
-This project is not affiliated with or endorsed by OpenAI.
+codexpool is an independent project, not affiliated with or endorsed by OpenAI.
 
 ## Configuration
 
@@ -365,16 +476,18 @@ values.
 | Key | Default | Meaning |
 |---|---|---|
 | `pool_label`, `guard_label`, `menubar_label` | `com.codexpool.pool`, `com.codexpool.guard`, `com.codexpool.menubar` | launchd labels of the three agents |
+| `bridge_label` | `com.codexpool.bridge` | launchd label of the lane bridge, which runs only when a [lane](#subagent-lanes-optional) has a bridge member |
 | `port` | `8319` | loopback port of the pool |
+| `bridge_port` | `8320` | loopback port of the lane bridge; must differ from `port` (unset while `port` is 8320, it is 8321) |
 | `python` | `null` = `~/.codexpool/.venv/bin/python` | interpreter for the guard and the `codexpool` command (3.11+) |
-| `menubar_python` | `null` = same as `python` | interpreter with PyObjC for the menu bar app |
-| `codex_bin` | `null` = the `codex` inside the Codex app, else `codex` on `PATH` | the Codex CLI used by `selftest` |
+| `menubar_python` | `null` = same as `python` | interpreter with PyObjC for the menu bar app and the Settings window |
+| `codex_bin` | `null` = the `codex` inside the Codex app, else `codex` on `PATH` | the Codex CLI used by `selftest` and `lane test` |
 | `headline` | `"all"` | what the [headline number](#the-headline-number-weights-and-the-reserve) covers: `"all"` = every seat that is not off, the reserve included; `"regular"` = the reserve left out |
 | `display` | `"left"` | how numbers read, in the menu bar and in `codexpool status`: `"left"` counts down from 100% and bars drain; `"used"` counts up from 0% and bars fill |
 
-A malformed file, an unknown key or a bad value stops every command with a message rather than running with the
-wrong port or labels. Keys starting with `_` are ignored, for comments. `CODEXPOOL_SETTINGS` points to a
-different file.
+`codexpool set` changes `display` and `headline` and leaves the rest of the file as it is. A malformed file, an
+unknown key or a bad value stops every command with a message rather than running with the wrong port or labels.
+Keys starting with `_` are ignored, for comments. `CODEXPOOL_SETTINGS` points to a different file.
 
 **`~/.codex/config.toml`**: install always configures this file, the one the Codex app reads. If you set
 `CODEX_HOME` for the `codex` CLI, add the same `openai_base_url` line to `$CODEX_HOME/config.toml` yourself;
@@ -393,28 +506,39 @@ their exact names under `oauth-excluded-models: codex:`.
 ~/.codexpool/
   bin/codexpool              the CLI and guard (Python, standard library only)
   bin/current -> versions/…  the running CLIProxyAPI build; older builds stay in bin/versions/
-  build/codexpool_gate.go    the origin gate, the only change to upstream
-  menubar/                   the menu bar app (PyObjC) and its SPEC.md
+  build/codexpool_gate.go    the origin gate, the one file added to upstream
+  menubar/                   the menu bar app and the Settings window (PyObjC), and their SPEC.md
   launchd/, examples/        templates the installer renders
+  docs/, README.md           a copy of the docs (the menu bar's Docs item opens README.md)
   settings.json              per-machine settings
   config.yaml                pool config (mode 600)
   seats.json                 labels, weights, reserve
-  auth/                      one OAuth login per seat (mode 700)
-  state/                     status.json, history.jsonl, guard.json, resets.jsonl, selftests.json,
+  lanes.json                 subagent lanes, if you use them (docs/LANES.md)
+  lanes/                     the lane bridge (bridge.py), its bridge.json and secrets/ with provider keys (mode 700)
+  auth/                      one OAuth login per seat (mode 700), plus the xAI login if a lane uses xAI
+  state/                     status.json, history.jsonl, guard.json, resets.jsonl, selftests.json, lane-tests.json,
                              install.json and dated backups of your Codex config
-  logs/                      main.log (pool), guard.log (guard decisions and notifications), menubar.log
+  logs/                      main.log (pool), guard.log (guard decisions and notifications), menubar.log,
+                             settings.log (Settings window), bridge.log (lane bridge)
   toolchain/                 Go, from go.dev
   .venv/                     codexpool's Python
 ```
 
 ## Upgrade
 
-**codexpool itself.** Pull and re-run the installer from your checkout; it copies the new code into
-`~/.codexpool` and changes only what differs:
+**codexpool itself.** Run the one-liner again, or pull and re-run the installer from your checkout. Either way it
+copies the new code into `~/.codexpool` and changes only what differs; your seats and settings stay:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash
+# or, from a checkout:
 cd codex-load-balancer && git pull && ./bin/codexpool install
-launchctl kickstart -k gui/$(id -u)/com.codexpool.menubar     # restart the menu bar app (your menubar_label)
+```
+
+Then restart the menu bar app to load its new version (use your `menubar_label` if you changed it):
+
+```sh
+launchctl kickstart -k gui/$(id -u)/com.codexpool.menubar
 ```
 
 The guard picks up the new code on its next run. If you cloned straight into `~/.codexpool`, `git pull` there
@@ -422,8 +546,8 @@ and run `codexpool install`.
 
 If you installed before the `headline` and `display` settings existed, the number in the menu bar changes
 meaning: it now shows % left across all seats, where it used to show % used of the regular seats. For the old
-number, set `"display": "used"` and `"headline": "regular"` in `~/.codexpool/settings.json`. The install that
-brings the change says so.
+number, run `codexpool set display used` and `codexpool set headline regular`. The install that brings the change
+says so.
 
 **CLIProxyAPI.** Upstream ships often. Upgrade when you choose to:
 
@@ -450,11 +574,13 @@ codexpool uninstall --yes    # does it
 
 It stops and removes the three launchd agents, removes `openai_base_url` (or puts back the value you had before
 install; it leaves the line alone if you have changed it since), puts back any `model_provider` or
-`model_catalog_json` that `--fix-config` removed, and removes the `codexpool` command. Then quit and reopen
-the Codex app, which talks to OpenAI directly again. Your thread history is never touched.
+`model_catalog_json` that `--fix-config` removed, and removes the `codexpool` command. With lanes, it also stops
+the lane bridge and removes the generated role files in `~/.codex/agents/` and the lanes block in
+`~/.codex/AGENTS.md`. Then quit and reopen the Codex app, which talks to OpenAI directly again. Your thread
+history is never touched.
 
-`~/.codexpool` (seat logins, config, history, builds) and the Keychain key stay, so `codexpool install` brings
-everything back. To remove those too:
+`~/.codexpool` (seat logins, config, history, builds, `lanes.json` and lane keys) and the Keychain key stay, so
+`codexpool install` brings everything back (then `codexpool lane apply` for lanes). To remove those too:
 
 ```sh
 rm -rf ~/.codexpool && security delete-generic-password -s codexpool-management-key
@@ -471,6 +597,10 @@ continue through the pool.
 **Does the Codex CLI use the pool too?**
 Yes. `codex` reads the same `~/.codex/config.toml`, so anything that uses it (the CLI, other agents) goes through
 the pool.
+
+**Which ChatGPT plans work?**
+Any plan that includes Codex: Plus, Pro, Business, Team and others. Each seat is sized by its plan so the meter
+weighs it fairly (see [Sizes and the reserve](#sizes-and-the-reserve)), and you can change a seat's size.
 
 **The Codex app's usage meter disagrees with the menu bar. Which is right?**
 Both. The app's meter shows only the account the app is signed in to. The menu bar shows the pool.
@@ -505,8 +635,9 @@ every request. Fill-first drains one seat at a time, so resets are staggered, pr
 seat changes happen a few times a week.
 
 **Can I choose which seat a new thread uses?**
-New threads go to the highest-priority seat that can serve. Change the order with `codexpool priority` or
-**Make first** in the menu bar, or take a seat out with `codexpool disable`.
+New threads go to the highest-priority seat that can serve. Change the order with `codexpool priority`,
+**Make first** in the menu bar or the Priority field in the Settings window, or take a seat out with
+`codexpool disable`.
 
 **Does it ever change the model I picked?**
 No. The pool is configured never to swap in another model when a seat runs out (`switch-preview-model: false`);
@@ -517,25 +648,39 @@ CLIProxyAPI keeps session affinity in memory, so after a restart an open thread 
 That is an ordinary seat change and threads survive it.
 
 **How many seats can I add?**
-There is no limit in codexpool. Each seat is one `codexpool login`.
+There is no limit in codexpool. Each seat is one sign-in.
 
 **Can I use the same account as the Codex app for a seat?**
-Yes, with its own `codexpool login`. That creates a separate login for the pool. Never copy the app's
+Yes, with its own sign-in through codexpool. That creates a separate login for the pool. Never copy the app's
 `~/.codex/auth.json` into the pool.
 
 **Could this get my account suspended?**
 See [Terms of service and risk](#terms-of-service-and-risk).
 
-For problems, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). The first step is always `codexpool doctor`.
+## Troubleshooting
+
+The first step is always `codexpool doctor` (or the Health pane in the Settings window): it checks the whole
+setup and says how to fix each problem. For everything else, see
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Credits
 
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (MIT) is the pool: seat logins, token refresh,
   fill-first routing, session affinity and failover. codexpool builds it from source and adds one file.
-- [PyObjC](https://github.com/ronaldoussoren/pyobjc) (MIT) makes the native menu bar app possible in Python.
+- [PyObjC](https://github.com/ronaldoussoren/pyobjc) (MIT) makes the native menu bar app and Settings window
+  possible in Python.
 - The menu bar design borrows CodexBar's visual language.
 - Go comes from the official builds at [go.dev](https://go.dev/dl/).
 
 ## License
 
-[MIT](LICENSE)
+codexpool is free and source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): use, change and
+share it for any noncommercial purpose; commercial use needs permission
+([open an issue](https://github.com/memfactorduke/codex-load-balancer/issues)). The license's required notice and
+the third-party credits are in [NOTICE](NOTICE). CLIProxyAPI, which codexpool downloads and builds at install
+time, is not part of this repository and keeps its own MIT license. Snapshots of this repository published before
+1.0.0 were released under the MIT License, and copies of them keep it; codexpool 1.0.0 and later are licensed under
+the PolyForm Noncommercial License 1.0.0.
+
+codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of
+OpenAI. Use it only with accounts you own, and follow the terms that apply to them.

@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>codexpool: every ChatGPT seat you have, behind one Codex</title>
+  <meta name="description" content="codexpool pools your ChatGPT accounts behind the Codex app and CLI on macOS. When one seat hits its usage limit, the next one picks up the same thread. A menu bar meter shows what is left across all of them.">
+  <link rel="canonical" href="https://memfactorduke.github.io/codex-load-balancer/">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0c10" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="codexpool">
+  <meta property="og:title" content="codexpool: every ChatGPT seat you have, behind one Codex">
+  <meta property="og:description" content="Pool your ChatGPT accounts behind the Codex app and CLI. When one seat hits its limit, the next one picks up the same thread. A menu bar meter shows what is left.">
+  <meta property="og:url" content="https://memfactorduke.github.io/codex-load-balancer/">
+  <meta property="og:image" content="https://memfactorduke.github.io/codex-load-balancer/assets/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="codexpool: every ChatGPT seat you have, behind one Codex. The menu bar popover shows 54% of the week's quota left across five seats.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="codexpool: every ChatGPT seat you have, behind one Codex">
+  <meta name="twitter:description" content="Pool your ChatGPT accounts behind the Codex app and CLI. When one seat hits its limit, the next one picks up the same thread.">
+  <meta name="twitter:image" content="https://memfactorduke.github.io/codex-load-balancer/assets/img/og.png">
+  <meta name="twitter:image:alt" content="codexpool: every ChatGPT seat you have, behind one Codex.">
+
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="menubar">
+    <div class="wrap menubar-inner">
+      <a class="brand" href="#top" aria-label="codexpool, back to top">
+        <svg class="mark" viewBox="0 0 18 12" width="21" height="14" aria-hidden="true">
+          <rect class="mark-track" x="0" y="0" width="18" height="6" rx="3"/>
+          <rect class="mark-fill" x="0" y="0" width="12" height="6" rx="3"/>
+          <rect class="mark-track" x="0" y="8" width="18" height="4" rx="2"/>
+          <rect class="mark-fill" x="0" y="8" width="8" height="4" rx="2"/>
+        </svg>
+        <span class="wordmark">codexpool</span>
+      </a>
+
+      <nav class="menus" aria-label="Primary">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#install">Install</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+
+      <div class="status-items">
+        <a class="status-link" href="https://github.com/memfactorduke/codex-load-balancer">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          <span>GitHub</span>
+        </a>
+        <span class="meter-item" aria-hidden="true">
+          <svg viewBox="0 0 18 12" width="18" height="12">
+            <rect class="mark-track" x="0" y="0" width="18" height="6" rx="3"/>
+            <rect class="mark-fill" x="0" y="0" width="9.7" height="6" rx="3"/>
+            <rect class="mark-track" x="0" y="8" width="18" height="4" rx="2"/>
+            <rect class="mark-fill" x="0" y="8" width="10.1" height="4" rx="2"/>
+          </svg>
+          <span>54%</span>
+        </span>
+        <details class="nav-sheet">
+          <summary aria-label="Menu">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3.5 7h13M3.5 13h13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </summary>
+          <nav aria-label="Menu">
+            <a href="#how">How it works</a>
+            <a href="#features">Features</a>
+            <a href="#install">Install</a>
+            <a href="#faq">FAQ</a>
+            <a href="https://github.com/memfactorduke/codex-load-balancer">GitHub</a>
+          </nav>
+        </details>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Hero: the popover hangs from the meter in the bar above, as it does on a Mac. -->
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <h1 id="hero-title">
+            <span>Every ChatGPT</span>
+            <span>seat you have,</span>
+            <span>behind one Codex.</span>
+          </h1>
+          <p class="hero-lede">codexpool pools your ChatGPT accounts behind the Codex app and CLI. When one seat hits its usage limit, the next one picks up the same thread, so you keep working. A menu bar meter shows what is left across all of them.</p>
+
+          <div class="cmd">
+            <code><span class="cmd-prompt" aria-hidden="true">$ </span>curl -fsSL https://raw.githubusercontent.com/<wbr>memfactorduke/<wbr>codex-load-balancer/<wbr>main/<wbr><span class="nobr">install.sh | bash</span></code>
+            <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash" aria-label="Copy the install command" hidden>
+              <svg class="copy-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="5.25" y="5.25" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.25 3.5v-.25a1.5 1.5 0 0 0-1.5-1.5h-5a1.5 1.5 0 0 0-1.5 1.5v5a1.5 1.5 0 0 0 1.5 1.5H4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              <svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span class="copy-label">Copy</span>
+            </button>
+          </div>
+
+          <div class="hero-actions">
+            <a class="button" href="https://github.com/memfactorduke/codex-load-balancer">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+              View on GitHub
+            </a>
+            <a class="text-link" href="https://github.com/memfactorduke/codex-load-balancer/blob/main/install.sh">Read the script first</a>
+          </div>
+          <p class="hero-meta"><span>macOS 13 or later</span> <span aria-hidden="true">·</span> <span>Apple silicon</span> <span aria-hidden="true">·</span> <span>Free for noncommercial use</span></p>
+        </div>
+
+        <div class="hero-shot">
+          <picture>
+            <source srcset="assets/img/popover-dark.webp" media="(prefers-color-scheme: dark)" data-theme-dark>
+            <img src="assets/img/popover-light.webp" width="340" height="783" fetchpriority="high"
+                 alt="The codexpool popover under the menu bar: 54% of this week's quota left across all seats, Work B serving, Work A out with a free reset available, five seats in priority order, each with its weekly bar and reset time, and menu items to add a ChatGPT account or open Settings.">
+          </picture>
+        </div>
+      </div>
+    </section>
+
+    <!-- The problem, in one line -->
+    <section class="problem" aria-labelledby="problem-title">
+      <div class="wrap">
+        <h2 id="problem-title" class="statement"><span>One seat runs out in an afternoon.</span> You have three.</h2>
+        <ul class="seat-strip" aria-label="Three example seats">
+          <li class="seat-card is-out">
+            <div class="seat-top"><span class="seat-name">Seat 1</span><span class="pill pill-muted">Out</span></div>
+            <span class="bar"><span style="--p:0"></span></span>
+            <div class="seat-foot"><span>0% left</span><span>Back in 3h 56m</span></div>
+          </li>
+          <li class="seat-card is-serving">
+            <div class="seat-top"><span class="seat-name">Seat 2</span><span class="pill pill-green">Serving</span></div>
+            <span class="bar"><span style="--p:56"></span></span>
+            <div class="seat-foot"><span>56% left</span><span>Resets in 6d 13h</span></div>
+          </li>
+          <li class="seat-card">
+            <div class="seat-top"><span class="seat-name">Seat 3</span><span class="seat-state">Ready</span></div>
+            <span class="bar"><span style="--p:100"></span></span>
+            <div class="seat-foot"><span>100% left</span><span>Resets in 5d 1h</span></div>
+          </li>
+        </ul>
+        <p class="problem-coda">codexpool uses them one after another, so the work doesn't stop.</p>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="section" id="how" aria-labelledby="how-title">
+      <div class="wrap">
+        <header class="section-head">
+          <p class="kicker">How it works</p>
+          <h2 id="how-title">Codex talks to one address on your Mac.</h2>
+          <p class="section-lede">codexpool runs a small pool on 127.0.0.1 and answers as whichever seat has quota left. When that seat hits its limit, the pool sends the same request to the next seat, and the turn carries on after a pause of a second or two.</p>
+        </header>
+
+        <figure class="diagram">
+          <!-- Wide layout -->
+          <svg class="diagram-wide" viewBox="0 24 1080 344" role="img" aria-label="The Codex app and the Codex CLI send requests to codexpool on 127.0.0.1 port 8319. codexpool forwards each request as one of your seats. Seat 1 hit its limit, so the same thread continues on Seat 2. Seats 3 and N are ready.">
+            <!-- links: clients to pool -->
+            <path class="d-link" d="M232 144.5C312 144.5 312 180.5 392 180.5"/>
+            <path class="d-link" d="M232 244.5C312 244.5 312 208.5 392 208.5"/>
+            <path class="d-flow d-flow-neutral" d="M232 144.5C312 144.5 312 180.5 392 180.5"/>
+            <path class="d-flow d-flow-neutral" d="M232 244.5C312 244.5 312 208.5 392 208.5"/>
+            <!-- links: pool to seats -->
+            <path class="d-link" d="M672 194.5C756 194.5 756 67.5 840 67.5"/>
+            <path class="d-link" d="M672 194.5C756 194.5 756 173.5 840 173.5"/>
+            <path class="d-link" d="M672 194.5C756 194.5 756 249.5 840 249.5"/>
+            <path class="d-link" d="M672 194.5C756 194.5 756 325.5 840 325.5"/>
+            <g class="d-live d-live-1">
+              <path class="d-link-live" d="M672 194.5C756 194.5 756 67.5 840 67.5"/>
+              <path class="d-flow d-flow-green" d="M672 194.5C756 194.5 756 67.5 840 67.5"/>
+            </g>
+            <g class="d-live d-live-2">
+              <path class="d-link-live" d="M672 194.5C756 194.5 756 173.5 840 173.5"/>
+              <path class="d-flow d-flow-green" d="M672 194.5C756 194.5 756 173.5 840 173.5"/>
+            </g>
+
+            <!-- Codex app -->
+            <rect class="d-node" x="0.5" y="108.5" width="231" height="72" rx="14"/>
+            <rect class="d-icon" x="18" y="128.5" width="32" height="32" rx="8"/>
+            <rect class="d-glyph" x="25" y="136.5" width="18" height="15" rx="3"/>
+            <path class="d-glyph" d="M25 141h18"/>
+            <text class="d-title" x="64" y="140.5">Codex app</text>
+            <text class="d-sub" x="64" y="160.5">unchanged, still signed in</text>
+            <!-- Codex CLI -->
+            <rect class="d-node" x="0.5" y="208.5" width="231" height="72" rx="14"/>
+            <rect class="d-icon" x="18" y="228.5" width="32" height="32" rx="8"/>
+            <path class="d-glyph" d="M26 239l5 5-5 5M33.5 250h8"/>
+            <text class="d-title" x="64" y="240.5">Codex CLI</text>
+            <text class="d-sub" x="64" y="260.5">reads the same config</text>
+
+            <!-- Pool -->
+            <rect class="d-pool-halo" x="384.5" y="116.5" width="295" height="156" rx="24"/>
+            <rect class="d-pool" x="392.5" y="124.5" width="279" height="140" rx="18"/>
+            <g transform="translate(416 150)">
+              <rect class="mark-track" x="0" y="0" width="24" height="8" rx="4"/>
+              <rect class="mark-fill" x="0" y="0" width="16" height="8" rx="4"/>
+              <rect class="mark-track" x="0" y="11" width="24" height="5" rx="2.5"/>
+              <rect class="mark-fill" x="0" y="11" width="11" height="5" rx="2.5"/>
+            </g>
+            <text class="d-pool-title" x="450" y="164">codexpool</text>
+            <text class="d-mono" x="416" y="206">127.0.0.1:8319</text>
+            <text class="d-sub" x="416" y="234">on your Mac · loopback only</text>
+            <circle class="d-port" cx="672" cy="194.5" r="3.5"/>
+
+            <!-- Seat 1 -->
+            <rect class="d-node" x="840.5" y="36.5" width="239" height="62" rx="14"/>
+            <text class="d-name" x="856" y="61.5">Seat 1<tspan class="d-plan" dx="7">Business 5×</tspan></text>
+            <g class="d-s1-serving">
+              <rect class="d-pill-green" x="1004" y="47.5" width="60" height="19" rx="9.5"/>
+              <text class="d-state d-state-green" x="1034" y="61">Serving</text>
+            </g>
+            <g class="d-s1-out">
+              <rect class="d-pill-muted" x="1028" y="47.5" width="36" height="19" rx="9.5"/>
+              <text class="d-state" x="1046" y="61">Out</text>
+            </g>
+            <rect class="d-track" x="856" y="76.5" width="208" height="6" rx="3"/>
+            <rect class="d-fill d-s1-fill" x="856" y="76.5" width="208" height="6" rx="3"/>
+
+            <!-- The failover note -->
+            <text class="d-note" x="856" y="125.5"><tspan class="d-note-red">limit hit</tspan> → <tspan class="d-note-green">next seat, same thread</tspan></text>
+
+            <!-- Seat 2 -->
+            <rect class="d-node" x="840.5" y="142.5" width="239" height="62" rx="14"/>
+            <text class="d-name" x="856" y="167.5">Seat 2<tspan class="d-plan" dx="7">Business 5×</tspan></text>
+            <text class="d-state-plain d-s2-ready" x="1064" y="167">Ready</text>
+            <g class="d-s2-serving">
+              <rect class="d-pill-green" x="1004" y="153.5" width="60" height="19" rx="9.5"/>
+              <text class="d-state d-state-green" x="1034" y="167">Serving</text>
+            </g>
+            <rect class="d-track" x="856" y="182.5" width="208" height="6" rx="3"/>
+            <rect class="d-fill" x="856" y="182.5" width="116.5" height="6" rx="3"/>
+
+            <!-- Seat 3 -->
+            <rect class="d-node" x="840.5" y="218.5" width="239" height="62" rx="14"/>
+            <text class="d-name" x="856" y="243.5">Seat 3<tspan class="d-plan" dx="7">Plus 1×</tspan></text>
+            <text class="d-state-plain" x="1064" y="243">Ready</text>
+            <rect class="d-track" x="856" y="258.5" width="208" height="6" rx="3"/>
+            <rect class="d-fill" x="856" y="258.5" width="189" height="6" rx="3"/>
+
+            <!-- Seat N -->
+            <rect class="d-node" x="840.5" y="294.5" width="239" height="62" rx="14"/>
+            <text class="d-name" x="856" y="319.5">Seat N<tspan class="d-plan" dx="7">Pro 20× · Reserve</tspan></text>
+            <text class="d-state-plain" x="1064" y="319">Ready</text>
+            <rect class="d-track" x="856" y="334.5" width="208" height="6" rx="3"/>
+            <rect class="d-fill" x="856" y="334.5" width="137" height="6" rx="3"/>
+          </svg>
+
+          <!-- Tall layout (phones) -->
+          <svg class="diagram-tall" viewBox="0 0 360 588" role="img" aria-label="The Codex app and the Codex CLI send requests to codexpool on 127.0.0.1 port 8319. codexpool forwards each request as one of your seats. Seat 1 hit its limit, so the same thread continues on Seat 2. Seats 3 and N are ready.">
+            <path class="d-link" d="M86 64.5C86 92 150 92 150 120.5"/>
+            <path class="d-link" d="M274 64.5C274 92 210 92 210 120.5"/>
+            <path class="d-flow d-flow-neutral" d="M86 64.5C86 92 150 92 150 120.5"/>
+            <path class="d-flow d-flow-neutral" d="M274 64.5C274 92 210 92 210 120.5"/>
+            <path class="d-link" d="M48 224.5V275.5Q48 287.5 60 287.5H72"/>
+            <path class="d-link" d="M48 224.5V381.5Q48 393.5 60 393.5H72"/>
+            <path class="d-link" d="M48 224.5V457.5Q48 469.5 60 469.5H72"/>
+            <path class="d-link" d="M48 224.5V533.5Q48 545.5 60 545.5H72"/>
+            <g class="d-live d-live-1">
+              <path class="d-link-live" d="M48 224.5V275.5Q48 287.5 60 287.5H72"/>
+              <path class="d-flow d-flow-green" d="M48 224.5V275.5Q48 287.5 60 287.5H72"/>
+            </g>
+            <g class="d-live d-live-2">
+              <path class="d-link-live" d="M48 224.5V381.5Q48 393.5 60 393.5H72"/>
+              <path class="d-flow d-flow-green" d="M48 224.5V381.5Q48 393.5 60 393.5H72"/>
+            </g>
+
+            <rect class="d-node" x="0.5" y="0.5" width="171" height="64" rx="14"/>
+            <rect class="d-icon" x="14" y="18.5" width="28" height="28" rx="7"/>
+            <rect class="d-glyph" x="20" y="25.5" width="16" height="13" rx="2.5"/>
+            <path class="d-glyph" d="M20 29.5h16"/>
+            <text class="d-title" x="52" y="30.5">Codex app</text>
+            <text class="d-sub" x="52" y="48.5">unchanged</text>
+
+            <rect class="d-node" x="188.5" y="0.5" width="171" height="64" rx="14"/>
+            <rect class="d-icon" x="202" y="18.5" width="28" height="28" rx="7"/>
+            <path class="d-glyph" d="M209 28l4.5 4.5-4.5 4.5M215.5 38h7"/>
+            <text class="d-title" x="240" y="30.5">Codex CLI</text>
+            <text class="d-sub" x="240" y="48.5">same config</text>
+
+            <rect class="d-pool-halo" x="14.5" y="114.5" width="331" height="116" rx="24"/>
+            <rect class="d-pool" x="20.5" y="120.5" width="319" height="104" rx="18"/>
+            <g transform="translate(40 142)">
+              <rect class="mark-track" x="0" y="0" width="24" height="8" rx="4"/>
+              <rect class="mark-fill" x="0" y="0" width="16" height="8" rx="4"/>
+              <rect class="mark-track" x="0" y="11" width="24" height="5" rx="2.5"/>
+              <rect class="mark-fill" x="0" y="11" width="11" height="5" rx="2.5"/>
+            </g>
+            <text class="d-pool-title" x="74" y="156">codexpool</text>
+            <text class="d-mono" x="40" y="188">127.0.0.1:8319</text>
+            <text class="d-sub" x="40" y="210">on your Mac · loopback only</text>
+            <circle class="d-port" cx="48" cy="224.5" r="3.5"/>
+
+            <rect class="d-node" x="72.5" y="256.5" width="287" height="62" rx="14"/>
+            <text class="d-name" x="88" y="281.5">Seat 1<tspan class="d-plan" dx="7">Business 5×</tspan></text>
+            <g class="d-s1-serving">
+              <rect class="d-pill-green" x="284" y="267.5" width="60" height="19" rx="9.5"/>
+              <text class="d-state d-state-green" x="314" y="281">Serving</text>
+            </g>
+            <g class="d-s1-out">
+              <rect class="d-pill-muted" x="308" y="267.5" width="36" height="19" rx="9.5"/>
+              <text class="d-state" x="326" y="281">Out</text>
+            </g>
+            <rect class="d-track" x="88" y="296.5" width="256" height="6" rx="3"/>
+            <rect class="d-fill d-s1-fill" x="88" y="296.5" width="256" height="6" rx="3"/>
+
+            <text class="d-note" x="88" y="345.5"><tspan class="d-note-red">limit hit</tspan> → <tspan class="d-note-green">next seat, same thread</tspan></text>
+
+            <rect class="d-node" x="72.5" y="362.5" width="287" height="62" rx="14"/>
+            <text class="d-name" x="88" y="387.5">Seat 2<tspan class="d-plan" dx="7">Business 5×</tspan></text>
+            <text class="d-state-plain d-s2-ready" x="344" y="387">Ready</text>
+            <g class="d-s2-serving">
+              <rect class="d-pill-green" x="284" y="373.5" width="60" height="19" rx="9.5"/>
+              <text class="d-state d-state-green" x="314" y="387">Serving</text>
+            </g>
+            <rect class="d-track" x="88" y="402.5" width="256" height="6" rx="3"/>
+            <rect class="d-fill" x="88" y="402.5" width="143.4" height="6" rx="3"/>
+
+            <rect class="d-node" x="72.5" y="438.5" width="287" height="62" rx="14"/>
+            <text class="d-name" x="88" y="463.5">Seat 3<tspan class="d-plan" dx="7">Plus 1×</tspan></text>
+            <text class="d-state-plain" x="344" y="463">Ready</text>
+            <rect class="d-track" x="88" y="478.5" width="256" height="6" rx="3"/>
+            <rect class="d-fill" x="88" y="478.5" width="233" height="6" rx="3"/>
+
+            <rect class="d-node" x="72.5" y="514.5" width="287" height="62" rx="14"/>
+            <text class="d-name" x="88" y="539.5">Seat N<tspan class="d-plan" dx="7">Pro 20× · Reserve</tspan></text>
+            <text class="d-state-plain" x="344" y="539">Ready</text>
+            <rect class="d-track" x="88" y="554.5" width="256" height="6" rx="3"/>
+            <rect class="d-fill" x="88" y="554.5" width="169" height="6" rx="3"/>
+          </svg>
+
+          <button class="diagram-pause" type="button" hidden>
+            <svg class="icon-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="4" y="3" width="2.75" height="10" rx="1"/><rect x="9.25" y="3" width="2.75" height="10" rx="1"/></svg>
+            <svg class="icon-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5.25 3.4v9.2c0 .62.68 1 1.2.66l7.1-4.6a.78.78 0 0 0 0-1.32l-7.1-4.6c-.52-.34-1.2.04-1.2.66Z"/></svg>
+            <span class="diagram-pause-label">Pause animation</span>
+          </button>
+        </figure>
+
+        <div class="facts">
+          <div class="fact">
+            <h3>Fill-first</h3>
+            <p>One seat serves at a time, highest priority first, so resets are staggered and prompt caching keeps working.</p>
+          </div>
+          <div class="fact">
+            <h3>Threads stay put</h3>
+            <p>A thread stays on the seat it started on and moves only when that seat can't serve.</p>
+          </div>
+          <div class="fact">
+            <h3>The reserve goes last</h3>
+            <p>Give your biggest seat the lowest priority and mark it as the reserve. The meter turns red when it takes over.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="wrap">
+        <header class="section-head">
+          <p class="kicker">Features</p>
+          <h2 id="features-title">Everything happens in the pool. You keep using Codex.</h2>
+        </header>
+
+        <div class="features">
+          <article class="card">
+            <div class="specimen" aria-hidden="true">
+              <div class="log log-failover">
+                <p><span class="log-code log-red">429</span><span>usage_limit_reached</span><span class="log-dim">Seat 1</span></p>
+                <p class="log-mid">same request, 1.4 s later</p>
+                <p><span class="log-code log-green">200</span><span>turn continues</span><span class="log-dim">Seat 2</span></p>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3>Automatic failover</h3>
+              <p>A seat that runs out is replaced on the same request, in the middle of a turn if need be. You don't switch anything.</p>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="specimen" aria-hidden="true">
+              <div class="file">
+                <p class="file-name">~/.codex/config.toml</p>
+                <p class="file-line"><span class="tok-key">openai_base_url</span> <span class="tok-dim">=</span> <span class="tok-str">"http://127.0.0.1:8319/v1"</span></p>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3>One thread history</h3>
+              <p>Codex keeps its built-in provider, so every thread stays where it was. Encrypted reasoning and compactions carry across seats, and <code>codexpool selftest</code> checks any pair.</p>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="specimen" aria-hidden="true">
+              <div class="mb-row">
+                <div class="mb-sample">
+                  <span class="mb-item"><svg viewBox="0 0 18 12" width="18" height="12"><rect class="mark-track" width="18" height="6" rx="3"/><rect class="mark-fill" width="9.7" height="6" rx="3"/><rect class="mark-track" y="8" width="18" height="4" rx="2"/><rect class="mark-fill" y="8" width="10.1" height="4" rx="2"/></svg><span class="mb-green">54%</span></span>
+                  <span class="mb-caption">Regular seat</span>
+                </div>
+                <div class="mb-sample">
+                  <span class="mb-item"><svg viewBox="0 0 18 12" width="18" height="12"><rect class="mark-track" width="18" height="6" rx="3"/><rect class="mark-red" width="6.1" height="6" rx="3"/><rect class="mark-track" y="8" width="18" height="4" rx="2"/><rect class="mark-fill" y="8" width="11.9" height="4" rx="2"/></svg><span class="mb-red">34%</span></span>
+                  <span class="mb-caption">Reserve serving</span>
+                </div>
+                <div class="mb-sample">
+                  <span class="mb-item"><svg viewBox="0 0 18 12" width="18" height="12"><path class="mark-warn" d="M9 .8c.5 0 .9.3 1.2.8l5.2 8.6c.5.9-.1 1.8-1.1 1.8H3.7c-1 0-1.6-.9-1.1-1.8L7.8 1.6C8.1 1.1 8.5.8 9 .8Z"/><rect class="mark-warn-mark" x="8.3" y="4" width="1.4" height="4" rx=".7"/><circle class="mark-warn-mark" cx="9" cy="9.9" r=".8"/></svg><span class="mb-grey">54%</span></span>
+                  <span class="mb-caption">Pool down</span>
+                </div>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3>Menu bar meter</h3>
+              <p>One number for the week across every seat, weighted by plan size. It counts down as you work and turns red when the reserve seat is serving.</p>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="specimen" aria-hidden="true">
+              <div class="menu">
+                <p class="menu-item is-selected"><span class="menu-glyph">↺</span>Use reset now… <span class="menu-dim">(1 banked, expires Oct 3)</span></p>
+                <p class="menu-item">Disable</p>
+                <p class="menu-item">Make first</p>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3>Banked resets</h3>
+              <p>Free resets banked on an account show on its seat, and one click redeems one. codexpool only redeems what the account already holds; it never buys anything.</p>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="specimen" aria-hidden="true">
+              <div class="lane">
+                <p class="lane-name"><span>lane</span> bulk</p>
+                <div class="lane-members">
+                  <span class="chip"><strong>xAI model</strong><small>first</small></span>
+                  <span class="lane-arrow">→</span>
+                  <span class="chip"><strong>OpenCode model</strong><small>fallback</small></span>
+                </div>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3>Subagent lanes</h3>
+              <p>Optional. Send token-heavy subagent work, like codebase sweeps and bulk edits, to other providers. The main agent stays on your seats.</p>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="specimen" aria-hidden="true">
+              <div class="log log-gate">
+                <p><span>Codex app</span><span class="log-dim">→ 127.0.0.1</span><span class="log-code log-green">200</span></p>
+                <p><span>Web page</span><span class="log-dim">→ 127.0.0.1</span><span class="log-code log-red">403</span></p>
+              </div>
+            </div>
+            <div class="card-body">
+              <h3>Secure by design</h3>
+              <p>The pool listens on loopback only, and an origin gate compiled into it refuses browser requests, so websites can't use it. Seat tokens are never copied or printed. No telemetry.</p>
+            </div>
+          </article>
+        </div>
+
+        <ul class="also">
+          <li><strong>A doctor.</strong> <code>codexpool doctor</code> explains every problem it finds and how to fix it.</li>
+          <li><strong>A credit guard.</strong> A seat that would start spending credits is parked until it resets.</li>
+          <li><strong>Safe upgrades.</strong> Each pool build is tested before use and rolled back if anything fails.</li>
+          <li><strong>A clean uninstall.</strong> One command restores your Codex config. Threads are never touched.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Screenshots -->
+    <section class="section section-band" id="screenshots" aria-labelledby="shots-title">
+      <div class="wrap">
+        <header class="section-head">
+          <p class="kicker">The app</p>
+          <h2 id="shots-title">Native on your Mac.</h2>
+          <p class="section-lede">A menu bar meter, a Settings window and a Setup assistant, in the system's own type, colours and symbols, light and dark.</p>
+        </header>
+
+        <div class="shots">
+          <figure class="shot shot-popover wall-light">
+            <div class="shot-stage">
+              <img src="assets/img/popover-reserve-light.webp" width="340" height="785" loading="lazy" decoding="async"
+                   alt="The popover while the reserve seat serves: the headline turns red at 34% left, none of the four regular seats is ready, and the reserve seat, Pro 20x, is serving.">
+            </div>
+            <figcaption>Reserve serving</figcaption>
+          </figure>
+          <figure class="shot shot-popover wall-dark">
+            <div class="shot-stage">
+              <img src="assets/img/popover-dark.webp" width="340" height="783" loading="lazy" decoding="async"
+                   alt="The popover in dark appearance: 54% left this week across all seats, with the 24-hour chart and the seat list.">
+            </div>
+            <figcaption>Dark</figcaption>
+          </figure>
+          <div class="shots-windows">
+          <figure class="shot shot-window shot-settings">
+            <div class="shot-stage">
+              <picture>
+                <source srcset="assets/img/settings-overview-dark.webp" media="(prefers-color-scheme: dark)" data-theme-dark>
+                <img src="assets/img/settings-overview-light.webp" width="1776" height="1484" loading="lazy" decoding="async"
+                   alt="The codexpool Settings window, Overview pane: a sidebar with Overview, Seats, Lanes, General, Health and About, the headline meter at 54% left this week, the seat new threads go to, and every seat with its plan, size, weekly bar and reset time.">
+              </picture>
+            </div>
+            <figcaption><strong>Settings.</strong> Every seat with its plan, size and limits. Rename, resize, reorder or redeem a reset without a terminal. Open it from the menu bar or with <code>codexpool gui</code>.</figcaption>
+          </figure>
+          <figure class="shot shot-window shot-setup">
+            <div class="shot-stage">
+              <picture>
+                <source srcset="assets/img/setup-signin-dark.webp" media="(prefers-color-scheme: dark)" data-theme-dark>
+                <img src="assets/img/setup-signin-light.webp" width="1416" height="1346" loading="lazy" decoding="async"
+                   alt="The codexpool Setup assistant, adding a ChatGPT account: the five seats already in the pool, then buttons to open the sign-in link in the browser, in a private Chrome window, or copy it, with a countdown until the link expires.">
+              </picture>
+            </div>
+            <figcaption><strong>Setup assistant.</strong> Add each ChatGPT account with a sign-in link, in a private window for accounts your browser isn't signed in to. Prefer the terminal? <code>codexpool setup</code> does the same.</figcaption>
+          </figure>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Install -->
+    <section class="section" id="install" aria-labelledby="install-title">
+      <div class="wrap">
+        <header class="section-head">
+          <p class="kicker">Install</p>
+          <h2 id="install-title">Three steps. The install takes a minute or two.</h2>
+          <p class="section-lede">The installer checks your Mac, builds the pool from source and opens the Setup assistant. Run it again any time to upgrade.</p>
+        </header>
+
+        <div class="install-grid">
+          <ol class="steps">
+            <li class="step">
+              <span class="step-num" aria-hidden="true">1</span>
+              <div class="step-body">
+                <h3>Run the installer</h3>
+                <p>Paste this into Terminal.</p>
+                <div class="cmd cmd-compact">
+                  <code><span class="cmd-prompt" aria-hidden="true">$ </span>curl -fsSL https://raw.githubusercontent.com/<wbr>memfactorduke/<wbr>codex-load-balancer/<wbr>main/<wbr><span class="nobr">install.sh | bash</span></code>
+                  <button class="copy" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash" aria-label="Copy the install command" hidden>
+                    <svg class="copy-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="5.25" y="5.25" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.25 3.5v-.25a1.5 1.5 0 0 0-1.5-1.5h-5a1.5 1.5 0 0 0-1.5 1.5v5a1.5 1.5 0 0 0 1.5 1.5H4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                    <svg class="check-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span class="copy-label">Copy</span>
+                  </button>
+                </div>
+                <p class="step-note">To see the plan first, replace the final <code>bash</code> with <code>bash -s -- --dry-run</code>: it prints every step and changes nothing.</p>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-num" aria-hidden="true">2</span>
+              <div class="step-body">
+                <h3>Add your ChatGPT accounts</h3>
+                <p>The Setup assistant opens by itself. Sign in to each account; for accounts your browser isn't signed in to, open the link in a private window. Each seat is sized by its plan.</p>
+                <p class="step-note">Prefer the terminal? <code>codexpool setup</code> walks you through the same steps there. To add accounts later, choose Add a ChatGPT account… in the menu bar or run <code>codexpool gui setup-welcome</code>.</p>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-num" aria-hidden="true">3</span>
+              <div class="step-body">
+                <h3>Reopen Codex</h3>
+                <p>Click Quit and Reopen Codex… on the assistant's last step, or quit the Codex app with ⌘Q and open it again. Your threads are all there, and the meter sits next to the clock.</p>
+              </div>
+            </li>
+          </ol>
+
+          <aside class="requirements" aria-labelledby="req-title">
+            <h3 id="req-title">Requirements</h3>
+            <ul class="checks">
+              <li>macOS 13 Ventura or later</li>
+              <li>Apple silicon (Intel should work, untested)</li>
+              <li>The Codex app</li>
+              <li>Two or more ChatGPT accounts with Codex access</li>
+              <li>No Xcode or Homebrew needed</li>
+            </ul>
+            <p class="requirements-note">Changed your mind? <code>codexpool uninstall --yes</code> removes it and restores your Codex config.</p>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- Why not just switch accounts -->
+    <section class="section" id="compare" aria-labelledby="compare-title">
+      <div class="wrap">
+        <header class="section-head">
+          <p class="kicker">Built for heavy Codex users</p>
+          <h2 id="compare-title">Why not just switch accounts?</h2>
+          <p class="section-lede">If you run Codex all day on more than one ChatGPT account (personal, work, team, Pro), switching by hand costs you the turn and your train of thought.</p>
+        </header>
+
+        <div class="compare">
+          <table>
+            <caption class="sr-only">Switching accounts yourself compared with codexpool</caption>
+            <thead>
+              <tr>
+                <td></td>
+                <th scope="col">Switching accounts yourself</th>
+                <th scope="col" class="col-us"><span class="col-us-label"><svg class="mark" viewBox="0 0 18 12" width="18" height="12" aria-hidden="true"><rect class="mark-track" width="18" height="6" rx="3"/><rect class="mark-fill" width="12" height="6" rx="3"/><rect class="mark-track" y="8" width="18" height="4" rx="2"/><rect class="mark-fill" y="8" width="8" height="4" rx="2"/></svg>With codexpool</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">When a seat runs out</th>
+                <td data-label="Switching accounts yourself">The turn stops. You sign out, sign in to another account and ask again.</td>
+                <td data-label="With codexpool" class="col-us">The same request goes to the next seat, and the turn carries on.</td>
+              </tr>
+              <tr>
+                <th scope="row">Knowing what's left</th>
+                <td data-label="Switching accounts yourself">One account at a time, in the app's own meter.</td>
+                <td data-label="With codexpool" class="col-us">One number for every seat in the menu bar, weighted by plan size.</td>
+              </tr>
+              <tr>
+                <th scope="row">Picking the next account</th>
+                <td data-label="Switching accounts yourself">You guess which one still has quota.</td>
+                <td data-label="With codexpool" class="col-us">Your priority order decides, and the reserve goes last.</td>
+              </tr>
+              <tr>
+                <th scope="row">Banked resets</th>
+                <td data-label="Switching accounts yourself">Easy to forget they're there.</td>
+                <td data-label="With codexpool" class="col-us">Shown on each seat, redeemed in one click.</td>
+              </tr>
+              <tr>
+                <th scope="row">Your Codex sign-in</th>
+                <td data-label="Switching accounts yourself">Changes every time you switch.</td>
+                <td data-label="With codexpool" class="col-us">Stays as it is. Each seat has its own login in the pool.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section" id="faq" aria-labelledby="faq-title">
+      <div class="wrap faq-grid">
+        <header class="section-head faq-head">
+          <p class="kicker">FAQ</p>
+          <h2 id="faq-title">Questions, answered.</h2>
+          <p class="section-lede">More in the <a href="https://github.com/memfactorduke/codex-load-balancer#faq">README</a> and the <a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/TROUBLESHOOTING.md">troubleshooting guide</a>.</p>
+        </header>
+
+        <div class="faq">
+          <details open>
+            <summary>Does it work with the Codex CLI too?</summary>
+            <div class="answer"><p>Yes. The <code>codex</code> CLI reads the same <code>~/.codex/config.toml</code> as the app, so the CLI and anything else that uses it go through the pool.</p></div>
+          </details>
+          <details>
+            <summary>Will I keep my thread history?</summary>
+            <div class="answer"><p>Yes. Codex keeps its built-in provider and only <code>openai_base_url</code> changes, so every existing thread stays visible and continues through the pool. Uninstalling never touches your threads either.</p></div>
+          </details>
+          <details>
+            <summary>What happens when every seat is out?</summary>
+            <div class="answer"><p>Codex requests fail with a usage-limit error until a seat comes back, just as they would with a single account. The menu bar turns grey and says which seat is back next, and you get a notification. A banked reset, if you have one, brings a seat back at once.</p></div>
+          </details>
+          <details>
+            <summary>Does anything leave my Mac?</summary>
+            <div class="answer"><p>Your model traffic and the usage and reset checks go to ChatGPT through the pool, as Codex's own requests would, and adding a seat signs in with OpenAI. Installing and upgrading download from GitHub, go.dev, the Go module proxy and checksum database (proxy.golang.org, sum.golang.org) and PyPI (PyObjC, for the menu bar app), plus astral.sh for uv if your Mac has no Python 3.11 or later. If you set up lanes, lane subagents' requests go to the providers you chose. There is no telemetry.</p></div>
+          </details>
+          <details>
+            <summary>Which ChatGPT plans work?</summary>
+            <div class="answer"><p>Any plan that includes Codex: Plus, Pro, Business, Team and others. Each seat is sized by its plan (Plus 1×, Business 5×, Pro 20×) so the meter weighs it fairly, and you can change a seat's size.</p></div>
+          </details>
+          <details>
+            <summary>How do I uninstall?</summary>
+            <div class="answer"><p>Run <code>codexpool uninstall --yes</code>. It stops the background agents, restores your Codex config and removes the command; then reopen Codex. Seat logins and settings stay in <code>~/.codexpool</code> until you delete the folder.</p></div>
+          </details>
+          <details>
+            <summary>Is codexpool affiliated with OpenAI?</summary>
+            <div class="answer"><p>No. codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of OpenAI.</p></div>
+          </details>
+          <details>
+            <summary>What about the terms of service?</summary>
+            <div class="answer"><p>Use it only with accounts you own, and follow the terms that apply to them. Every seat is used from the same Mac and the same Codex installation, so the pooling isn't hidden. The README's <a href="https://github.com/memfactorduke/codex-load-balancer#terms-of-service-and-risk">terms of service section</a> explains what that means; whether to run it is your call.</p></div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- License -->
+    <section class="section section-tight" id="license" aria-labelledby="license-title">
+      <div class="wrap">
+        <div class="license">
+          <div class="license-lead">
+            <p class="kicker">License</p>
+            <h2 id="license-title">Free for noncommercial use.</h2>
+            <p>codexpool is free and source-available under the <a href="https://polyformproject.org/licenses/noncommercial/1.0.0">PolyForm Noncommercial License 1.0.0</a>.</p>
+          </div>
+          <dl class="license-terms">
+            <div>
+              <dt>You can</dt>
+              <dd>Use it, read the code, change it and share it for any noncommercial purpose: personal projects, study, research and hobby work, and use by charities, schools and public institutions.</dd>
+            </div>
+            <div>
+              <dt>Ask first</dt>
+              <dd>Commercial use needs permission. <a href="https://github.com/memfactorduke/codex-load-balancer/issues">Ask on GitHub</a>.</dd>
+            </div>
+            <div class="license-fine">
+              <dt class="sr-only">Note</dt>
+              <dd>This is a summary, not the license: the <a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/LICENSE">LICENSE</a> file has the terms. Required Notice: Copyright 2026 memfactorduke (https://github.com/memfactorduke/codex-load-balancer)</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <a class="brand" href="#top" aria-label="codexpool, back to top">
+            <svg class="mark" viewBox="0 0 18 12" width="21" height="14" aria-hidden="true">
+              <rect class="mark-track" width="18" height="6" rx="3"/>
+              <rect class="mark-fill" width="12" height="6" rx="3"/>
+              <rect class="mark-track" y="8" width="18" height="4" rx="2"/>
+              <rect class="mark-fill" y="8" width="8" height="4" rx="2"/>
+            </svg>
+            <span class="wordmark">codexpool</span>
+          </a>
+          <p>Every ChatGPT seat you have, behind one Codex.</p>
+        </div>
+        <nav class="footer-nav" aria-label="Footer">
+          <div>
+            <h2>Product</h2>
+            <ul>
+              <li><a href="#how">How it works</a></li>
+              <li><a href="#features">Features</a></li>
+              <li><a href="#install">Install</a></li>
+              <li><a href="#faq">FAQ</a></li>
+            </ul>
+          </div>
+          <div>
+            <h2>Docs</h2>
+            <ul>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer#readme">README</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/ARCHITECTURE.md">Architecture</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/MENUBAR.md">Menu bar app</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/LANES.md">Subagent lanes</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/TROUBLESHOOTING.md">Troubleshooting</a></li>
+            </ul>
+          </div>
+          <div>
+            <h2>Project</h2>
+            <ul>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer">GitHub</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/issues">Issues</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/SECURITY.md">Security</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/CHANGELOG.md">Changelog</a></li>
+              <li><a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/LICENSE">License</a></li>
+            </ul>
+          </div>
+        </nav>
+      </div>
+      <div class="footer-fine">
+        <p>codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of OpenAI. Use it only with accounts you own, and follow the terms that apply to them.</p>
+        <p>© 2026 memfactorduke · <a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/LICENSE">PolyForm Noncommercial 1.0.0</a></p>
+      </div>
+    </div>
+  </footer>
+
+  <p class="sr-only" aria-live="polite" id="copy-status"></p>
+</body>
+</html>
