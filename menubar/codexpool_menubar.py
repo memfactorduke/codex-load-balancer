@@ -63,8 +63,16 @@ from AppKit import (
     NSCompositingOperationSourceIn,
     NSCompositingOperationSourceOver,
     NSDeviceRGBColorSpace,
+    NSEvent,
+    NSEventMaskKeyDown,
+    NSEventMaskLeftMouseDown,
+    NSEventMaskOtherMouseDown,
+    NSEventMaskRightMouseDown,
     NSEventModifierFlagCommand,
+    NSEventModifierFlagControl,
     NSEventModifierFlagDeviceIndependentFlagsMask,
+    NSEventModifierFlagOption,
+    NSEventModifierFlagShift,
     NSFont,
     NSFontAttributeName,
     NSFontWeightMedium,
@@ -110,7 +118,8 @@ from AppKit import (
     NSWorkspace,
     NSWorkspaceDidWakeNotification,
 )
-from Foundation import NSAffineTransform, NSBundle, NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer, NSUserDefaults
+from Foundation import (NSAffineTransform, NSBundle, NSObject, NSPointInRect, NSRunLoop, NSRunLoopCommonModes, NSTimer,
+                        NSUserDefaults)
 from PyObjCTools import AppHelper
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -140,6 +149,7 @@ POLL_EVERY_S = 10            # how often we stat the status file
 COUNTDOWN_EVERY_S = 30       # how often countdown labels refresh while the popover is open
 TOAST_S = 8                  # how long an action's feedback replaces the header subtitle
 REOPEN_GUARD_S = 0.35        # a click this soon after the popover closed is the click that closed it
+KEY_ESCAPE = 53              # kVK_Escape: closes the popover
 HISTORY_TAIL_BYTES = 1 << 20 # read at most the last 1 MiB of history.jsonl
 PACE_WINDOW_S = 6 * 3600     # the pace slope looks at the last 6 h of history
 PACE_MIN_RISING_S = 30 * 60  # ... and needs at least 30 min of non-dropping samples
@@ -158,6 +168,16 @@ RANGES = {'24h': (24 * 3600, '24h'), '7d': (7 * 24 * 3600, '7d')}
 HEADLINES = ('all', 'regular')     # every seat that is not off, reserve included / the regular seats only
 DISPLAYS = ('left', 'used')        # count down from 100 % / count up from 0 %
 SCOPE = {'all': 'all seats', 'regular': 'regular seats'}
+# How the pool picks a seat: pool.balancing, also copied from settings.json. `priority`: the fill order you set;
+# `reset`: the guard reorders the regular seats so the one whose weekly quota resets soonest goes first.
+BALANCINGS = ('priority', 'reset')
+ORDER_TITLE = {'priority': 'Your order', 'reset': 'Soonest reset first'}
+ORDER_TIP = {
+    'priority': 'The pool uses the first seat until it runs out, then the next. Change the order in Settings.',
+    'reset': 'The pool uses the seat whose weekly quota resets soonest, so none of it goes to waste, and '
+             'reorders the seats by itself. New threads follow; running threads stay on their seat. '
+             'The reserve stays last.',
+}
 
 # Seat states written by the guard, and how the popover names them.
 SERVING, READY = 'active', 'ready'
@@ -339,6 +359,7 @@ class Model:
     headline: float | None = None    # weekly use in %, of the seats `headline_mode` covers
     headline_mode: str = 'all'   # all | regular (pool.headline)
     display: str = 'left'        # left | used (pool.display): how every number and bar reads
+    balancing: str = 'priority'  # priority | reset (pool.balancing): how the pool orders the regular seats
     serving: Seat | None = None
     seats: list[Seat] = field(default_factory=list)
     regular_ready: int = 0
@@ -459,6 +480,8 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
     mode, display = as_str(pool.get('headline')), as_str(pool.get('display'))
     headline_mode = mode if mode in HEADLINES else HEADLINES[0]
     display = display if display in DISPLAYS else DISPLAYS[0]
+    balancing = as_str(pool.get('balancing'))
+    balancing = balancing if balancing in BALANCINGS else BALANCINGS[0]   # absent (an older guard): your order
     if mode in HEADLINES:   # the guard picked the figure: used_pct is the one `headline` names
         headline = clamp_pct(as_num(pool.get('used_pct')))
         if headline is None:
@@ -502,7 +525,7 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
     regular_total = len(regular) if seats else max(0, int(as_num(pool.get('seats'), 0)))
     headline = clamp_pct(as_num(headline))
     return Model(now=now, status=status, problem=problem, age=age, headline=headline, headline_mode=headline_mode,
-                 display=display, serving=serving, seats=seats, regular_ready=regular_ready,
+                 display=display, balancing=balancing, serving=serving, seats=seats, regular_ready=regular_ready,
                  regular_total=regular_total, reserve_seats=reserve, next_back=next_back,
                  version=as_str(pool.get('version')), history=history)
 
@@ -1348,8 +1371,12 @@ class PopoverLayout:
     def seats(self, y: float) -> float:
         hf, nf = font(11, NSFontWeightSemibold), font(10.5)
         self.section_title('Seats', y, line_height(hf))
-        self.text('Priority order', PAD, y + hf.ascender() - nf.ascender(), nf, C.secondary(), width=INNER,
-                  align='right')
+        order = ORDER_TITLE[self.m.balancing]
+        self.text(order, PAD, y + hf.ascender() - nf.ascender(), nf, C.secondary(), width=INNER, align='right')
+        # Hovering it says how the pool picks a seat (a tooltip only: no highlight, no click).
+        ow = math.ceil(text_width(order, nf))
+        self.regions.append((((PAD + INNER - ow, y), (ow, line_height(hf))), ('tip', 'order')))
+        self.tips[('tip', 'order')] = ORDER_TIP[self.m.balancing]
         y += line_height(hf) + 4
         top = y
         for seat in self.m.seats:
@@ -1860,6 +1887,10 @@ class Controller(NSObject):
         self.woke_at = -1e9          # time.monotonic() of the last wake from sleep
         self.first_run_checked = False   # the first-run Setup assistant check has been made
         self.closed_at = -1e9        # time.monotonic() when the popover last started closing
+        self.closing_elsewhere = False   # dismiss() is closing it: not a click on the status item
+        self.monitors = []           # the NSEvent monitors that close the popover while it shows (watch_outside)
+        self.monitor_handlers = ()   # ... and the Python handlers their blocks call
+        self.menu_open = False       # a seat menu is up (it tracks events itself until it closes)
         return self
 
     # -- lifecycle -------------------------------------------------------------------------------------
@@ -1987,10 +2018,89 @@ class Controller(NSObject):
         self.render(reset_scroll=True)
         button = self.item.button()
         self.popover.showRelativeToRect_ofView_preferredEdge_(button.bounds(), button, NSRectEdgeMinY)
+        self.watch_outside()
         activate_app()
 
     def popoverWillClose_(self, note):
-        self.closed_at = time.monotonic()
+        if not self.closing_elsewhere:   # it may be the transient close on the status item's own mouse-down
+            self.closed_at = time.monotonic()
+        self.unwatch_outside()
+
+    def popoverDidClose_(self, note):
+        if not self.popover.isShown():   # unless it was opened again while the close animated
+            self.unwatch_outside()
+
+    def applicationDidResignActive_(self, note):
+        """Another app came forward (⌘-Tab, a click elsewhere while we were active): close, like a menu."""
+        self.dismiss()
+
+    # -- closing on a click anywhere else --------------------------------------------------------------
+    # The popover is transient, but the app is an agent that is usually not active, so the popover never
+    # hears of clicks in other apps. While it shows: a global monitor closes it on any mouse-down in another
+    # app, a local one on Escape, and resigning active closes it too. A global monitor only ever gets events
+    # sent to other apps: clicks in the popover and on the status item still go to their views, so the
+    # item's click still toggles (REOPEN_GUARD_S) and the popover's own clicks still work.
+    @objc.python_method
+    def watch_outside(self):
+        self.unwatch_outside()
+        clicks = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown
+        self.monitor_handlers = (self.outside_click, self.key_down)
+        self.monitors = [m for m in (
+            NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(clicks, self.monitor_handlers[0]),
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(NSEventMaskKeyDown, self.monitor_handlers[1]),
+        ) if m is not None]
+
+    @objc.python_method
+    def unwatch_outside(self):
+        monitors, self.monitors, self.monitor_handlers = self.monitors, [], ()
+        for m in monitors:
+            NSEvent.removeMonitor_(m)
+
+    @objc.python_method
+    def outside_click(self, event):
+        """Global monitor: a mouse-down in another app's window, on the desktop, in the menu bar or on another
+        menu bar item. A click outside an open seat menu only dismisses the menu."""
+        if not self.menu_open and self.popover.isShown() and not self.on_us(event):
+            self.dismiss()
+
+    @objc.python_method
+    def key_down(self, event):
+        """Local monitor (key events sent to us, i.e. while the popover's window is key): Escape closes it. Every
+        other key goes on as before (⌘, opens Settings)."""
+        mods = event.modifierFlags() & (NSEventModifierFlagCommand | NSEventModifierFlagControl |
+                                        NSEventModifierFlagOption | NSEventModifierFlagShift)
+        if event.keyCode() == KEY_ESCAPE and not mods and not self.menu_open and self.popover.isShown():
+            self.dismiss()
+            return None   # handled: no beep
+        return event
+
+    @objc.python_method
+    def on_us(self, event) -> bool:
+        """Whether a click is on the popover's content or the status item. A global monitor never gets those
+        (they are sent to us); this only makes sure. Its events have no window: the location is on screen."""
+        window, p = event.window(), event.locationInWindow()
+        if window is not None:
+            p = window.convertPointToScreen_(p)
+        button = self.item.button() if self.item is not None else None
+        for view in (self.content, button):
+            w = view.window() if view is not None else None
+            if w is not None:
+                rect = w.convertRectToScreen_(view.convertRect_toView_(view.bounds(), None))
+                if NSPointInRect(p, rect):
+                    return True
+        return False
+
+    @objc.python_method
+    def dismiss(self):
+        """Close for a reason that is not a click on the status item, so the next click on it opens the popover
+        at once instead of counting as the click that closed it."""
+        if not self.popover.isShown():
+            return
+        self.closing_elsewhere = True
+        try:
+            self.popover.performClose_(None)
+        finally:
+            self.closing_elsewhere = False
 
     # -- clicks ----------------------------------------------------------------------------------------
     @objc.python_method
@@ -2002,7 +2112,11 @@ class Controller(NSObject):
         elif kind == 'seat':
             seat = next((s for s in self.model.seats if (s.name or s.label) == value), None)
             if seat:
-                self.seat_menu(seat).popUpMenuPositioningItem_atLocation_inView_(None, point, view)
+                self.menu_open = True   # until the menu closes: popUp… returns only then
+                try:
+                    self.seat_menu(seat).popUpMenuPositioningItem_atLocation_inView_(None, point, view)
+                finally:
+                    self.menu_open = False
         elif kind == 'action':
             self.run_action(value)
 
@@ -2060,6 +2174,7 @@ class Controller(NSObject):
             img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, None)
             if img is not None:
                 item.setImage_(img)
+            return item
 
         if seat.resets:   # a banked free reset brings the seat back to full right now
             exp = f', expires {fmt_day(seat.reset_expiry)}' if seat.reset_expiry else ''
@@ -2075,9 +2190,13 @@ class Controller(NSObject):
             add('Disable', 'pause.circle', 'disable')
         first = seat.priority is not None and seat.priority >= top and \
             sum(1 for s in self.model.seats if s.priority == top) == 1
-        # The reserve stays last: moving it first would serve it before the regular seats.
-        add('Make first', 'arrow.up.to.line', 'first', enabled=not first and not seat.reserve,
-            extra=f'{int(top) + 10}')
+        # The reserve stays last: moving it first would serve it before the regular seats. With "Soonest reset
+        # first" the guard sets the order on every pass (the one after this action included), so it is off then.
+        by_reset = self.model.balancing == 'reset'
+        item = add('Make first', 'arrow.up.to.line', 'first', enabled=not first and not seat.reserve and not by_reset,
+                   extra=f'{int(top) + 10}')
+        if by_reset:
+            item.setToolTip_(fresh('Soonest reset first sets the order. Change it in Settings \u2192 Balancing.'))
         if not relogin_first:
             add('Re-login…', 'person.badge.key', 'login')
         return menu

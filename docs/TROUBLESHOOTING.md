@@ -147,10 +147,25 @@ seat can show as Off. Turn it back on with `codexpool enable <seat>`.
 
 ### New threads go to the wrong seat
 
-Fill order is priority, highest first. `codexpool status` shows each seat's priority. Seats with the same priority
-are used in file-name order, and `doctor` warns about them. Fix it with `codexpool priority <seat> <n>`, or
-**Make first** in the menu bar. Only priority decides the order: `codexpool reserve <seat>` moves a reserve that
-would be used before a regular seat to the end, but a priority you set by hand afterwards wins.
+Fill order is priority, highest first. `codexpool status` shows each seat's priority, and its first line says
+how the order is kept: `fill: your order` or `fill: soonest reset first`. Seats with the same priority are used in
+file-name order, and `doctor` warns about them. Fix it with `codexpool order <seat> <seat> ...` (or
+`codexpool priority <seat> <n>` for one seat), the Balancing pane of the Settings window, or **Make first** in the
+menu bar. Only priority decides the order: `codexpool reserve <seat>` moves a reserve that would be used before a
+regular seat to the end, but a priority you set by hand afterwards wins.
+
+Threads that are already running stay on their seat either way (session affinity); only new threads follow a new
+order.
+
+### The fill order changes by itself, or my order does not stick
+
+That is `"balancing": "reset"`: every minute the guard puts the regular seats in the order of their weekly resets,
+soonest first, and each seat's note in `codexpool status` says when it resets. `codexpool logs --guard` shows a
+`guard: balancing: new fill order ...` line for each change. Your own order is kept for later: `codexpool order`
+(or `priority`) changes only that saved order while balancing is `reset`, and `codexpool set balancing priority`
+brings it back on the guard's next pass. A seat that is out,
+parked, blocked or off is not ordered until it serves again, and a seat without usage data yet goes after the
+others.
 
 ### After a restart, a thread moved to another seat
 
@@ -207,7 +222,9 @@ output above the message shows what CLIProxyAPI's login flow reported. If the br
 ### The priority I set was not applied
 
 `login` sets the priority once the pool has loaded the new file. If that takes more than 20 seconds it prints a
-warning with the command to run, for example `codexpool priority "Work B" 300`.
+warning with the command to run, for example `codexpool priority "Work B" 300`. With `"balancing": "reset"` the
+guard sets the priorities itself on its next pass (see
+[The fill order changes by itself](#the-fill-order-changes-by-itself-or-my-order-does-not-stick)).
 
 ## Resets
 
@@ -495,6 +512,21 @@ when a member alias (`<lane>-<id>`) is such a model. Rename the lane, or set ano
 
 Every bridge member needs its provider's key file. Store it with the command the error names, for example
 `codexpool lane key opencode-go`, then apply again.
+
+### `lane models` fails, or the Add Model sheet has no model list
+
+`codexpool lane models <provider>` says why. For `xai` the list comes from the pool: it must be running
+(`codexpool doctor`). For OpenCode it comes from the provider's `/models`: "answered HTTP 401" means the key was
+refused (`codexpool lane key <keyname> -` to replace it), "cannot reach" a network problem, and "a redirect" that
+the provider sent the request elsewhere, which codexpool does not follow so the key goes nowhere else. For a
+`responses` endpoint pass `--base-url` and `--key-name`. You can always type a model id by hand; `lane add` and
+`lane edit` check it when they save.
+
+### `lane edit` says a member does not exist
+
+Members are named by id, as `codexpool lane` lists them (`grok`, `muse`), not by model. `lane edit` applies its
+flags in the order given, so a member added with `--add-member` can be moved or removed only after it, in the
+same call.
 
 ### The bridge is not running or `/healthz` fails
 

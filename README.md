@@ -130,8 +130,8 @@ Once `~/.local/bin` is on your `PATH`, plain `codexpool` works.
 ## Features
 
 - **Automatic failover, mid-thread.** A seat that runs out is replaced on the same request after a pause of a
-  second or two. One seat serves at a time, highest priority first, so resets are staggered and prompt caching
-  keeps working.
+  second or two. One seat serves at a time, in your order, so resets are staggered and prompt caching keeps
+  working. Or let the guard put the seat whose weekly quota resets soonest first, so none of it goes to waste.
 - **One thread history.** Codex keeps its built-in provider, so every thread stays where it was. Encrypted
   reasoning and native compactions carry across seats, and `codexpool selftest` checks any pair of yours.
 - **Menu bar meter.** One number for the week across every seat, weighted by seat size: green while a regular
@@ -157,6 +157,7 @@ failure, and an uninstall that restores your Codex config.
 - [How it works](#how-it-works) and [Setup in detail](#setup-in-detail)
 - [Everyday use](#everyday-use)
 - [The headline number, weights and the reserve](#the-headline-number-weights-and-the-reserve)
+- [Load balancing: which seat new threads get](#load-balancing-which-seat-new-threads-get)
 - [Resets](#resets) and [How a seat change works](#how-a-seat-change-works)
 - [Subagent lanes (optional)](#subagent-lanes-optional)
 - [Security model](#security-model) and [Terms of service and risk](#terms-of-service-and-risk)
@@ -344,11 +345,12 @@ Most of this is also in the menu bar popover and the [Settings window](docs/MENU
 | See seats, usage and resets | the menu bar, or `codexpool` (same as `codexpool status`; `--live` polls every seat now, `--json` for scripts) |
 | Add ChatGPT accounts, guided | `codexpool setup` in the terminal, or `codexpool gui setup-welcome` for the Setup assistant |
 | Check everything is healthy | `codexpool doctor` (must end with `OK`; `--json` prints the checks as JSON for scripts) |
-| Open the Settings window | `codexpool gui`, or `codexpool gui <pane>` for `overview`, `seats`, `lanes`, `general`, `health`, `about` |
-| Change what the menu bar number shows | `codexpool set display left` or `used`, `codexpool set headline all` or `regular` (`codexpool set` alone prints both) |
+| Open the Settings window | `codexpool gui`, or `codexpool gui <pane>` for `overview`, `seats`, `balancing`, `lanes`, `general`, `health`, `about` |
+| Change what the menu bar number shows | `codexpool set display left` or `used`, `codexpool set headline all` or `regular` (`codexpool set` alone prints every setting it changes) |
 | Use a banked free reset | click the seat in the menu bar → **Use reset now…**, or `codexpool reset <seat>` |
 | Take a seat out / put it back | `codexpool disable <seat>` / `codexpool enable <seat>` |
-| Change the fill order (higher first) | `codexpool priority <seat> <n>` |
+| Change the fill order | `codexpool order <seat> <seat> ...` (first used first), or one seat: `codexpool priority <seat> <n>` (higher first) |
+| Use the seat whose week resets soonest first | `codexpool set balancing reset` (`priority` goes back to your order; see [Load balancing](#load-balancing-which-seat-new-threads-get)) |
 | Rename, resize, mark the reserve | `codexpool label <seat> <name>`, `codexpool weight <seat> <n>`, `codexpool reserve <seat>` (moves it last in the fill order; `--off` to undo) |
 | Fix a seat that says blocked | `codexpool refresh <seat>`, then if needed `codexpool login "<Label>" --priority <n> --no-open`; when it says "OpenAI ended this sign-in", only the login helps |
 | Remove a seat | `codexpool remove <seat> --yes` (deletes its login file; does not sign the account out). Removing the last one puts Codex back on its own login until you add a seat |
@@ -356,7 +358,7 @@ Most of this is also in the menu bar popover and the [Settings window](docs/MENU
 | Restart the pool | `codexpool restart` |
 | Test that threads move between two seats | `codexpool selftest <from> <to> --compact` |
 | Upgrade CLIProxyAPI | `codexpool upgrade latest` |
-| Run subagents on models from other providers | `codexpool lane` to list lanes (`lane list --json` for scripts); `lane add`, `lane apply`, `lane test` (see [Subagent lanes](#subagent-lanes-optional)) |
+| Run subagents on models from other providers | `codexpool lane` to list lanes (`lane list --json` for scripts); `lane add`, `lane edit`, `lane remove`, `lane apply`, `lane test` (see [Subagent lanes](#subagent-lanes-optional)), or the Lanes pane of the Settings window |
 | Print the version | `codexpool version` (or `codexpool --version`) |
 
 `<seat>` is a label (quote names with spaces: `"Work A"`), a seat file name, an email, or any part of one of
@@ -415,7 +417,39 @@ Order comes only from priority, so the reserve needs the lowest. `codexpool rese
 every regular seat when it would otherwise be used before one of them, and `codexpool reserve <seat> --off` moves
 it back above the reserves. The Setup assistant, `codexpool setup`, and `codexpool login` without `--priority`
 put a new seat after the seats already in the pool and before the reserve, moving the reserve down when there is
-no room left above it. `codexpool priority` still sets any order you like.
+no room left above it. `codexpool order` and `codexpool priority` still set any order you like, and
+[load balancing](#load-balancing-which-seat-new-threads-get) can keep it sorted by reset time for you.
+
+## Load balancing: which seat new threads get
+
+The pool gives every new thread to the first seat in the fill order that can serve, and keeps the thread there.
+Two settings decide that order (`"balancing"` in `settings.json`, or the Balancing pane of the Settings window):
+
+- **Your order** (`codexpool set balancing priority`, the default). The first seat is used until it runs out,
+  then the next. This is the best choice for prompt caching, and your big seat can wait as the reserve.
+- **Soonest reset first** (`codexpool set balancing reset`). Every minute the guard puts the regular seats in the
+  order of their weekly resets, the soonest first: quota that is about to reset is used before it goes to waste.
+  A seat without a weekly window counts by its 5-hour window, seats without usage data go after the others in
+  your order, and seats that are out, parked, blocked or off stay where they are until they serve again. The
+  reserve stays last. The guard changes priorities only when the order is wrong (two resets within five minutes
+  of each other count as a tie), logs one line in `codexpool logs --guard` and never notifies. `codexpool status`
+  shows the mode in its first line and each seat's reset in its note.
+
+Either way, **running threads stay on their seat** (the pool's session affinity); only new threads follow a new
+order.
+
+Set your order in one go:
+
+```sh
+codexpool order "Work A" "Work B" Team     # these first, in this order; the other seats keep theirs after them
+```
+
+`order` gives the seats priorities from 1000 down in steps of 10. Seats you don't name keep their order after
+the named ones, and reserve seats always come last, in their own order (`codexpool reserve <seat> --off` makes
+one regular). `seats.json` keeps the order as yours (`manual_priority`, which `codexpool priority` also writes):
+under "Soonest reset first" the guard sorts the pool's priorities, and your order comes back on the guard's next
+pass after `codexpool set balancing priority`. While balancing is `reset`, `order` and `priority` change only
+your saved order and say so: the pool keeps filling soonest reset first until you switch back.
 
 ## Resets
 
@@ -489,7 +523,10 @@ short block in `~/.codex/AGENTS.md` that tells the main agent what each lane is 
 one entry per lane, under the lane's name ("Bulk" for `bulk`), with its members under the hood; `lane add --display
 "<name>"` gives it a name of your own.
 Seat traffic never touches any of it. Without `lanes.json`, nothing changes. The Lanes pane of
-the Settings window lists your lanes and runs `lane test` and `lane apply`.
+the Settings window creates, edits and deletes lanes (the members in fallback order, a model list from each
+provider, the xAI sign-in and provider keys) and runs `lane test`; in a terminal, `codexpool lane edit` changes a
+lane in place (`--add-member`, `--move-member ID --to POS`, `--effort`, `--rename`, ...) and `lane providers` and
+`lane models <provider>` show what you can pick from.
 
 [docs/LANES.md](docs/LANES.md) covers the supported providers, setup, what `lane apply` generates and why, fallback
 between providers, the known limits, privacy, and a prompt you can give your own coding agent to set lanes up.
@@ -567,8 +604,9 @@ values.
 | `codex_bin` | `null` = the `codex` inside the Codex app, else `codex` on `PATH` | the Codex CLI used by `selftest` and `lane test` |
 | `headline` | `"all"` | what the [headline number](#the-headline-number-weights-and-the-reserve) covers: `"all"` = every seat that is not off, the reserve included; `"regular"` = the reserve left out |
 | `display` | `"left"` | how numbers read, in the menu bar and in `codexpool status`: `"left"` counts down from 100% and bars drain; `"used"` counts up from 0% and bars fill |
+| `balancing` | `"priority"` | which seat new threads get ([load balancing](#load-balancing-which-seat-new-threads-get)): `"priority"` = your fill order; `"reset"` = the regular seat whose weekly quota resets soonest, kept up to date by the guard, the reserve last |
 
-`codexpool set` changes `display` and `headline` and leaves the rest of the file as it is. A malformed file, an
+`codexpool set` changes `display`, `headline` and `balancing` and leaves the rest of the file as it is. A malformed file, an
 unknown key or a bad value stops every command with a message rather than running with the wrong port or labels.
 Keys starting with `_` are ignored, for comments. `CODEXPOOL_SETTINGS` points to a different file.
 
@@ -580,8 +618,9 @@ install warns when it sees the variable.
 CLIProxyAPI reloads most keys when the file changes. To hide models from the Codex picker at the source, list
 their exact names under `oauth-excluded-models: codex:`.
 
-**`~/.codexpool/seats.json`**: label, weight and reserve flag per seat file
-(see [examples/seats.json](examples/seats.json)). `codexpool label`, `weight` and `reserve` write it.
+**`~/.codexpool/seats.json`**: label, weight, reserve flag and your fill order (`manual_priority`) per seat file
+(see [examples/seats.json](examples/seats.json)). `codexpool label`, `weight`, `reserve`, `order` and `priority`
+write it.
 
 **Files**
 
@@ -595,7 +634,7 @@ their exact names under `oauth-excluded-models: codex:`.
   docs/, README.md           a copy of the docs (the menu bar's Docs item opens README.md)
   settings.json              per-machine settings
   config.yaml                pool config (mode 600)
-  seats.json                 labels, weights, reserve
+  seats.json                 labels, weights, reserve, your fill order
   lanes.json                 subagent lanes, if you use them (docs/LANES.md)
   lanes/                     the lane bridge (bridge.py), its bridge.json and secrets/ with provider keys (mode 700)
   auth/                      one OAuth login per seat (mode 700), plus the xAI login if a lane uses xAI

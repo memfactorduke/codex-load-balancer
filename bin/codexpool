@@ -48,7 +48,7 @@ import urllib.parse
 import urllib.request
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = '1.1.0'  # codexpool's own version (codexpool version); CLIProxyAPI has its own
+VERSION = '1.2.0'  # codexpool's own version (codexpool version); CLIProxyAPI has its own
 
 HOME = pathlib.Path.home()
 ROOT = HOME / '.codexpool'
@@ -96,10 +96,12 @@ SETTINGS_DEFAULTS = {
     'codex_bin': None,        # the codex CLI; null: the one inside the Codex app, else codex on PATH
     'headline': 'all',        # the headline %: "all" non-disabled seats, reserve included, or "regular" (no reserve)
     'display': 'left',        # numbers count "left" (down from 100%) or "used" (up from 0%)
+    'balancing': 'priority',  # which seat new threads get: "priority" (your fill order) or "reset" (soonest reset first)
 }
 HEADLINES = ('all', 'regular')
 DISPLAYS = ('left', 'used')
-SETTABLE = {'display': DISPLAYS, 'headline': HEADLINES}  # what `codexpool set` changes: the menu bar's two choices
+BALANCINGS = ('priority', 'reset')
+SETTABLE = {'display': DISPLAYS, 'headline': HEADLINES, 'balancing': BALANCINGS}  # what `codexpool set` changes
 LABEL_OK = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 
 
@@ -144,8 +146,7 @@ def parse_settings(raw, where=None):
             bad.append(k)
     if 'port' not in bad and 'bridge_port' not in bad and s['bridge_port'] == s['port']:
         bad.append('bridge_port (must differ from port)')
-    bad += [f'{k} (one of: {", ".join(choices)})' for k, choices in (('headline', HEADLINES), ('display', DISPLAYS))
-            if s[k] not in choices]
+    bad += [f'{k} (one of: {", ".join(choices)})' for k, choices in SETTABLE.items() if s[k] not in choices]
     if bad:
         raise SettingsError(f'invalid {", ".join(bad)} in {where}')
     return s
@@ -988,8 +989,12 @@ def build_status(seats, guard, extra_pool=None, pool_only=False):
             'resets': _reset_summary(guard.get('resets', {}).get(s['name'])),
             # OpenAI ended its sign-in: only a new one helps (ready, "sign in again soon", while the pool serves it)
             'sign_in_ended': bool(guard.get('seats', {}).get(s['name'], {}).get('sign_in_ended')),
+            'order_reason': None,  # with "balancing": "reset", why the seat is where it is in the fill order
         })
     codex = [r for r in rows if r['provider'] == 'codex']
+    if SETTINGS['balancing'] == 'reset':
+        for r in codex:
+            r['order_reason'] = order_reason(r, now)
     active_row = next((r for r in codex if r['state'] == 'ready'), None)
     if active_row:
         active_row['state'] = 'active'
@@ -999,6 +1004,7 @@ def build_status(seats, guard, extra_pool=None, pool_only=False):
     pool.update(extra_pool or {})
     counted = headline_rows(codex)
     set_headline(pool, codex)
+    pool['balancing'] = SETTINGS['balancing']
     serving = next((r for r in codex if r['state'] == 'active'), None)
     pool['reserve_in_use'] = bool(serving and serving['reserve'])
     pool['regular_available'] = len([r for r in codex if r['state'] in ('active', 'ready') and not r['reserve']])
@@ -1022,7 +1028,8 @@ def status_down(reason, running):
     # headline and display too, so the menu bar keeps drawing its chart the way settings.json says while down.
     return {'generated_at': now_utc().isoformat(),
             'pool': {'running': running, 'version': cpa_version(), 'port': PORT, 'error': reason,
-                     'headline': SETTINGS['headline'], 'display': SETTINGS['display']},
+                     'headline': SETTINGS['headline'], 'display': SETTINGS['display'],
+                     'balancing': SETTINGS['balancing']},
             'active': None, 'active_name': None, 'next_back': None, 'seats': []}
 
 
@@ -1108,10 +1115,11 @@ def print_status(st):
     scope = 'all seats' if pool.get('headline') == 'all' else 'regular seats'
     headline = f'{pct_text(used, left)} {"left" if left else "used"} this week ({scope})' if used is not None \
         else 'usage unknown'
+    balancing = pool.get('balancing') if pool.get('balancing') in BALANCINGS else SETTINGS['balancing']
     print(f'Codex pool  {headline}'
           f'{"  ·  ON RESERVE" if pool.get("reserve_in_use") else ""}  ·  '
           f'{pool.get("available", 0)} of {pool.get("seats", 0)} seats available  ·  '
-          f'new threads → {st["active"] or "NONE"}')
+          f'fill: {BALANCING_TEXT[balancing]}  ·  new threads → {st["active"] or "NONE"}')
     if st.get('next_back') and not st['active']:
         print(f'next seat back: {st["next_back"]["label"]} at {when(st["next_back"]["at"])}')
     print()
@@ -1127,6 +1135,9 @@ def print_status(st):
             note = f'{r["provider"]} (not a Codex seat)' + (f'; {note}' if note else '')
         if r.get('poll_error') and not r['usage']:
             note = (note + '; ' if note else '') + 'usage unknown: ' + short(r['poll_error'], 50)
+        if balancing == 'reset' and r.get('order_reason') and r['provider'] == 'codex' and not r.get('reserve') \
+                and r['state'] not in BALANCE_OUT:
+            note = (note + '; ' if note else '') + r['order_reason']
         rs = r.get('resets') or {}
         if rs.get('available'):
             note = (note + '; ' if note else '') + f'{rs["available"]} reset{"s" if rs["available"] != 1 else ""} banked'
@@ -1181,6 +1192,196 @@ def refresh_headline(st):
         with contextlib.suppress(KeyError, TypeError, ValueError):
             set_headline(pool, [r for r in seats if r.get('provider') == 'codex'])
     return st
+
+
+# ---------------------------------------------------------------- balancing: which seat new threads get
+
+# "balancing": "priority" leaves the fill order to you (codexpool order, priority, reserve). "reset" has the guard
+# order the regular seats by when the quota that would go to waste soonest resets (the weekly window, else the shorter
+# one), so it gets used before it expires; the reserve stays last. The pool's session affinity keeps running threads on
+# their seat either way: only new threads follow a new order. Your own order is kept in seats.json (manual_priority)
+# and comes back when balancing is "priority" again.
+ORDER_TOP, ORDER_STEP = 1000, 10  # codexpool order: the first seat's priority, and the step down to the next one
+BALANCE_OUT = ('exhausted', 'parked', 'blocked', 'disabled')  # seats that serve nothing: reset balancing skips them
+BALANCE_SLACK = 5 * 60  # seconds two reset times may be out of order before the guard reorders (live times jitter)
+BALANCING_TEXT = {'priority': 'your order', 'reset': 'soonest reset first'}
+BALANCING_NOTE = {
+    'priority': ('The guard puts your fill order back on its next pass (within a minute). New threads follow it; '
+                 'running threads stay on their seat.'),
+    'reset': ('On its next pass (within a minute) the guard orders the regular seats by when their weekly quota '
+              'resets, soonest first, and keeps that order up to date; the reserve stays last. New threads follow it; '
+              'running threads stay on their seat. Your own order is kept for when you switch back.'),
+}
+
+
+def span_text(seconds):
+    """A duration the way the fill order shows it: '1d 4h', '3h 10m', '25m' or 'under a minute'."""
+    m = max(0, int(seconds // 60))
+    d, h, mm = m // 1440, m % 1440 // 60, m % 60
+    if d:
+        return f'{d}d {h}h' if h else f'{d}d'
+    if h:
+        return f'{h}h {mm}m' if mm else f'{h}h'
+    return f'{mm}m' if mm else 'under a minute'
+
+
+def waste_reset(row):
+    """(when, window) for a status row: the reset of the window whose unused quota would go to waste soonest, the
+    weekly one, else the shorter one. (None, None) without usage data."""
+    for w in (row.get('week'), row.get('short')):
+        t = parse_time((w or {}).get('reset_at')) if isinstance(w, dict) else None
+        if t:
+            return t, w
+    return None, None
+
+
+def order_reason(row, now):
+    """Why reset balancing puts a seat where it is, for status.json's order_reason: 'resets in 1d 4h'."""
+    if row.get('reserve'):
+        return 'reserve: used last'
+    if row.get('state') in BALANCE_OUT:
+        return f'{row["state"]}: not ordered until it serves again'
+    t, w = waste_reset(row)
+    if t is None:
+        return 'no usage data yet: kept in your order'
+    long = w is row.get('week')
+    return f'resets in {span_text((t - now).total_seconds())}' + ('' if long else f' ({window_name(w) or "short"} window)')
+
+
+def order_priorities(names):
+    """{name: priority} for seats in fill order: ORDER_TOP, then ORDER_STEP lower for each next seat."""
+    return {n: ORDER_TOP - ORDER_STEP * i for i, n in enumerate(names)}
+
+
+def manual_priority(meta, name):
+    v = (meta.get(name) or {}).get('manual_priority') if isinstance(meta.get(name), dict) else None
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def manual_order(codex, meta):
+    """The Codex seats in your own fill order, as names: by manual_priority (seats.json) where it is recorded, then
+    the seats without one in the pool's order, the reserve seats after every regular seat. Equal manual_priority
+    numbers go by seat id, the way the pool orders equal priorities (not by where the guard has put them since).
+    codex: in the pool's fill order (load_seats)."""
+    pos = {s['name']: i for i, s in enumerate(codex)}
+
+    def key(s):
+        mp = manual_priority(meta, s['name'])
+        return (bool(s['reserve']), mp is None, -(mp or 0), s['id'] if mp is not None else '', pos[s['name']])
+    return [s['name'] for s in sorted(codex, key=key)]
+
+
+def reset_fill_order(rows, manual, slack=BALANCE_SLACK):
+    """The fill order "balancing": "reset" wants, as seat names, or None when the pool's order already is it (pure).
+    rows: the Codex status rows in the pool's fill order; manual: seat names in your order. Regular seats that serve
+    come first, soonest reset first (while no seat resets more than slack seconds after any seat below it, the
+    current order stands), then those without usage data in your order; seats that serve nothing stay where they
+    are and don't count; reserve seats come last, in your order."""
+    pos = {n: i for i, n in enumerate(manual)}
+    far = len(manual)
+    regular = [r for r in rows if not r.get('reserve')]
+    serving = [r for r in regular if r.get('state') not in BALANCE_OUT]
+    t = {r['name']: waste_reset(r)[0] for r in serving}
+    timed = [r for r in serving if t[r['name']]]
+    untimed = [r for r in serving if not t[r['name']]]
+    reserves = [r for r in rows if r.get('reserve')]
+    want_reserves = sorted(reserves, key=lambda r: pos.get(r['name'], far))
+    last_regular = max((i for i, r in enumerate(rows) if not r.get('reserve')), default=-1)
+    first_reserve = min((i for i, r in enumerate(rows) if r.get('reserve')), default=len(rows))
+    later = [min(t[r['name']] for r in timed[i:]) for i in range(1, len(timed))]  # the soonest reset after each
+    fine = (serving == timed + untimed
+            and all(t[a['name']] <= soonest + dt.timedelta(seconds=slack) for a, soonest in zip(timed, later))
+            and untimed == sorted(untimed, key=lambda r: pos.get(r['name'], far))
+            and first_reserve > last_regular and reserves == want_reserves)
+    if fine:
+        return None
+    timed.sort(key=lambda r: (t[r['name']], pos.get(r['name'], far)))
+    untimed.sort(key=lambda r: pos.get(r['name'], far))
+    idle = [r for r in regular if r.get('state') in BALANCE_OUT]  # in the pool's order: they keep it
+    return [r['name'] for r in timed + untimed + idle + want_reserves]
+
+
+def set_pool_order(codex, targets):
+    """Give each Codex seat its target priority through the management API, skipping those that have it already.
+    Returns how many changed."""
+    changed = 0
+    for s in codex:
+        p = targets.get(s['name'])
+        if p is not None and s['priority'] != p:
+            set_fields(s['name'], priority=p)
+            s['priority'] = p
+            changed += 1
+    return changed
+
+
+def write_manual_order(targets):
+    """Record {seat name: priority} as your fill order (seats.json manual_priority), in one write."""
+    meta = read_meta()
+    for name, p in targets.items():
+        entry = meta.setdefault(name, {})
+        if isinstance(entry, dict):
+            entry['manual_priority'] = p
+    write_json(SEATS_META, meta)
+
+
+def manual_targets(codex, meta):
+    """{name: priority} that puts your fill order back: the recorded manual_priority numbers when they give that
+    order (reserve seats after every regular seat), else fresh ones from ORDER_TOP down."""
+    names = manual_order(codex, meta)
+    recorded = [manual_priority(meta, n) for n in names]
+    if all(p is not None for p in recorded) and all(a > b for a, b in zip(recorded, recorded[1:])):
+        return dict(zip(names, recorded)), False
+    return order_priorities(names), True
+
+
+def balance_pass(guard, seats, now):
+    """The guard's balancing step, after parking and healing. With "balancing": "reset", reorder the regular seats
+    soonest reset first when the pool's order is not that already (the first time, record the order in effect as
+    yours); with "priority", put your order back once after a time on "reset". Logs one line when it changes the
+    order and never notifies. True when it changed the pool's fill order."""
+    codex = [s for s in seats if s['provider'] == 'codex']
+    was = (guard.get('balancing') or {}).get('mode') if isinstance(guard.get('balancing'), dict) else None
+    labels = {s['name']: s['label'] for s in codex}
+    try:
+        if SETTINGS['balancing'] == 'reset':
+            meta = read_meta()
+            if was != 'reset':  # your order is whatever was in effect: keep it for the way back
+                prios = [s['priority'] for s in codex]
+                if all(a > b for a, b in zip(prios, prios[1:])):
+                    write_manual_order({s['name']: s['priority'] for s in codex})
+                else:  # equal priorities: the pool's order breaks the ties now, so record that order itself
+                    write_manual_order(order_priorities([s['name'] for s in codex]))
+                meta = read_meta()
+                guard['balancing'] = {'mode': 'reset', 'since': now.isoformat()}
+                write_json(GUARD_FILE, guard)
+            if not codex:
+                return False
+            rows = [r for r in build_status(seats, guard)['seats'] if r['provider'] == 'codex']
+            order = reset_fill_order(rows, manual_order(codex, meta))
+            if order is None:
+                return False
+            changed = set_pool_order(codex, order_priorities(order))
+            guard['balancing'] = dict(guard['balancing'], order=order, at=now.isoformat())
+            write_json(GUARD_FILE, guard)
+            if changed:
+                log_line(f'guard: balancing: new fill order {" > ".join(labels[n] for n in order)} '
+                         f'(soonest reset first)')
+            return bool(changed)
+        if was == 'reset':
+            meta = read_meta()
+            targets, fresh = manual_targets(codex, meta)
+            changed = set_pool_order(codex, targets)
+            if fresh:
+                write_manual_order(targets)
+            guard.pop('balancing', None)
+            write_json(GUARD_FILE, guard)
+            if changed:
+                order = sorted(targets, key=lambda n: -targets[n])
+                log_line(f'guard: balancing: your fill order is back: {" > ".join(labels[n] for n in order)}')
+            return bool(changed)
+    except (ApiError, PoolDown, KeyUnavailable, OSError) as e:
+        log_line(f'guard: balancing: could not set the fill order: {short(str(e), 120)}')
+    return False
 
 
 # ---------------------------------------------------------------- guard (launchd, every 60s)
@@ -1476,6 +1677,11 @@ def guard_pass():
             notify('Codex seat needs a re-login', f'{s["label"]}: {short(detail, 70)}. Run: codexpool login '
                    f'{shlex.quote(s["label"])} --priority {s["priority"]}')
 
+    # 4b. Balancing: with "balancing": "reset", the regular seats fill soonest reset first; back to your order after.
+    #     A fill order you changed yourself since the last pass (order, priority, reserve) counts the same way.
+    reordered = balance_pass(guard, seats, now)
+    reordered = bool(guard.pop('you_reordered', None)) or reordered
+
     # 5. Tell the user when the pool moves on, or runs dry. Short transient cooldowns are blips. That is the pool's
     #    call: it still serves a seat whose sign-in ended while the seat's access token lasts (up to a day), so the
     #    seats' states here are the pool's own; why a seat went comes from st, which shows the guard's mark.
@@ -1501,7 +1707,9 @@ def guard_pass():
                           for r in rows)
     prev_name, cur_name = guard.get('announced'), cur_row['name'] if cur_row else None
     labels = {r['name']: r for r in st['seats'] if r['provider'] == 'codex'}
-    if prev_name and cur_name and prev_name != cur_name:
+    # A new fill order from balancing moves new threads while the previous seat still serves: no news, and no alert.
+    rebalanced = reordered and any(r['name'] == prev_name and holds_slot(r) for r in rows)
+    if prev_name and cur_name and prev_name != cur_name and not rebalanced:
         old = labels.get(prev_name)
         why = (f'{old["label"]}: {old["detail"] or old["state"]}' + (f', back {when(old["until"])}' if old['until'] else '')
                if old else 'previous seat removed')
@@ -1661,7 +1869,12 @@ def restamp_status_file():
     if not isinstance(st, dict) or not isinstance(st.get('pool'), dict):
         return False
     refresh_headline(st)
-    st['pool'].update(headline=SETTINGS['headline'], display=SETTINGS['display'])
+    st['pool'].update(headline=SETTINGS['headline'], display=SETTINGS['display'], balancing=SETTINGS['balancing'])
+    now = now_utc()
+    for r in st.get('seats') or []:
+        if isinstance(r, dict) and r.get('provider') == 'codex':
+            with contextlib.suppress(KeyError, TypeError, ValueError, AttributeError):
+                r['order_reason'] = order_reason(r, now) if SETTINGS['balancing'] == 'reset' else None
     with contextlib.suppress(OSError):
         write_json(STATUS_FILE, st)
         return True
@@ -1696,10 +1909,80 @@ def cmd_disable(args):
     print(f'{s["label"]} disabled (threads on it move to the next seat)')
 
 
+RESET_ORDER_NOTE = ('Balancing is "reset": the pool keeps filling soonest reset first, so this order is kept as yours '
+                    'and takes effect with: codexpool set balancing priority')
+
+
+def you_reordered():
+    """Tell the next guard pass that you changed the fill order (order, priority, reserve), so it doesn't announce
+    the new first seat as if the old one had run out. Call with guard_lock held."""
+    guard = read_guard()
+    guard['you_reordered'] = True
+    write_json(GUARD_FILE, guard)
+
+
 def cmd_priority(args):
-    s = match_seat(load_seats(), args.seat)
-    set_fields(s['name'], priority=args.priority)
+    with guard_lock():
+        s = match_seat(load_seats(), args.seat)
+        if s['provider'] == 'codex' and SETTINGS['balancing'] == 'reset':
+            # the guard owns the live order while balancing is "reset": this only changes your order, for later
+            was = manual_priority(read_meta(), s['name'])
+            update_meta(s['name'], manual_priority=args.priority)
+            print(f'{s["label"]}: priority in your order {s["priority"] if was is None else was} → {args.priority} '
+                  '(higher is used first)')
+            print(RESET_ORDER_NOTE)
+            return
+        set_fields(s['name'], priority=args.priority)
+        if s['provider'] == 'codex':
+            update_meta(s['name'], manual_priority=args.priority)  # your order, which "balancing": "reset" keeps
+            you_reordered()
     print(f'{s["label"]} priority {s["priority"]} → {args.priority} (higher is used first)')
+
+
+def order_plan(codex, named, base):
+    """The fill order `codexpool order` sets, as names (pure): the named regular seats in the order given, then the
+    other regular seats in their order in base, then every reserve seat in its order in base. codex: the Codex
+    seats; named: the seats named, in order; base: names in the order that counts now."""
+    by_name = {s['name']: s for s in codex}
+    first = [s['name'] for s in named if not s['reserve']]
+    rest = [n for n in base if n in by_name and not by_name[n]['reserve'] and n not in first]
+    reserves = [n for n in base if n in by_name and by_name[n]['reserve']]
+    return first + rest + reserves
+
+
+def cmd_order(args):
+    """Set the fill order in one go: the seats named first, in that order, then the other regular seats in the order
+    they had, then the reserve seats. Priorities go down from ORDER_TOP in steps of ORDER_STEP; seats.json keeps the
+    order as yours (manual_priority)."""
+    with guard_lock():
+        seats = load_seats()
+        codex = [s for s in seats if s['provider'] == 'codex']
+        if not codex:
+            sys.exit('codexpool order: there are no Codex seats in the pool yet (codexpool login)')
+        named = []
+        for q in args.seats:
+            s = match_seat(codex, q)
+            if s in named:
+                sys.exit(f'codexpool order: {s["label"]} is named twice')
+            named.append(s)
+        reset = SETTINGS['balancing'] == 'reset'
+        base = manual_order(codex, read_meta()) if reset else [s['name'] for s in codex]
+        order = order_plan(codex, named, base)
+        targets = order_priorities(order)
+        if not reset:  # on "reset" the guard owns the live order: this is your order, for later
+            if set_pool_order(codex, targets):
+                you_reordered()
+        write_manual_order(targets)
+        refresh_status_file()
+    labels = {s['name']: s['label'] for s in codex}
+    reserve = {s['name'] for s in codex if s['reserve']}
+    print('Fill order: ' + ' > '.join(labels[n] + (' (reserve)' if n in reserve else '') for n in order))
+    kept = [s['label'] for s in named if s['reserve']]
+    if kept:
+        print(f'{", ".join(kept)} {"is a reserve seat" if len(kept) == 1 else "are reserve seats"}: a reserve seat always '
+              'fills after every regular seat (codexpool reserve <seat> --off makes it a regular one).')
+    if SETTINGS['balancing'] == 'reset':
+        print(RESET_ORDER_NOTE)
 
 
 def cmd_label(args):
@@ -1714,17 +1997,19 @@ def cmd_label(args):
 def cmd_reserve(args):
     """Mark a seat as reserve (or not, with --off), and move it in the fill order when it is out of place: a reserve
     fills after every regular seat, a regular seat before every reserve."""
-    seats = load_seats()
-    s = match_seat(seats, args.seat)
-    update_meta(s['name'], reserve=None if args.off else True)
-    moved = ''
-    if s['provider'] == 'codex':
-        p, moves = fill_order(seats, reserve=not args.off, name=s['name'])
-        if p != s['priority'] or moves:
-            apply_fill_order(s['name'], p, moves)
-        if p != s['priority']:
-            moved = (f' It now fills {"before the reserve seats" if args.off else "after every regular seat"} '
-                     f'(priority {s["priority"]} → {p}).')
+    with guard_lock():
+        seats = load_seats()
+        s = match_seat(seats, args.seat)
+        update_meta(s['name'], reserve=None if args.off else True)
+        moved = ''
+        if s['provider'] == 'codex':
+            p, moves = fill_order(seats, reserve=not args.off, name=s['name'])
+            if p != s['priority'] or moves:
+                apply_fill_order(s['name'], p, moves)
+                you_reordered()
+            if p != s['priority']:
+                moved = (f' It now fills {"before the reserve seats" if args.off else "after every regular seat"} '
+                         f'(priority {s["priority"]} → {p}).')
     print(f'{s["label"]} is {"no longer " if args.off else ""}a reserve seat.{moved} The menu bar turns red while a '
           f'reserve seat serves; "headline": "regular" leaves reserve seats out of the headline %.')
 
@@ -2047,9 +2332,9 @@ def new_seat_place(name, reserve=False):
 
 
 def fresh_seat_meta(name, label=None):
-    """seats.json for a seat file that was not in the pool before: label, and no size or reserve flag left over
-    from an earlier seat with that file name (the same account removed and signed in again)."""
-    update_meta(name, label=label or None, weight=None, reserve=None)
+    """seats.json for a seat file that was not in the pool before: label, and no size, reserve flag or place in your
+    fill order left over from an earlier seat with that file name (the same account removed and signed in again)."""
+    update_meta(name, label=label or None, weight=None, reserve=None, manual_priority=None)
 
 
 def cmd_login(args):
@@ -4478,20 +4763,31 @@ def bridge_health(timeout=3):
     return None
 
 
-def xai_model_defs():
-    """{model id: context length or None} for every xAI model the pool knows (management API)."""
+def positive_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def xai_model_list():
+    """[{id, name, context}] for every xAI model the pool knows (management API), in its order; name is its display
+    name and context its context length, None when the pool has none."""
     data = api('GET', '/v0/management/model-definitions/xai', timeout=10)
     items = data
     if isinstance(data, dict):
         items = next((v for v in (data.get('models'), data.get('data')) if isinstance(v, list)), None)
         if items is None:
             items = next((v for v in data.values() if isinstance(v, list)), [])
-    out = {}
+    out = []
     for d in items if isinstance(items, list) else []:
         if isinstance(d, dict) and isinstance(d.get('id'), str):
-            ctx = d.get('context_length')
-            out[d['id']] = ctx if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0 else None
+            name = d.get('display_name')
+            out.append({'id': d['id'], 'name': name if isinstance(name, str) and name.strip() else None,
+                        'context': positive_int(d.get('context_length'))})
     return out
+
+
+def xai_model_defs():
+    """{model id: context length or None} for every xAI model the pool knows (management API)."""
+    return {m['id']: m['context'] for m in xai_model_list()}
 
 
 def pool_facts(want_defs, seats=None, want_seats=True):
@@ -4525,8 +4821,11 @@ def xai_credential_state(seats):
     return ('disabled' if state == 'parked' else state), seat
 
 
+KEY_STANDINS = {}  # key name -> the key file that stands in for it (lane edit --rename --dry-run only)
+
+
 def lane_key_path(name):
-    return LANE_SECRETS / f'{name}.key'
+    return LANE_SECRETS / f'{KEY_STANDINS.get(name, name)}.key'
 
 
 def bridge_fingerprint(config_text=None, code=None):
@@ -4967,6 +5266,30 @@ def cmd_lane_apply(args):
     lane_apply(lanes, args.dry_run)
 
 
+def member_from_spec(spec, base_url=None, session_header=None, flag='--member'):
+    """A lanes.json member from PROVIDER:MODEL[:DISPLAY NAME] (lane add --member, lane edit --add-member); base_url
+    and session_header go to a responses member."""
+    provider, sep, rest = spec.partition(':')
+    model, _, name = rest.partition(':')
+    if not sep or not model:
+        sys.exit(f'codexpool: {flag} {spec!r}: write PROVIDER:MODEL or PROVIDER:MODEL:DISPLAY NAME '
+                 f'(providers: {", ".join(LANE_PROVIDERS)})')
+    m = {'provider': provider, 'model': model}
+    if name:
+        m['name'] = name
+    if provider == 'responses':
+        if base_url:
+            m['base_url'] = base_url
+        if session_header:
+            m['session_header'] = session_header
+    return m
+
+
+def role_text(text):
+    """A lane role as lanes.json keeps it: on one line (line breaks from a multi-line field become spaces)."""
+    return ' '.join(text.split()) if isinstance(text, str) else text
+
+
 def cmd_lane_add(args):
     raw = read_lanes_raw()
     old = read_text(LANES_FILE)
@@ -4976,24 +5299,9 @@ def cmd_lane_add(args):
     if args.name in (raw.get('lanes') or {}):
         sys.exit(f'codexpool: lane "{args.name}" is already in lanes.json. Edit it there and run codexpool lane apply, '
                  f'or codexpool lane remove {args.name} first.')
-    members = []
-    for spec in args.member:
-        provider, sep, rest = spec.partition(':')
-        model, _, name = rest.partition(':')
-        if not sep or not model:
-            sys.exit(f'codexpool: --member {spec!r}: write PROVIDER:MODEL or PROVIDER:MODEL:DISPLAY NAME '
-                     f'(providers: {", ".join(LANE_PROVIDERS)})')
-        m = {'provider': provider, 'model': model}
-        if name:
-            m['name'] = name
-        if provider == 'responses':
-            if args.base_url:
-                m['base_url'] = args.base_url
-            if args.session_header:
-                m['session_header'] = args.session_header
-        members.append(m)
+    members = [member_from_spec(spec, args.base_url, args.session_header, '--member') for spec in args.member]
     new_raw = dict(raw, lanes=dict(raw.get('lanes') or {}))
-    spec = {'role': args.role or LANE_ROLE_DEFAULT, 'effort': args.effort}
+    spec = {'role': role_text(args.role) or LANE_ROLE_DEFAULT, 'effort': args.effort}
     if args.display is not None:
         spec['display'] = args.display
     new_raw['lanes'][args.name] = dict(spec, members=members)
@@ -5009,6 +5317,307 @@ def cmd_lane_remove(args):
         sys.exit(f'codexpool: there is no lane "{args.name}" in lanes.json (codexpool lane list)')
     new_raw = dict(raw, lanes={k: v for k, v in raw['lanes'].items() if k != args.name})
     lane_apply(validate_lanes(new_raw), args.dry_run, lanes_change=(read_text(LANES_FILE), dump_lanes(new_raw)))
+
+
+class LaneEditOp(argparse.Action):
+    """lane edit's changes, collected in the order they are given (args.ops: [(kind, value, position)]). --to POS
+    completes the --move-member right before it."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        ops = list(getattr(namespace, self.dest, None) or [])
+        if self.const == 'to':
+            if not ops or ops[-1][0] != 'move' or ops[-1][2] is not None:
+                parser.error('--to POS goes right after --move-member ID')
+            ops[-1] = ('move', ops[-1][1], values)
+        else:
+            ops.append((self.const, values, None))
+        setattr(namespace, self.dest, ops)
+
+
+def put_key(spec, key, value):
+    """spec with key set to value: in its place when spec has it, else before "members" (the lanes.json layout)."""
+    if key in spec:
+        return dict(spec, **{key: value})
+    out = {}
+    for k, v in spec.items():
+        if k == 'members':
+            out[key] = value
+        out[k] = v
+    out.setdefault(key, value)
+    return out
+
+
+def lane_edit_raw(raw, name, ops, base_url=None, session_header=None):
+    """lanes.json (parsed) with lane edit's changes to lane name applied in order (pure apart from sys.exit for a
+    change that cannot apply). Every member of the lane gets its id written out first, so a move or a removal cannot
+    shift the ids of the others. Returns the new lanes.json; validate_lanes has the last word."""
+    lanes = validate_lanes(raw)
+    current = next(lane for lane in lanes if lane['name'] == name)
+    spec = dict(raw['lanes'][name])
+    members = [dict({'id': r['id']}, **{k: v for k, v in m.items() if k != 'id'})
+               for m, r in zip(spec['members'], current['members'])]
+    new_name = name
+    for kind, value, pos in ops:
+        if kind == 'rename':
+            if value.startswith('_'):
+                sys.exit(f'codexpool lane edit: "{value}" is not a lane name (it starts with a letter)')
+            if value != name and value in raw['lanes']:
+                sys.exit(f'codexpool lane edit: lane "{value}" is already in lanes.json')
+            new_name = value
+        elif kind == 'role':
+            spec = put_key(spec, 'role', role_text(value))
+        elif kind == 'effort':
+            spec = put_key(spec, 'effort', value)
+        elif kind == 'display':
+            spec = put_key(spec, 'display', value)
+        elif kind == 'no_display':
+            spec.pop('display', None)
+        elif kind == 'add_member':
+            m = member_from_spec(value, base_url, session_header, '--add-member')
+            mid = default_member_id(m['model'], {x['id'] for x in members})
+            members.append(dict({'id': mid}, **m))
+        else:
+            ids = [x['id'] for x in members]
+            if value not in ids:
+                sys.exit(f'codexpool lane edit: lane "{name}" has no member "{value}" (its members, in order: '
+                         f'{", ".join(ids) or "none"})')
+            if kind == 'remove_member':
+                members.pop(ids.index(value))
+            else:  # move
+                if pos is None:
+                    sys.exit(f'codexpool lane edit: --move-member {value} needs --to POS (1 is first)')
+                if not 1 <= pos <= len(members):
+                    sys.exit(f'codexpool lane edit: --to {pos}: a position from 1 to {len(members)}')
+                members.insert(pos - 1, members.pop(ids.index(value)))
+    spec['members'] = members
+    new_lanes = {}
+    for k, v in raw['lanes'].items():
+        new_lanes[new_name if k == name else k] = spec if k == name else v
+    return dict(raw, lanes=new_lanes)
+
+
+def cmd_lane_edit(args):
+    """Change a lane in lanes.json (checked like lane add), then apply."""
+    raw = read_lanes_raw()
+    if not isinstance(raw, dict) or not isinstance(raw.get('lanes'), dict) or args.name.startswith('_') or \
+            args.name not in raw['lanes']:
+        sys.exit(f'codexpool: there is no lane "{args.name}" in lanes.json (codexpool lane list)')
+    ops = getattr(args, 'ops', None) or []
+    if not ops:
+        sys.exit('codexpool lane edit: nothing to change (give --rename, --role, --effort, --display, --no-display, '
+                 '--add-member, --remove-member or --move-member ID --to POS)')
+    new_raw = lane_edit_raw(raw, args.name, ops, args.base_url, args.session_header)
+    lanes = validate_lanes(new_raw)
+    new_name = next((v for kind, v, _ in reversed(ops) if kind == 'rename'), args.name)
+    moves = renamed_keys(validate_lanes(raw), args.name, lanes, new_name)
+    change = (read_text(LANES_FILE), dump_lanes(new_raw))
+    if args.dry_run:
+        for old, new in moves:
+            print(f'(would copy the {old} key to {new}, mode 600, and remove {old} once the lane is applied)')
+            KEY_STANDINS[new] = old
+        try:
+            lane_apply(lanes, True, lanes_change=change)
+        finally:
+            KEY_STANDINS.clear()
+        return
+    made = []
+    try:
+        for old, new in moves:
+            write_private(lane_key_path(new), lane_key_path(old).read_text())
+            made.append(new)
+        lane_apply(lanes, False, lanes_change=change)
+    except BaseException:
+        for new in made:  # lane apply changed nothing: neither do the copies
+            with contextlib.suppress(OSError):
+                lane_key_path(new).unlink()
+        raise
+    for old, new in moves:
+        with contextlib.suppress(OSError):
+            lane_key_path(old).unlink()
+        print(f'Moved the {old} key to {new} (the lane was renamed).')
+
+
+def renamed_keys(old_lanes, name, new_lanes, new_name):
+    """[(old key name, new key name)] for the responses members a lane rename takes along: a responses member's key
+    is named <lane>-<id>, so it moves with the lane (only a key that exists, to a name that has none yet)."""
+    if new_name == name:
+        return []
+    before = {m['id'] for lane in old_lanes if lane['name'] == name for m in lane['members']}
+    out = []
+    for lane in new_lanes:
+        if lane['name'] != new_name:
+            continue
+        for m in lane['members']:
+            if m['provider'] == 'responses' and m['id'] in before:
+                old, new = f'{name}-{m["id"]}', f'{new_name}-{m["id"]}'
+                if lane_key_path(old).is_file() and not lane_key_path(new).exists():
+                    out.append((old, new))
+    return out
+
+
+LANE_PROVIDER_TITLES = {'xai': 'xAI', 'opencode-go': 'OpenCode Go', 'opencode-zen': 'OpenCode Zen',
+                        'responses': 'OpenAI Responses API (your own endpoint)'}
+BRIDGE_USER_AGENT = 'codexpool-bridge/1'  # what lanes/bridge.py sends upstream
+
+
+def lane_providers_data():
+    """What codexpool lane providers --json prints (the Settings window reads it): each provider a lane member can
+    use, how it signs in and whether it is ready. xai is ready while the pool has an xAI credential that is not off
+    and not blocked; a key provider while its key file exists (a responses member has a key of its own, <lane>-<id>,
+    so the provider itself never is)."""
+    facts = None
+    out = []
+    for pid, p in LANE_PROVIDERS.items():
+        entry = {'id': pid, 'title': LANE_PROVIDER_TITLES.get(pid, pid), 'kind': 'native' if p['kind'] == 'xai' else
+                 'bridge', 'needs': 'login' if p['kind'] == 'xai' else 'key', 'key_name': p.get('key')}
+        if p['kind'] == 'xai':
+            facts = facts or pool_facts(False)
+            if facts['seats'] is None:
+                ready, detail = False, f'cannot tell: {facts["error"]}'
+            else:
+                state, cred = xai_credential_state(facts['seats'])
+                ready = state in ('ready', 'cooldown', 'exhausted')
+                detail = {'ready': 'signed in', 'cooldown': 'signed in (cooling down)',
+                          'exhausted': 'signed in (usage limit reached for now)',
+                          'blocked': 'the xAI sign-in stopped working: sign in again (codexpool lane login xai)',
+                          'disabled': f'the xAI credential is turned off: codexpool enable {(cred or {}).get("name")}',
+                          'missing': 'not signed in: codexpool lane login xai'}.get(state, state)
+        elif p.get('key'):
+            ready = lane_key_path(p['key']).is_file()
+            detail = 'key saved' if ready else f'no key yet: codexpool lane key {p["key"]} -'
+        else:
+            ready, detail = False, 'each member needs a base URL and a key of its own: codexpool lane key <lane>-<id> -'
+        out.append(dict(entry, ready=ready, detail=detail))
+    return {'providers': out}
+
+
+def cmd_lane_providers(args):
+    data = lane_providers_data()
+    if getattr(args, 'json', False):
+        print(json.dumps(data, indent=2))
+        return
+    print(f'  {"provider":<13} {"reached":<8} {"signs in with":<17} state')
+    for d in data['providers']:
+        how = 'a sign-in' if d['needs'] == 'login' else (f'key {d["key_name"]}' if d['key_name'] else 'a key each')
+        print(f'  {d["id"]:<13} {"the pool" if d["kind"] == "native" else "bridge":<8} {how:<17} '
+              f'{"● " if d["ready"] else "✕ "}{d["detail"]}')
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is an error: the provider key goes to the provider's own address and nowhere else."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_REMOTE = urllib.request.build_opener(_NoRedirect)
+
+
+def remote_models(base_url, key, key_name=None):
+    """[{id, name, context}] from GET <base_url>/models (OpenAI style: {"data": [{"id": ...}]}), with the key as a
+    bearer token when there is one and the bridge's User-Agent. The key is never printed, not even in an error."""
+    url = base_url.rstrip('/') + '/models'
+    host = urllib.parse.urlsplit(url).netloc or url
+    headers = {'Accept': 'application/json', 'User-Agent': BRIDGE_USER_AGENT}
+    if key:
+        headers['Authorization'] = 'Bearer ' + key
+
+    def hide(text):
+        return text.replace(key, '<key>') if key else text
+    try:
+        with _REMOTE.open(urllib.request.Request(url, headers=headers), timeout=20) as r:
+            data = json.loads(r.read() or b'null')
+    except urllib.error.HTTPError as e:
+        body = ''
+        with contextlib.suppress(Exception):
+            body = e.read().decode(errors='replace')
+        e.close()
+        why = ''
+        with contextlib.suppress(ValueError, AttributeError, TypeError):
+            err = json.loads(body).get('error')
+            why = err.get('message') if isinstance(err, dict) else err
+        why = f': {short(hide(str(why)), 120)}' if why else ''
+        if 300 <= e.code < 400:
+            raise LaneError(f'{host} answered HTTP {e.code} (a redirect); the key was not sent anywhere else') from None
+        hint = ''
+        if e.code in (401, 403):
+            hint = (f' (check the key: codexpool lane key {key_name} -)' if key and key_name else
+                    f' (no key saved yet: codexpool lane key {key_name} -)' if key_name else '')
+        raise LaneError(f'{host} answered HTTP {e.code}{why}{hint}') from None
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+        raise LaneError(f'cannot reach {host}: {short(hide(str(getattr(e, "reason", None) or e)), 120)}') from None
+    except ValueError:
+        raise LaneError(f'{host} did not answer {url} with JSON') from None
+    items = data.get('data') if isinstance(data, dict) and isinstance(data.get('data'), list) else \
+        data.get('models') if isinstance(data, dict) and isinstance(data.get('models'), list) else \
+        data if isinstance(data, list) else None
+    if items is None:
+        raise LaneError(f'{host} answered {url} with something other than a model list')
+    out = []
+    for d in items:
+        if not isinstance(d, dict) or not isinstance(d.get('id'), str) or not MODEL_ID_OK.match(d['id']):
+            continue
+        name = next((d[k] for k in ('name', 'display_name') if isinstance(d.get(k), str) and d[k].strip()), None)
+        limit = d.get('limit') if isinstance(d.get('limit'), dict) else {}
+        context = next((positive_int(v) for v in (d.get('context_length'), d.get('context_window'),
+                                                   d.get('max_context_length'), d.get('context'), limit.get('context'))
+                        if positive_int(v)), None)
+        out.append({'id': d['id'], 'name': name, 'context': context})
+    return out
+
+
+def lane_models_data(provider, base_url=None, key_name=None):
+    """What codexpool lane models PROVIDER --json prints: {"models": [{id, name, context}]}, sorted by id. xai: the
+    pool's own list (management API). A bridge provider: GET <base_url>/models with its stored key. Raises LaneError
+    when the list cannot be had."""
+    p = LANE_PROVIDERS.get(provider)
+    if p is None:
+        raise LaneError(f'"{provider}" is not a lane provider (providers: {", ".join(LANE_PROVIDERS)})')
+    if provider != 'responses' and (base_url or key_name):
+        raise LaneError(f'--base-url and --key-name are for the responses provider; {provider} has its own')
+    if p['kind'] == 'xai':
+        if not port_open(PORT):
+            raise LaneError(f'the pool is not answering on 127.0.0.1:{PORT}, and the xAI model list comes from it')
+        try:
+            models = xai_model_list()
+        except PoolDown as e:
+            raise LaneError(f'the pool is not answering on 127.0.0.1:{PORT} ({short(str(e), 80)})') from None
+        except (ApiError, KeyUnavailable) as e:
+            raise LaneError(f'the pool would not list its xAI models: {short(str(e), 120)}') from None
+    else:
+        if provider == 'responses':
+            if not base_url or not HTTPS_OK.match(base_url):
+                raise LaneError('the responses provider needs --base-url, the https:// base URL of the Responses API')
+            if not key_name or not KEY_NAME_OK.match(key_name) or key_name in ('bridge', 'seal'):
+                raise LaneError('the responses provider needs --key-name, the name its key is saved under '
+                                '(<lane>-<id>: codexpool lane key <lane>-<id> -)')
+            if key_name in CATALOG_KEYS:  # the same rule validate_lanes has: a provider's key stays with its provider
+                raise LaneError(f'a responses member\'s key is named <lane>-<id>, and "{key_name}" is the {key_name} '
+                                f'provider\'s key, which would go to {base_url}; give --key-name the member\'s own key')
+        base_url, key_name = base_url or p['base_url'], key_name or p['key']
+        key = None
+        with contextlib.suppress(OSError, UnicodeDecodeError):
+            key = lane_key_path(key_name).read_text().strip() or None
+        models = remote_models(base_url, key, key_name)
+    return {'models': sorted(models, key=lambda m: m['id'].lower())}
+
+
+def cmd_lane_models(args):
+    try:
+        data = lane_models_data(args.provider, args.base_url, args.key_name)
+    except LaneError as e:
+        if getattr(args, 'json', False):
+            print(json.dumps({'error': str(e)}))
+        sys.exit(f'codexpool lane models: {e}')
+    if getattr(args, 'json', False):
+        print(json.dumps(data, indent=2))
+        return
+    if not data['models']:
+        print(f'{args.provider} lists no models')
+        return
+    width = max(len(m['id']) for m in data['models'])
+    for m in data['models']:
+        print(f'  {m["id"]:<{width}}  {m["name"] or "":<32} {m["context"] or ""}'.rstrip())
 
 
 def cmd_lane_key(args):
@@ -5052,10 +5661,14 @@ def cmd_lane_login(args):
     p = subprocess.Popen([str(cpa_binary()), '-config', str(CONFIG), '-xai-login'] + (['-no-browser'] if args.no_open
                                                                                       else []),
                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    saved = None
+    saved, url = None, None
     for line in p.stdout:
         sys.stdout.write(line)
         sys.stdout.flush()
+        if url is None:
+            url = first_url(line)  # the sign-in link goes on the clipboard, as a seat's does
+            if url and clipboard_wanted(getattr(args, 'no_copy', False)) and copy_to_clipboard(url):
+                print('  Link copied to the clipboard.', flush=True)
         m = re.match(r'Authentication saved to (.+\.json)\s*$', line.strip())
         if m:
             saved = pathlib.Path(m.group(1))
@@ -5464,7 +6077,7 @@ def write_setting(key, value):
 
 
 def settable_now():
-    """display and headline as settings.json has them now: another codexpool set may have changed one since this
+    """display, headline and balancing as settings.json has them now: another codexpool set may have changed one since this
     process read it. Empty when the file cannot be read."""
     with contextlib.suppress(OSError, ValueError, SettingsError):
         return {k: v for k, v in parse_settings(json.loads(SETTINGS_FILE.read_text())).items() if k in SETTABLE}
@@ -5487,7 +6100,7 @@ def show_settings_now(timeout=90):
 
 
 def cmd_set(args):
-    """Change one of the menu bar's two settings in settings.json and show it at once."""
+    """Change one of the settings `set` knows (display, headline, balancing) in settings.json and show it at once."""
     if args.key is None:
         for key, choices in SETTABLE.items():
             print(f'{key:<9} {SETTINGS[key]:<8} ({" or ".join(choices)})')
@@ -5508,12 +6121,15 @@ def cmd_set(args):
         sys.exit(f'codexpool set: cannot write {SETTINGS_FILE}: {e}')
     SETTINGS.update(new)
     shown = show_settings_now()
-    print((f'{args.key}: {old} → {args.value}.' if old != args.value else f'{args.key} is already {args.value}.')
-          + (' The menu bar shows it within a few seconds.' if shown else
-             " The menu bar shows it after the guard's next pass (within a minute)."))
+    said = f'{args.key}: {old} → {args.value}.' if old != args.value else f'{args.key} is already {args.value}.'
+    if args.key == 'balancing':
+        print(said + (' ' + BALANCING_NOTE[args.value] if old != args.value else ''))
+        return
+    print(said + (' The menu bar shows it within a few seconds.' if shown else
+                  " The menu bar shows it after the guard's next pass (within a minute)."))
 
 
-GUI_PANES = ('overview', 'seats', 'lanes', 'general', 'health', 'about', 'setup-welcome')
+GUI_PANES = ('overview', 'seats', 'balancing', 'lanes', 'general', 'health', 'about', 'setup-welcome')
 
 
 def settings_app():
@@ -5824,14 +6440,18 @@ def build_parser():
     s.add_argument('pane', nargs='?', default='overview', choices=GUI_PANES, metavar='PANE',
                    help=f'the pane to show: {", ".join(GUI_PANES)} (default: %(default)s)')
     s.set_defaults(fn=cmd_gui)
-    s = sub.add_parser('set', help='change a menu bar setting: display (left|used) or headline (all|regular)',
-                       description='Change one of the menu bar settings in settings.json (the other keys stay as they '
-                                   'are) and rewrite status.json, so the menu bar shows it within seconds. Without '
-                                   'KEY: print both settings.')
+    s = sub.add_parser('set', help='change a setting: display (left|used), headline (all|regular) or balancing '
+                                   '(priority|reset)',
+                       description='Change one of these settings in settings.json (the other keys stay as they are) '
+                                   'and rewrite status.json, so the menu bar shows it within seconds. Without KEY: '
+                                   'print all three.')
     s.add_argument('key', nargs='?', metavar='KEY',
                    help='display: what numbers count, left (down from 100%%) or used (up from 0%%); headline: what the '
-                        'headline %% covers, all seats or the regular ones (reserve seats left out)')
-    s.add_argument('value', nargs='?', metavar='VALUE', help='left or used for display; all or regular for headline')
+                        'headline %% covers, all seats or the regular ones (reserve seats left out); balancing: which '
+                        'seat new threads get, priority (your fill order: codexpool order) or reset (the regular seat '
+                        'whose weekly quota resets soonest; the guard keeps the order up to date)')
+    s.add_argument('value', nargs='?', metavar='VALUE',
+                   help='left or used for display; all or regular for headline; priority or reset for balancing')
     s.set_defaults(fn=cmd_set)
     sub.add_parser('version', help='print the codexpool version').set_defaults(fn=cmd_version)
     s = sub.add_parser('login', help='add or re-login a seat (browser sign-in; --device for a device code)')
@@ -5854,6 +6474,13 @@ def build_parser():
     s.add_argument('seat')
     s.add_argument('priority', type=int)
     s.set_defaults(fn=cmd_priority)
+    s = sub.add_parser('order', help='set the fill order in one go: codexpool order SEAT [SEAT ...]',
+                       description='Set the fill order: the seats named come first, in that order, then the other '
+                                   'regular seats in the order they had, then the reserve seats (always last, in '
+                                   'their own order). Priorities go down from 1000 in steps of 10, and the order is '
+                                   'kept as yours in seats.json, which "balancing": "reset" leaves for later.')
+    s.add_argument('seats', nargs='+', metavar='SEAT', help='a seat label (or part of one), first used first')
+    s.set_defaults(fn=cmd_order)
     s = sub.add_parser('label', help='rename a seat')
     s.add_argument('seat')
     s.add_argument('label')
@@ -5912,7 +6539,7 @@ def build_parser():
                                    'live in ~/.codexpool/lanes.json; `lane apply` writes the rest. With no subcommand: '
                                    'lane list.')
     s.set_defaults(fn=cmd_lane)
-    lane = s.add_subparsers(dest='lane_cmd', metavar='{list,apply,add,remove,key,login,test}')
+    lane = s.add_subparsers(dest='lane_cmd', metavar='{list,apply,add,edit,remove,providers,models,key,login,test}')
     x = lane.add_parser('list', help='each lane, its members in order, their state and last test (the default)')
     x.add_argument('--json', action='store_true', help='print the lanes as JSON (the Settings window reads it)')
     x.set_defaults(lane_fn=cmd_lane_list)
@@ -5933,10 +6560,49 @@ def build_parser():
     x.add_argument('--session-header', metavar='NAME', help='responses members: header that carries a session id')
     x.add_argument('--dry-run', action='store_true', help='print the lanes.json change and what apply would do')
     x.set_defaults(lane_fn=cmd_lane_add)
+    x = lane.add_parser('edit', help='change a lane in lanes.json (name, role, effort, picker name, members), then apply',
+                        description='Change a lane in lanes.json, then apply, as lane add does. The changes apply in '
+                                    'the order given, and the result is checked like lane add checks a new lane.')
+    x.add_argument('name', metavar='NAME', help='the lane to change')
+    x.add_argument('--rename', dest='ops', action=LaneEditOp, const='rename', metavar='NEW',
+                   help='a new lane name (also its agent_type)')
+    x.add_argument('--role', dest='ops', action=LaneEditOp, const='role', metavar='TEXT',
+                   help='what the lane is for (line breaks become spaces)')
+    x.add_argument('--effort', dest='ops', action=LaneEditOp, const='effort', choices=LANE_EFFORTS,
+                   help='reasoning effort')
+    shown = x.add_mutually_exclusive_group()
+    shown.add_argument('--display', dest='ops', action=LaneEditOp, const='display', metavar='TEXT',
+                       help=f'the lane\'s name in the Codex model picker, up to {LANE_DISPLAY_MAX} characters')
+    shown.add_argument('--no-display', dest='ops', action=LaneEditOp, const='no_display', nargs=0,
+                       help='go back to the default picker name (the lane name with a capital first letter)')
+    x.add_argument('--add-member', dest='ops', action=LaneEditOp, const='add_member',
+                   metavar='PROVIDER:MODEL[:DISPLAY NAME]', help='add a member at the end of the fill order (repeat it)')
+    x.add_argument('--remove-member', dest='ops', action=LaneEditOp, const='remove_member', metavar='ID',
+                   help='remove a member (its id, as lane list shows it)')
+    x.add_argument('--move-member', dest='ops', action=LaneEditOp, const='move', metavar='ID',
+                   help='move a member to the position --to gives')
+    x.add_argument('--to', dest='ops', action=LaneEditOp, const='to', type=int, metavar='POS',
+                   help='with --move-member: its new place in the fill order, 1 is first')
+    x.add_argument('--base-url', metavar='URL', help='responses members added here: the https:// base URL of the '
+                                                     'Responses API')
+    x.add_argument('--session-header', metavar='NAME', help='responses members added here: header that carries a '
+                                                            'session id')
+    x.add_argument('--dry-run', action='store_true', help='print the lanes.json change and what apply would do')
+    x.set_defaults(lane_fn=cmd_lane_edit, ops=None)
     x = lane.add_parser('remove', help='remove a lane from lanes.json, then apply')
     x.add_argument('name', metavar='NAME')
     x.add_argument('--dry-run', action='store_true', help='print the lanes.json change and what apply would do')
     x.set_defaults(lane_fn=cmd_lane_remove)
+    x = lane.add_parser('providers', help='the providers a lane member can use, and whether each is ready')
+    x.add_argument('--json', action='store_true', help='print them as JSON (the Settings window reads it)')
+    x.set_defaults(lane_fn=cmd_lane_providers)
+    x = lane.add_parser('models', help='the models a lane provider offers (xai: from the pool; others: their /models)')
+    x.add_argument('provider', metavar='PROVIDER', help=f'one of: {", ".join(LANE_PROVIDERS)}')
+    x.add_argument('--base-url', metavar='URL', help='responses: the https:// base URL of the Responses API')
+    x.add_argument('--key-name', metavar='NAME', help='responses: the name its key is saved under (<lane>-<id>)')
+    x.add_argument('--json', action='store_true',
+                   help='print {"models": [...]} as JSON, or {"error": ...} (exit status 1) when there is no list')
+    x.set_defaults(lane_fn=cmd_lane_models)
     x = lane.add_parser('key', help='save a provider API key for the bridge (mode 600; never printed)')
     x.add_argument('keyname', metavar='KEYNAME', help='opencode-go, opencode-zen, or <lane>-<id> for a responses member')
     x.add_argument('file', nargs='?', metavar='FILE',
@@ -5945,6 +6611,8 @@ def build_parser():
     x = lane.add_parser('login', help='sign the pool in to a lane provider (xai: browser OAuth)')
     x.add_argument('provider', choices=['xai'])
     x.add_argument('--no-open', action='store_true', help='print the sign-in link instead of opening it')
+    x.add_argument('--no-copy', action='store_true',
+                   help='leave the clipboard alone (by default a printed sign-in link is also copied to it)')
     x.set_defaults(lane_fn=cmd_lane_login)
     x = lane.add_parser('test', help='spawn real lane subagents through Codex and check them (spends lane quota)')
     x.add_argument('lane', nargs='?', metavar='LANE', help='only this lane (default: every lane)')

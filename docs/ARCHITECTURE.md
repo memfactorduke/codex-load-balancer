@@ -51,6 +51,25 @@ staggered across seats. Each thread stays on its seat, which keeps prompt cachin
 moves rare (a few a week). Subagents ride their parent's seat. Round-robin was rejected: it burns every seat's
 5-hour and weekly windows in parallel and moves threads between accounts on every request.
 
+**Soonest reset first is a fill order the guard keeps.** Fill-first in a fixed order can leave quota unused: a
+seat low in the order may reach its weekly reset with most of its week untouched. With `"balancing": "reset"`
+the guard, once a pass (after parking and healing), sorts the regular seats by the reset of the window whose
+quota would go to waste soonest (the weekly one, else the 5-hour one) and gives them priorities in that order
+through the management API, so CLIProxyAPI's own fill-first does the rest and nothing new enters the request path.
+Seats without usage data follow in your order; seats that are out, parked, blocked or off serve nothing, so they
+stay where they are and don't count; reserve seats stay below every regular seat. It writes priorities only when
+the pool's order is wrong, and reset times within five minutes of each other count as a tie (live times jitter by
+seconds), so a stable pool sees no churn, just one log line when the order does change and no notification (a new
+order moves new threads while the previous seat still serves, which is no news). Session affinity still holds:
+running threads stay on their seat and only new threads follow the new order, so a reorder costs no prompt cache.
+Your own order is kept in `seats.json` as `manual_priority` (recorded from the pool's priorities the first time
+the guard sorts, and by `codexpool order` and `codexpool priority`, which under `"reset"` change only that
+record), and the first pass after switching back to `"priority"` writes it back; seats added in the meantime go
+after yours, and the reserve last. Seats with equal priorities are recorded in the order the pool gave them, so
+that order is the one that comes back. A fill order you change yourself (`order`, `priority`, `reserve`, Make
+first) is not announced as "Codex now on …" either: those commands leave a mark in `guard.json` that the next
+pass treats like its own reorder.
+
 **Failover at admission.** CLIProxyAPI cools an exhausted seat until its `resets_at` and replays the request on
 the next seat (`request-retry: 3`). Cooldowns are not saved across restarts, so a restart is a clean slate and
 the pool relearns from the next 429.
@@ -140,7 +159,8 @@ the network or the management API.
 **The Settings window and the Setup assistant follow the same rules.** They are one separate PyObjC process
 (`menubar/codexpool_settings.py`, single instance), started on demand by the menu bar app, `codexpool gui` or
 `install.sh`. They read `status.json` and `history.jsonl` (through the menu bar app's own parsing code) and the
-JSON that `codexpool doctor --json`, `codexpool lane list --json` and `codexpool version` print, and change
+JSON that `codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json`,
+`codexpool lane models PROVIDER --json` and `codexpool version` print, and change
 things only by running `codexpool` commands in the background. Every action in a window is therefore also a
 terminal command, and the CLI stays the one place that changes state.
 
@@ -174,7 +194,8 @@ live; idle seats are polled every 10 minutes. A window past its reset time is ig
 or only the regular ones, reserve seats left out (`"headline": "regular"`). Weights default from the plan string in
 the login (`plus` 1, `prolite` and `self_serve_business_prolite` 5, `pro` 20, anything else, `team` included, 1).
 `status.json` carries both figures (`used_pct_all`, `used_pct_regular`), the selected one as `used_pct`, and the
-`headline` and `display` settings, so the menu bar needs nothing from `settings.json` to draw them. `display`
+`headline`, `display` and `balancing` settings, so the menu bar needs nothing from `settings.json` to draw them
+(with `"balancing": "reset"` each seat also has an `order_reason`, such as "resets in 1d 4h"). `display`
 (`"left"` by default, or `"used"`) only changes presentation: what is left is 100 minus the used figure.
 `history.jsonl` records both figures (`all`, and `used` for the regular seats) whatever the settings, so switching
 `headline` keeps the chart's history.

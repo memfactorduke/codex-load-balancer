@@ -9,6 +9,8 @@ Scenarios (files written to --out), all with the default settings ("headline": "
     reserve   every regular seat is out or parked, so the Pro 20x reserve is serving (red)
     down      the regular scenario, but the guard stopped writing status.json 26 minutes ago (grey)
     used      the regular scenario with "display": "used" (it shares history-regular.jsonl)
+    reset     the regular scenario with "balancing": "reset": the guard put Team first, whose weekly quota resets
+              soonest, so new threads go there (it shares history-regular.jsonl)
 
 Nothing here is real: no accounts, no emails, no tokens. Stdlib only.
 """
@@ -122,7 +124,15 @@ def seat_row(label, now, state, week, week_reset, *, short=None, short_reset=Non
     }
 
 
-def status(name: str, now: dt.datetime, written: dt.datetime, headline: str = 'all', display: str = 'left') -> dict:
+# "balancing": "reset": the fill order the guard computes for the regular scenario (soonest weekly reset first;
+# Work A is out, so its place doesn't matter), with the reason status.json gives for each seat's place
+RESET_ORDER = (('Team', 1000, 'resets in 1d 18h'), ('Personal', 990, 'resets in 5d 2h'),
+               ('Work B', 980, 'resets in 6d 13h'), ('Work A', 970, 'out until its weekly reset'),
+               ('Pro 20x', 10, 'reserve: used last'))
+
+
+def status(name: str, now: dt.datetime, written: dt.datetime, headline: str = 'all', display: str = 'left',
+           balancing: str | None = None) -> dict:
     d = dt.timedelta
     out = 'usage limit reached'
     if name == 'reserve':
@@ -145,6 +155,12 @@ def status(name: str, now: dt.datetime, written: dt.datetime, headline: str = 'a
             seat_row('Personal', now, 'ready', 9, d(days=5, hours=2)),
             seat_row('Pro 20x', now, 'ready', 34, d(days=3, hours=9), resets=1, reset_days=18),
         ]
+    if balancing == 'reset':   # Team is first now, so new threads go there; Work B keeps its running threads
+        for label, priority, reason in RESET_ORDER:
+            row = next(r for r in rows if r['label'] == label)
+            row['priority'], row['order_reason'] = priority, reason
+            row['state'] = {'Team': 'active', 'Work B': 'ready'}.get(label, row['state'])
+        rows.sort(key=lambda r: -r['priority'])
     counted = [r for r in rows if r['state'] != 'disabled']
     serving = next((r for r in rows if r['state'] == 'active'), None)
     upcoming = sorted((r['until'], r['label']) for r in rows if r['state'] in ('exhausted', 'parked', 'cooldown'))
@@ -153,7 +169,7 @@ def status(name: str, now: dt.datetime, written: dt.datetime, headline: str = 'a
     pool = {
         'running': True, 'version': VERSION, 'port': PORT,
         'used_pct': every if headline == 'all' else regular, 'used_pct_all': every, 'used_pct_regular': regular,
-        'headline': headline, 'display': display,
+        'headline': headline, 'display': display, **({'balancing': balancing} if balancing else {}),
         'reserve_in_use': bool(serving and serving['reserve']),
         'regular_available': sum(1 for r in rows if r['state'] in ('active', 'ready') and not r['reserve']),
         'left_weight': round(sum(r['weight'] * (100 - r['week_used']) / 100 for r in counted
@@ -175,8 +191,10 @@ def main():
     now = dt.datetime.fromisoformat(a.now.replace('Z', '+00:00'))
     a.out.mkdir(parents=True, exist_ok=True)
     for name, scenario, age, display in (('regular', 'regular', 12, 'left'), ('reserve', 'reserve', 21, 'left'),
-                                         ('down', 'regular', 26 * 60, 'left'), ('used', 'regular', 12, 'used')):
-        st = status(scenario, now - dt.timedelta(seconds=age), now - dt.timedelta(seconds=age), display=display)
+                                         ('down', 'regular', 26 * 60, 'left'), ('used', 'regular', 12, 'used'),
+                                         ('reset', 'regular', 12, 'left')):
+        st = status(scenario, now - dt.timedelta(seconds=age), now - dt.timedelta(seconds=age), display=display,
+                    balancing='reset' if name == 'reset' else None)
         (a.out / f'status-{name}.json').write_text(json.dumps(st, indent=1) + '\n')
         if name == scenario:
             lines = history(scenario, now)

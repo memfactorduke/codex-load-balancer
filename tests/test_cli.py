@@ -44,7 +44,8 @@ class Help(unittest.TestCase):
                 ('disable',), ('priority',), ('label',), ('weight',), ('reset',), ('reserve',), ('remove',),
                 ('refresh',), ('restart',), ('logs',), ('selftest',), ('build',), ('upgrade',), ('install',),
                 ('uninstall',), ('lane',), ('lane', 'list'), ('lane', 'apply'), ('lane', 'add'), ('lane', 'remove'),
-                ('lane', 'key'), ('lane', 'login'), ('lane', 'test'), ('guard',), ('menubar',)}
+                ('lane', 'key'), ('lane', 'login'), ('lane', 'test'), ('lane', 'edit'), ('lane', 'providers'),
+                ('lane', 'models'), ('order',), ('guard',), ('menubar',)}
 
     def test_every_subcommand_has_help(self):
         found = dict(subcommands(cp.build_parser()))

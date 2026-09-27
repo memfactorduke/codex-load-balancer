@@ -6,8 +6,9 @@ Run it with a Python that has PyObjC (the menu bar app's venv):
     ~/.codexpool/.venv/bin/python docs/images/demo/render.py [--app menubar/codexpool_menubar.py]
 
 The popovers come straight from the app's own `--snapshot` mode, and the Settings window and Setup assistant
-from codexpool_settings.py's (with doctor.json and lanes.json from this folder). The menu bar strip and the hero
-image reuse the app's drawing code (imported, never modified) and add only the backdrop around it.
+from codexpool_settings.py's (with doctor.json, lanes.json, lane-providers.json and lane-models.json from this
+folder). The menu bar strip and the hero image reuse the app's drawing code (imported, never modified) and add
+only the backdrop around it.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ CLOCK = 'Thu Sep 24  9:41 AM'
 sys.path.insert(0, str(HERE))
 import make_data  # noqa: E402
 
-HISTORY = {'used': 'regular'}   # scenarios that borrow another one's history.jsonl
+HISTORY = {'used': 'regular', 'reset': 'regular'}   # scenarios that borrow another one's history.jsonl
 
 
 def rel(path: Path):
@@ -67,10 +68,12 @@ def snapshot(app_path: Path, out: Path, appearance: str, scenario: str):
     print(rel(out))
 
 
-SETTINGS_SHOTS = (   # (file name, pane or Setup assistant step, appearance), all from the regular scenario
+SETTINGS_SHOTS = (   # (file name, pane, Lanes sheet or Setup assistant step, appearance), from the regular scenario
     ('settings-overview-light', 'overview', 'light'),
     ('settings-overview-dark', 'overview', 'dark'),
     ('settings-seats-light', 'seats', 'light'),
+    ('settings-balancing-light', 'balancing', 'light'),
+    ('settings-lanes-edit-light', 'lanes-edit', 'light'),
     ('setup-accounts-light', 'setup-accounts', 'light'),
     ('setup-signin-light', 'setup-signin', 'light'),
 )
@@ -81,6 +84,7 @@ def settings_snapshot(settings_path: Path, out: Path, pane: str, appearance: str
     subprocess.run([sys.executable, str(settings_path), '--snapshot', str(out), '--pane', pane,
                     '--appearance', appearance, '--status', str(HERE / 'status-regular.json'),
                     '--doctor', str(HERE / 'doctor.json'), '--lanes', str(HERE / 'lanes.json'),
+                    '--providers', str(HERE / 'lane-providers.json'), '--models', str(HERE / 'lane-models.json'),
                     '--history', str(history_path('regular')), '--now', NOW],
                    check=True, stdout=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     print(rel(out))

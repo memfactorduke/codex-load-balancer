@@ -1,0 +1,8 @@
+{
+  "providers": [
+    {"id": "xai", "title": "xAI", "kind": "native", "needs": "login", "key_name": null, "ready": true, "detail": "signed in"},
+    {"id": "opencode-go", "title": "OpenCode Go", "kind": "bridge", "needs": "key", "key_name": "opencode-go", "ready": true, "detail": "key saved"},
+    {"id": "opencode-zen", "title": "OpenCode Zen", "kind": "bridge", "needs": "key", "key_name": "opencode-zen", "ready": false, "detail": "no key yet: codexpool lane key opencode-zen -"},
+    {"id": "responses", "title": "OpenAI Responses API (your own endpoint)", "kind": "bridge", "needs": "key", "key_name": null, "ready": false, "detail": "each member needs a base URL and a key of its own: codexpool lane key <lane>-<id> -"}
+  ]
+}

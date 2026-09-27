@@ -2,33 +2,40 @@
 """codexpool Settings window and Setup assistant.
 
 A native macOS window (Python + PyObjC/AppKit) in the style of System Settings: a sidebar and a content pane
-(Overview, Seats, Lanes, General, Health, About), plus a Setup assistant that adds ChatGPT accounts. It runs as
-its own process, started by the menu bar app ("Settings…", "Add a ChatGPT account…") or by the installer. The
-spec is the GUI section of menubar/SPEC.md.
+(Overview, Seats, Balancing, Lanes, General, Health, About), plus a Setup assistant that adds ChatGPT accounts. It
+runs as its own process, started by the menu bar app ("Settings…", "Add a ChatGPT account…") or by the installer.
+The spec is the GUI section of menubar/SPEC.md.
 
 Same rules as the menu bar app: no Keychain, no network, no management API. It reads
 ~/.codexpool/state/status.json (parsed by the menu bar app's own code, imported from codexpool_menubar.py) and the
-JSON that `codexpool doctor --json`, `codexpool lane list --json` and `codexpool version` print. Every change is a
-`codexpool …` command run in the background, the way the menu bar app runs its actions; the main thread never
-waits for one.
+JSON that `codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json`,
+`codexpool lane models PROVIDER --json` and `codexpool version` print. Every change is a `codexpool …` command run
+in the background, the way the menu bar app runs its actions; the main thread never waits for one. A provider key
+typed into the Lanes pane goes to `codexpool lane key NAME -` on its stdin, never in argv or a file.
 
 Run:
     <menubar python> ~/.codexpool/menubar/codexpool_settings.py [--pane NAME]
-    NAME: overview | seats | lanes | general | health | about | setup-welcome | setup-accounts | setup-done
+    NAME: overview | seats | balancing | lanes | general | health | about | setup-welcome | setup-accounts |
+          setup-done
 
 Snapshot (no UI shown, no command run; for humans and agents checking the design, and for the docs):
     codexpool_settings.py --snapshot OUT.png --pane NAME --appearance light|dark --status PATH
-                          [--doctor PATH] [--lanes PATH] [--now ISO-8601] [--height PT]
-    NAME also takes setup-signin (the sign-in step, with a made-up link), setup-added (a seat just added) and
-    setup-again (the browser signed in to an account that is already a seat).
+                          [--doctor PATH] [--lanes PATH] [--providers PATH] [--models PATH] [--now ISO-8601]
+                          [--height PT]
+    NAME also takes setup-signin (the sign-in step, with a made-up link), setup-added (a seat just added),
+    setup-again (the browser signed in to an account that is already a seat), and the Lanes pane's sheets:
+    lanes-edit (the lane editor on the first lane), lanes-new (a new lane), lanes-model (Add Model on a ready
+    provider), lanes-model-key (Add Model on a provider that needs a key), lanes-key (Add Key) and lanes-signin
+    (the xAI sign-in, with a made-up link).
     --now defaults to the status file's generated_at, so demo data reads as fresh.
 
 Layout of this file:
-    1. Paths and constants            6. Panes: Overview, Seats, Lanes, General, Health, About
+    1. Paths and constants            6. Panes: Overview, Seats, Balancing, Lanes, General, Health, About
     2. Running codexpool              7. The Settings window (sidebar + content)
-    3. Data: status, doctor, lanes    8. Setup assistant
-    4. Look: colours, the app icon    9. App controller (single instance, menus, Dock icon)
-    5. Building blocks (views)       10. Snapshot mode and main()
+    3. Data: status, doctor, lanes    8. Sheets: lane editor, Add Model, Add Key, xAI sign-in
+    4. Look: colours, the app icon    9. Setup assistant
+    5. Building blocks (views)       10. App controller (single instance, menus, Dock icon)
+                                     11. Snapshot mode and main()
 """
 from __future__ import annotations
 
@@ -64,8 +71,10 @@ from AppKit import (  # noqa: E402
     NSApplicationActivationPolicyRegular,
     NSAttributedString,
     NSBackingStoreBuffered,
+    NSBox,
     NSButton,
     NSColor,
+    NSComboBox,
     NSCompositingOperationSourceOver,
     NSControlSizeSmall,
     NSFont,
@@ -96,11 +105,11 @@ from AppKit import (  # noqa: E402
     NSProgressIndicatorStyleSpinning,
     NSRunningApplication,
     NSScrollView,
+    NSSecureTextField,
     NSSegmentedControl,
     NSShadow,
     NSStackView,
     NSStringDrawingUsesLineFragmentOrigin,
-    NSStepper,
     NSSwitch,
     NSTextAlignmentCenter,
     NSTextAlignmentRight,
@@ -167,8 +176,17 @@ POLL_EVERY_S = 10          # how often the status file is checked
 REOPEN_TIMEOUT_S = 20      # how long Codex gets to quit before we give up
 QUIT_WAIT_S = 45           # how long quitting waits for a sign-in that is finishing (codexpool gives the pool 20 s)
 
-PANES = ('overview', 'seats', 'lanes', 'general', 'health', 'about')
+PANES = ('overview', 'seats', 'balancing', 'lanes', 'general', 'health', 'about')
 SETUP_PANES = ('setup-welcome', 'setup-accounts', 'setup-signin', 'setup-added', 'setup-again', 'setup-done')
+LANE_SHOTS = ('lanes-edit', 'lanes-new', 'lanes-model', 'lanes-model-key', 'lanes-key', 'lanes-signin')  # snapshots
+
+BALANCING = ('priority', 'reset')    # pool.balancing: your order (fill-first) / soonest weekly reset first
+EFFORTS = ('low', 'medium', 'high', 'xhigh')
+LANE_NAME_OK = re.compile(r'^[a-z][a-z0-9-]{0,30}$')   # what `codexpool lane add` accepts (it checks again)
+DISPLAY_MAX = 40                     # a lane's entry in the Codex model picker
+PROVIDERS = (   # what `lane providers --json` says, for a codexpool that can't say it yet: (id, title, needs, key)
+    ('xai', 'xAI', 'login', None), ('opencode-go', 'OpenCode Go', 'key', 'opencode-go'),
+    ('opencode-zen', 'OpenCode Zen', 'key', 'opencode-zen'), ('responses', 'Responses API', 'key', None))
 
 WIN_W, WIN_H, MIN_H = 820.0, 640.0, 480.0
 SIDEBAR_W = 220.0
@@ -182,9 +200,12 @@ RADIUS = 10.0                       # group corner radius
 SETUP_W, SETUP_H = 640.0, 560.0
 SETUP_BODY_W = SETUP_W - 2 * 56.0
 
-DEMO_VERSION = '1.0.0'
+SHEET_W = 560.0                     # the lane editor; the smaller sheets are narrower
+
+DEMO_VERSION = '1.2.0'
 DEMO_SIGNIN_URL = ('https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_demo'
                    '&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=demo')
+DEMO_XAI_URL = 'https://auth.x.ai/oauth2/auth?response_type=code&client_id=demo&state=demo'
 
 SNAPSHOT = False           # set in snapshot mode: nothing may run a command, open a URL or touch a file
 
@@ -225,9 +246,11 @@ class Result:
 
 class Job:
     """`codexpool <args>` in the background. on_line(line) gets each output line (stderr merged into stdout) when
-    given; on_done(Result) runs once at the end. Both run on the main thread."""
+    given; on_done(Result) runs once at the end. Both run on the main thread. stdin: bytes for the command's
+    standard input (a provider key for `lane key NAME -`: it never goes into argv or a file); env: extra
+    environment variables."""
 
-    def __init__(self, args: list[str], on_done, on_line=None):
+    def __init__(self, args: list[str], on_done, on_line=None, stdin: bytes | None = None, env: dict | None = None):
         if SNAPSHOT:
             raise RuntimeError('snapshot mode never runs codexpool')
         self.args = list(args)
@@ -241,9 +264,10 @@ class Job:
             return
         try:
             self.proc = subprocess.Popen(
-                [*mb.codexpool_argv(), *self.args], cwd=str(POOL_DIR), stdin=subprocess.DEVNULL,
+                [*mb.codexpool_argv(), *self.args], cwd=str(POOL_DIR),
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT if stream else subprocess.PIPE,
-                start_new_session=True, env={**os.environ, 'PYTHONUNBUFFERED': '1'})
+                start_new_session=True, env={**os.environ, 'PYTHONUNBUFFERED': '1', **(env or {})})
         except OSError as e:
             AppHelper.callAfter(on_done, Result(self.args, 127, '', e.strerror or str(e)))
             return
@@ -258,7 +282,11 @@ class Job:
                 self.proc.wait()
                 out, err = '\n'.join(lines), ''
             else:
-                o, e = self.proc.communicate()
+                try:
+                    o, e = self.proc.communicate(stdin)
+                except OSError:   # it exited before reading its stdin (a broken pipe): its output says why
+                    o, e = self.proc.stdout.read(), self.proc.stderr.read()
+                    self.proc.wait()
                 out, err = o.decode('utf-8', 'replace'), e.decode('utf-8', 'replace')
             AppHelper.callAfter(on_done, Result(self.args, self.proc.returncode, out, err))
         threading.Thread(target=work, daemon=True).start()
@@ -313,6 +341,12 @@ def clipboard_count() -> int:
         return int(NSPasteboard.generalPasteboard().changeCount())
     except Exception:
         return 0
+
+
+def ordinal(n: int) -> str:
+    """1 -> '1st', 2 -> '2nd', 11 -> '11th'."""
+    suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f'{n}{suffix}'
 
 
 def tilde(path) -> str:
@@ -406,6 +440,18 @@ class Lane:
     effort: str
     role: str
     members: list
+    display: str = ''              # its entry in the Codex model picker ('' from a codexpool that doesn't say)
+    test: LaneTest | None = None   # the last lane-level test
+
+
+def default_display(name: str) -> str:
+    """A lane's picker entry when lanes.json sets none: its name with a capital first letter, as codexpool does."""
+    return name[:1].upper() + name[1:]
+
+
+def parse_test(t) -> LaneTest | None:
+    return LaneTest(t.get('ok') is True, mb.parse_time(t.get('when')), mb.as_str(t.get('reason'))) \
+        if isinstance(t, dict) else None
 
 
 def parse_lanes(d) -> list | None:
@@ -418,15 +464,71 @@ def parse_lanes(d) -> list | None:
         members = []
         for m in mb.as_list(x.get('members')):
             m = mb.as_dict(m)
-            t = m.get('last_test')
-            test = LaneTest(t.get('ok') is True, mb.parse_time(t.get('when')), mb.as_str(t.get('reason'))) \
-                if isinstance(t, dict) else None
             members.append(Member(mb.as_str(m.get('id')), mb.as_str(m.get('provider')), mb.as_str(m.get('model')),
                                   mb.as_str(m.get('name')) or mb.as_str(m.get('model')) or mb.as_str(m.get('id')),
-                                  mb.as_str(m.get('state'), 'unknown'), test))
+                                  mb.as_str(m.get('state'), 'unknown'), parse_test(m.get('last_test'))))
         lanes.append(Lane(mb.as_str(x.get('name'), 'lane'), mb.as_str(x.get('effort')), mb.as_str(x.get('role')),
-                          members))
+                          members, mb.as_str(x.get('display')), parse_test(x.get('last_test'))))
     return lanes
+
+
+@dataclass
+class Provider:
+    """A lane provider, from `codexpool lane providers --json`."""
+    id: str
+    title: str
+    needs: str                 # login (xai) | key
+    key_name: str | None       # the key file's name; None for xai and for responses (whose key is <lane>-<id>)
+    ready: bool | None         # signed in / key saved; None: not known (a codexpool without `lane providers`)
+    detail: str = ''
+    kind: str = ''             # native | bridge
+
+
+def parse_providers(d) -> list | None:
+    d = mb.as_dict(d)
+    if 'providers' not in d:
+        return None
+    out = []
+    for p in mb.as_list(d.get('providers')):
+        p = mb.as_dict(p)
+        pid = mb.as_str(p.get('id'))
+        if not pid:
+            continue
+        fallback = next((f for f in PROVIDERS if f[0] == pid), (pid, pid, 'key', None))
+        key = p.get('key_name')
+        title = re.sub(r'\s*\(.*\)$', '', mb.as_str(p.get('title')))   # 'OpenAI Responses API (your own ...)'
+        out.append(Provider(pid, title or fallback[1],
+                            mb.as_str(p.get('needs')) or fallback[2],
+                            key if isinstance(key, str) and key else None,
+                            p.get('ready') if isinstance(p.get('ready'), bool) else None,
+                            mb.as_str(p.get('detail')), mb.as_str(p.get('kind'))))
+    return out
+
+
+def fallback_providers() -> list:
+    return [Provider(pid, title, needs, key, None) for pid, title, needs, key in PROVIDERS]
+
+
+@dataclass
+class LaneModel:
+    """A model `codexpool lane models PROVIDER --json` lists."""
+    id: str
+    name: str
+    context: int | None
+
+
+def parse_models(d) -> list | None:
+    d = mb.as_dict(d)
+    if 'models' not in d:
+        return None
+    out = []
+    for x in mb.as_list(d.get('models')):
+        x = mb.as_dict(x)
+        mid = mb.as_str(x.get('id'))
+        if mid:
+            ctx = mb.as_num(x.get('context'))
+            out.append(LaneModel(mid, mb.as_str(x.get('name')), int(ctx) if ctx else None))
+    return out
 
 
 def parse_json_output(text: str):
@@ -460,6 +562,11 @@ class Store:
         self.lanes: list | None = None
         self.lanes_note = ''
         self.lanes_busy = False
+        self.providers: list | None = None     # lane providers and their credentials
+        self.providers_note = ''
+        self.providers_busy = False
+        self.models: dict = {}                  # provider -> [LaneModel], for this session
+        self.demo_models: list | None = None    # snapshot: what every `lane models` answers
         self.version: str | None = None
         self.version_note = ''
         self.listeners: list = []
@@ -469,6 +576,18 @@ class Store:
 
     def model(self) -> mb.Model:
         return self.source.model(self.now)
+
+    # -- status.json fields the menu bar app's model doesn't carry ---------------------------------------
+    def balancing(self) -> str:
+        """pool.balancing: 'priority' (your order) or 'reset' (soonest reset first). An older guard: priority."""
+        v = mb.as_str(mb.as_dict(mb.as_dict(self.source.raw).get('pool')).get('balancing'))
+        return v if v in BALANCING else BALANCING[0]
+
+    def provider_list(self) -> list:
+        return self.providers if self.providers is not None else fallback_providers()
+
+    def provider(self, pid: str) -> Provider:
+        return next((p for p in self.provider_list() if p.id == pid), Provider(pid, pid, 'key', None, None))
 
     def notify(self, what: str):
         for fn in list(self.listeners):
@@ -511,6 +630,38 @@ class Store:
             self.notify('lanes')
         Job(['lane', 'list', '--json'], done)
 
+    def fetch_providers(self):
+        if self.providers_busy or SNAPSHOT:
+            return
+        self.providers_busy = True
+
+        def done(r: Result):
+            self.providers_busy = False
+            data = parse_providers(parse_json_output(r.out)) if r.ok else None
+            if data is not None:
+                self.providers, self.providers_note = data, ''
+            else:
+                self.providers_note = r.message() if not r.ok else 'codexpool lane providers printed nothing.'
+            self.notify('providers')
+        Job(['lane', 'providers', '--json'], done)
+
+    def fetch_models(self, provider: str, done, base_url: str = '', key_name: str = ''):
+        """done(models or None, message): the models `codexpool lane models PROVIDER --json` lists."""
+        if SNAPSHOT:
+            done(self.demo_models, '' if self.demo_models is not None else 'No model list in this snapshot.')
+            return
+        args = ['lane', 'models', provider, '--json'] + (['--base-url', base_url] if base_url else []) + \
+            (['--key-name', key_name] if key_name else [])
+
+        def finished(r: Result):
+            data = parse_json_output(r.out)
+            models = parse_models(data) if r.ok else None
+            if models is not None and not base_url:
+                self.models[provider] = models
+            err = mb.as_str(mb.as_dict(data).get('error'))
+            done(models, '' if models is not None else (NEWER if r.unknown else err or r.message()))
+        Job(args, finished)
+
     def fetch_version(self):
         def done(r: Result):
             m = re.search(r'codexpool\s+v?(\S+)', r.out) if r.ok else None
@@ -519,13 +670,18 @@ class Store:
         Job(['version'], done)
 
     # -- fixtures (snapshot) ---------------------------------------------------------------------------
-    def load_fixtures(self, doctor: Path | None, lanes: Path | None):
+    def load_fixtures(self, doctor: Path | None, lanes: Path | None, providers: Path | None = None,
+                      models: Path | None = None):
         self.source.poll(force=True)
         if doctor:
             self.doctor = parse_doctor(json.loads(doctor.read_text()))
             self.doctor_at = self.clock()
         if lanes:
             self.lanes = parse_lanes(json.loads(lanes.read_text()))
+        if providers:
+            self.providers = parse_providers(json.loads(providers.read_text()))
+        if models:
+            self.demo_models = parse_models(json.loads(models.read_text()))
         self.version = DEMO_VERSION
 
 
@@ -910,6 +1066,60 @@ def dot(color_fn, d: float = 8.0, ring: bool = False):
     return canvas(paint, d + 2, d + 2)
 
 
+def number_badge(i: int, dim: bool = False):
+    """A position in an order (a lane's members, the seats' fill order): a digit in a faint circle."""
+    f = mb.font(11, NSFontWeightSemibold)
+    return canvas(lambda w, h: (mb.fill_circle(w / 2, h / 2, 9, mb.C.wash(0.05 if dim else 0.08)),
+                                mb.draw_text(str(i), 0, (h - mb.line_height(f)) / 2, f,
+                                             mb.C.tertiary() if dim else mb.C.secondary(), width=w, align='center')),
+                  20, 20, ax=f'{i}.')
+
+
+def radio(title: str, on: bool, fn, keep: list, enabled: bool = True):
+    b = auto(NSButton.radioButtonWithTitle_target_action_(S(title), target(fn, keep), 'fire:'))
+    b.setState_(1 if on else 0)
+    b.setEnabled_(enabled)
+    return b
+
+
+def checkbox(title: str, on: bool, fn, keep: list, enabled: bool = True):
+    b = auto(NSButton.checkboxWithTitle_target_action_(S(title), target(fn, keep), 'fire:'))
+    b.setState_(1 if on else 0)
+    b.setEnabled_(enabled)
+    return b
+
+
+def symbol_image(name: str, size: float = 11.0, weight=NSFontWeightSemibold, ax: str | None = None):
+    img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, S(ax) if ax else None) or \
+        NSImage.imageWithSystemSymbolName_accessibilityDescription_('circle', None)
+    return img.imageWithSymbolConfiguration_(NSImageSymbolConfiguration.configurationWithPointSize_weight_(size, weight))
+
+
+def up_down(fn, keep: list, can_up: bool, can_down: bool, enabled: bool = True, what: str = ''):
+    """A small two-segment control, ▲ ▼, that moves a row in an order: fn(-1) or fn(+1)."""
+    seg = auto(NSSegmentedControl.segmentedControlWithImages_trackingMode_target_action_(
+        [symbol_image('chevron.up', 10, ax=f'Move {what} up'.replace('  ', ' ')),
+         symbol_image('chevron.down', 10, ax=f'Move {what} down'.replace('  ', ' '))],
+        2, target(lambda s: fn(-1 if s.selectedSegment() == 0 else 1), keep), 'fire:'))   # 2: momentary
+    seg.setControlSize_(NSControlSizeSmall)
+    seg.setEnabled_forSegment_(can_up and enabled, 0)
+    seg.setEnabled_forSegment_(can_down and enabled, 1)
+    for i in (0, 1):
+        seg.setWidth_forSegment_(22, i)
+    seg.setToolTip_(S('Move up or down in the order'))
+    return seg
+
+
+def icon_button(symbol: str, fn, keep: list, ax: str, enabled: bool = True):
+    """A small bordered button that shows only an SF Symbol (the − that removes a row)."""
+    b = auto(NSButton.buttonWithImage_target_action_(symbol_image(symbol, 10, ax=ax), target(fn, keep), 'fire:'))
+    b.setControlSize_(NSControlSizeSmall)
+    b.setEnabled_(enabled)
+    b.setToolTip_(S(ax))
+    b.setAccessibilityLabel_(S(ax))
+    return b
+
+
 class GroupView(NSView):
     """A System Settings group: a rounded box whose rows are separated by inset hairlines."""
     rows = ()
@@ -1131,14 +1341,15 @@ class Pane:
     def build(self) -> list:
         raise NotImplementedError
 
-    def run(self, args, doing: str, done: str, then=None):
-        """Runs `codexpool <args>`, notes progress and the outcome, and refreshes status.json after a change."""
+    def run(self, args, doing: str, done: str, then=None, settled=None):
+        """Runs `codexpool <args>`, notes progress and the outcome, and refreshes status.json after a change.
+        then(result) runs when the command ends; settled() when the guard pass after a change has been read."""
         self.say('busy', doing)
 
         def finished(r: Result):
             if r.ok:
                 self.say('ok', done)
-                self.app.after_change()
+                self.app.after_change(settled)
             else:
                 self.say('error', r.message())
             if then:
@@ -1160,9 +1371,9 @@ class OverviewPane(Pane):
         if m.seats and m.headline is not None:
             out.append(section(self.hero(m)))
         if m.seats:
+            order = 'Soonest reset first' if self.store.balancing() == 'reset' else 'Your order'
             out.append(section(group([self.seat_row(s, m) for s in m.seats]), 'Seats',
-                               footer=self.footer(m),
-                               header_right=secondary('Priority order', 11)))
+                               footer=self.footer(m), header_right=secondary(order, 11)))
         return out
 
     def problem(self, m: mb.Model):
@@ -1345,7 +1556,6 @@ class SeatsPane(Pane):
     def __init__(self, app):
         super().__init__(app)
         self.selected: str | None = None   # seat file name
-        self.commit_timer = None
 
     def build(self):
         m = self.store.model()
@@ -1361,7 +1571,8 @@ class SeatsPane(Pane):
             self.selected = names[0]
         seat = m.seats[names.index(self.selected)]
         rows = [self.list_row(s, m) for s in m.seats]
-        add = hstack([secondary('Seats fill in priority order: the highest first.', 11)],
+        add = hstack([secondary('In fill order. Balancing sets the order and the reserve.', 11,
+                                wrap=GROUP_W - 2 * ROW_X - 130)],
                      [button('Add Account…', lambda _: self.app.open_setup('setup-accounts'), k)],
                      insets=(8, ROW_X, 8, ROW_X - 2), min_h=40)
         return [section(group(rows + [add])),
@@ -1423,54 +1634,6 @@ class SeatsPane(Pane):
         size.setTarget_(target(resize, k))
         size.setAction_('fire:')
 
-        # Priority: a number field and a stepper (a burst of clicks commits once)
-        prio = int(seat.priority) if seat.priority is not None else 0
-        pfield = text_field(str(prio), 64, right=True)
-        stepper = auto(NSStepper.alloc().initWithFrame_(((0, 0), (19, 27))))
-        stepper.setMinValue_(-100000)
-        stepper.setMaxValue_(100000)
-        stepper.setIncrement_(10)
-        stepper.setValueWraps_(False)
-        stepper.setIntegerValue_(prio)
-
-        def commit_priority(value: int):
-            if value != prio:
-                self.run(['priority', name, str(value)], f'Moving {seat.label}…',
-                         f'{seat.label} priority {prio} → {value}')
-
-        def typed(sender):
-            if self.commit_timer is not None:   # a typed value wins over a stepper burst still waiting to commit
-                self.commit_timer.invalidate()
-                self.commit_timer = None
-            try:
-                commit_priority(int(str(sender.stringValue()).strip()))
-            except ValueError:
-                sender.setStringValue_(S(str(prio)))
-
-        def stepped(sender):
-            pfield.setStringValue_(S(str(sender.integerValue())))
-            if self.commit_timer is not None:
-                self.commit_timer.invalidate()
-            value = int(sender.integerValue())
-            self.commit_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.9, target(lambda _t: commit_priority(value), k), 'fire:', None, False)
-        pfield.setTarget_(target(typed, k))
-        pfield.setAction_('fire:')
-        stepper.setTarget_(target(stepped, k))
-        stepper.setAction_('fire:')
-
-        # Reserve and in-rotation switches
-        reserve = auto(NSSwitch.alloc().init())
-        reserve.setControlSize_(NSControlSizeSmall)
-        reserve.setState_(1 if seat.reserve else 0)
-
-        def toggle_reserve(sender):
-            on = sender.state() == 1
-            self.run(['reserve', name] + ([] if on else ['--off']), f'Updating {seat.label}…',
-                     f'{seat.label} is {"now" if on else "no longer"} a reserve seat')
-        reserve.setTarget_(target(toggle_reserve, k))
-        reserve.setAction_('fire:')
-
         rotation = auto(NSSwitch.alloc().init())
         rotation.setControlSize_(NSControlSizeSmall)
         rotation.setState_(0 if seat.state in ('disabled', 'parked') else 1)
@@ -1492,7 +1655,7 @@ class SeatsPane(Pane):
         rotation.setTarget_(target(toggle_rotation, k))
         rotation.setAction_('fire:')
 
-        for c in (field, size, pfield, stepper, reserve, rotation):
+        for c in (field, size, rotation):
             c.setEnabled_(not busy)
 
         exp = f', soonest expires {mb.fmt_day(seat.reset_expiry)}' if seat.reset_expiry else ''
@@ -1501,12 +1664,11 @@ class SeatsPane(Pane):
         state_sub = {'parked': 'Parked by the credit guard: its plan limit is used up.',
                      'blocked': f'Needs a new sign-in: {seat.detail or "the login stopped working"}.',
                      'disabled': 'Out of rotation. Threads on it moved to the next seat.'}.get(
-            seat.state, 'Takes new threads in priority order.')
+            seat.state, 'Takes new threads in its turn in the fill order.')
         rows = [
             form_row('Name', f'Seat file {seat.name}' if seat.name else None, field),
             form_row('Size', 'Its share of the headline. Plus and Team 1×, Business 5×, Pro 20×.', size),
-            form_row('Priority', 'Higher is used first.', hstack([pfield, stepper], spacing=4, cluster=True)),
-            form_row('Reserve', 'Used last. The menu bar turns red while it serves.', reserve),
+            self.order_row(seat, m),
             form_row('In rotation', state_sub, rotation),
             form_row('Banked resets', reset_sub,
                      button('Redeem Reset…', lambda _: self.confirm_reset(seat), k,
@@ -1524,6 +1686,20 @@ class SeatsPane(Pane):
         if note is not None:
             rows.append(note)
         return group(rows)
+
+    def order_row(self, seat: mb.Seat, m: mb.Model):
+        """Where the seat is in the fill order, as a row that opens Balancing (where the order and the reserve are
+        set)."""
+        regular = [s for s in m.seats if not s.reserve]
+        if seat.reserve:
+            sub = 'Reserve: used only when every other seat is out.'
+        else:
+            pos = next((i for i, s in enumerate(regular, 1) if (s.name or s.label) == (seat.name or seat.label)), 0)
+            how = 'soonest reset first' if self.store.balancing() == 'reset' else 'in your order'
+            sub = f'{ordinal(pos)} of {len(regular)} regular seat{"s" if len(regular) != 1 else ""}, {how}.'
+        chevron = symbol_view('chevron.right', 11, NSColor.tertiaryLabelColor(), NSFontWeightSemibold)
+        r = form_row('Fill order', sub, [secondary('Balancing', 12), chevron])
+        return clickable(r, lambda: self.app.show_pane('balancing'), 'Fill order: open Balancing')
 
     def confirm_reset(self, seat: mb.Seat):
         n = seat.resets
@@ -1543,6 +1719,222 @@ class SeatsPane(Pane):
                                       f'{seat.label} removed'), destructive=True)
 
 
+# -- Balancing --------------------------------------------------------------------------------------------
+
+MODES = (   # pool.balancing: (value, title, explanation)
+    ('priority', 'Your order', 'Uses the first seat until it runs out, then the next. Best for prompt caching.'),
+    ('reset', 'Soonest reset first', 'Uses the seat whose weekly quota resets soonest, so none of it goes to waste. '
+              'New threads follow; running threads stay on their seat.'),
+)
+
+
+def seat_key(seat: mb.Seat) -> str:
+    """What codexpool commands take for a seat: its file name (its label for an older status.json)."""
+    return seat.name or seat.label
+
+
+class BalancingPane(Pane):
+    """How the pool picks a seat (your order, or soonest reset first), the fill order, and the reserve."""
+    key, title, symbol, tint = 'balancing', 'Balancing', 'slider.horizontal.3', 'orange'
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.where = 'mode'        # the group that shows self.note: mode | order | reserve
+        self.pending = None        # a fill order (seat keys) set here that status.json doesn't show yet
+        self.want_mode = None      # the mode clicked here that status.json doesn't show yet
+        self.want_reserve = {}     # seat key -> the reserve checkbox clicked here that status.json doesn't show yet
+        self.commit_timer = None
+
+    def build(self):
+        m = self.store.model()
+        if not m.seats:
+            return [empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
+                                'Add your ChatGPT accounts first. Balancing decides which seat new threads go to.',
+                                [button('Add a ChatGPT Account…', lambda _: self.app.open_setup('setup-accounts'),
+                                        self.keep, primary=True)])]
+        mode = self.store.balancing()
+        if self.want_mode == mode:
+            self.want_mode = None
+        mode = self.want_mode or mode   # show the choice just made until status.json agrees
+        busy = bool(self.note and self.note[0] == 'busy')
+        return [self.mode_section(mode, busy), self.order_section(m, mode, busy), self.reserve_section(m, busy)]
+
+    def note_for(self, where: str):
+        return note_row(self.note_now()) if self.where == where else None
+
+    # -- how the pool picks a seat ---------------------------------------------------------------------
+    def mode_section(self, mode: str, busy: bool):
+        k = self.keep
+        rows = []
+        for value, title, text in MODES:
+            r = radio(title, mode == value, lambda _s, v=value: self.set_mode(v), k, enabled=not busy)
+            desc = secondary(text, 11, wrap=GROUP_W - 2 * ROW_X - 21)
+            rows.append(vstack([r, padded(desc, 0, 21, 0, 0)], spacing=2, full=False, insets=(10, ROW_X, 10, ROW_X)))
+        rows.append(self.note_for('mode'))
+        return section(group(rows), 'How the pool picks a seat')
+
+    def set_mode(self, value: str):
+        if value == (self.want_mode or self.store.balancing()):
+            self.app.rebuild(self)   # the radio clicked again: keep it on
+            return
+        self.where, self.pending, self.want_mode = 'mode', None, value
+        done = ('New threads now go to the seat that resets soonest' if value == 'reset' else
+                'New threads now follow your order')
+
+        def then(r: Result):
+            if r.ok:
+                self.store.poll(force=True)   # `set` rewrote status.json already
+            else:
+                self.forget_mode()
+
+        self.run(['set', 'balancing', value], 'Saving…', done, then=then, settled=self.forget_mode)
+
+    def forget_mode(self):
+        """The command failed, or the guard pass after it was read: status.json is the truth again."""
+        if self.want_mode is not None:
+            self.want_mode = None
+            self.app.rebuild(self)
+
+    # -- the fill order --------------------------------------------------------------------------------
+    def regular_order(self, m: mb.Model) -> list:
+        """The regular seats in fill order: status.json's, or the one set here that it doesn't show yet."""
+        regular = [s for s in m.seats if not s.reserve]
+        if self.pending:
+            rank = {key: i for i, key in enumerate(self.pending)}
+            regular.sort(key=lambda s: rank.get(seat_key(s), len(rank)))
+        return regular
+
+    def order_section(self, m: mb.Model, mode: str, busy: bool):
+        reset = mode == 'reset'
+        regular = self.regular_order(m)
+        rows = [self.order_row(i, s, m, len(regular), reset, busy) for i, s in enumerate(regular)]
+        rows += [self.reserve_order_row(s, m) for s in m.reserve_seats]
+        rows.append(self.note_for('order'))
+        if reset:
+            footer = ('Re-sorted every minute by weekly reset. Seats without usage data follow in your order, '
+                      'which comes back when you switch to “Your order”.')
+            right = secondary('Updates itself', 11)
+        else:
+            footer = ('New threads go to the first seat that has quota left. Threads already running stay on their '
+                      'seat until it runs out.')
+            right = secondary('First to last', 11)
+        return section(group(rows), 'Seat order', footer=footer, header_right=right)
+
+    def seat_left(self, seat: mb.Seat, m: mb.Model, badge):
+        dim = not m.reporting or seat.unavailable
+        left = [badge, label(seat.label, 13, NSFontWeightMedium, color=NSColor.secondaryLabelColor() if dim else None)]
+        if seat.plan:
+            left.append(plan_pill(seat.plan))
+        if seat.serving and m.serving_now:
+            left.append(pill('Serving', mb.C.red_text if seat.reserve else mb.C.green_text,
+                             (lambda: mb.C.soft(mb.C.red())) if seat.reserve else (lambda: mb.C.soft(mb.C.green()))))
+        elif seat.state not in (mb.READY, mb.SERVING):
+            text, fg, bg = state_style(seat, m)
+            left.append(pill(text, fg, bg) if bg is not None else label(text, 11, NSFontWeightMedium, color=fg()))
+        return left
+
+    def when_text(self, seat: mb.Seat, m: mb.Model) -> str:
+        """'56% left · resets in 6d 13h' (the window that wastes quota first: the week, else the 5 hours)."""
+        win = seat.week if seat.week and (seat.week.used is not None or seat.week.reset_at) else seat.short
+        if win is None or (win.used is None and win.reset_at is None):
+            return 'No usage data yet'
+        return window_line(m, seat, win, 'Week' if win is seat.week else '5h')
+
+    def order_row(self, i: int, seat: mb.Seat, m: mb.Model, n: int, reset: bool, busy: bool):
+        left = self.seat_left(seat, m, number_badge(i + 1, dim=seat.unavailable))
+        text = self.when_text(seat, m)
+        if reset and text == 'No usage data yet':
+            text = 'No usage data yet · kept in your order'
+        right = [secondary(text, 11)]
+        if not reset:
+            right.append(up_down(lambda d, i=i: self.move(i, d), self.keep, i > 0, i < n - 1, enabled=not busy,
+                                 what=seat.label))
+        return hstack(left, right, spacing=8, insets=(7, ROW_X, 7, ROW_X), min_h=40)
+
+    def reserve_order_row(self, seat: mb.Seat, m: mb.Model):
+        badge = symbol_view('arrow.down.to.line', 11, NSColor.tertiaryLabelColor(), NSFontWeightSemibold, box=20)
+        left = self.seat_left(seat, m, badge)
+        left.insert(3 if seat.plan else 2, pill('Reserve', mb.C.secondary, lambda: mb.C.wash(0.07)))
+        return hstack(left, [secondary('Last, when every other seat is out', 11)], spacing=8,
+                      insets=(7, ROW_X, 7, ROW_X), min_h=40)
+
+    def move(self, i: int, d: int):
+        m = self.store.model()
+        keys = [seat_key(s) for s in self.regular_order(m)]
+        j = i + d
+        if not 0 <= j < len(keys):
+            return
+        keys[i], keys[j] = keys[j], keys[i]
+        self.pending, self.where = keys, 'order'
+        if self.note and self.note[0] != 'busy':
+            self.note = None
+        self.app.rebuild(self)
+        if self.commit_timer is not None:   # a burst of clicks commits once
+            self.commit_timer.invalidate()
+        self.commit_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.9, target(lambda _t: self.commit_order(), self.keep), 'fire:', None, False)
+
+    def commit_order(self):
+        self.commit_timer = None
+        keys = self.pending
+        m = self.store.model()
+        if not keys or keys == [seat_key(s) for s in m.seats if not s.reserve]:
+            self.pending = None
+            self.app.rebuild(self)
+            return
+        first = next((s.label for s in m.seats if seat_key(s) == keys[0]), keys[0])
+        self.where = 'order'
+        self.say('busy', 'Saving the order…')
+
+        def finished(r: Result):
+            if r.ok:
+                self.say('ok', f'New threads now go to {first} first')
+                self.app.after_change(lambda: self.settled(keys))
+            else:
+                self.pending = None
+                self.say('error', r.message())
+        self.app.run(['order', *keys], finished)
+
+    def settled(self, keys: list):
+        """The guard pass after `codexpool order`: status.json has the order now."""
+        if self.pending == keys:
+            self.pending = None
+            self.app.rebuild(self)
+
+    # -- the reserve -----------------------------------------------------------------------------------
+    def reserve_section(self, m: mb.Model, busy: bool):
+        k = self.keep
+        rows = []
+        for seat in sorted(m.seats, key=lambda s: s.reserve):   # regular seats in fill order, then the reserve
+            left = [dot(seat_dot_color(seat, m), ring=seat.state == 'disabled' and m.reporting),
+                    label(seat.label, 13, NSFontWeightMedium)]
+            if seat.plan:
+                left.append(plan_pill(seat.plan))
+            key = seat_key(seat)
+            if self.want_reserve.get(key) == seat.reserve:
+                self.want_reserve.pop(key)
+            box = checkbox('Use last (reserve)', self.want_reserve.get(key, seat.reserve),
+                           lambda sender, s=seat: self.set_reserve(s, sender.state() == 1), k, enabled=not busy)
+            rows.append(hstack(left, [box], spacing=8, insets=(7, ROW_X, 7, ROW_X), min_h=38))
+        rows.append(self.note_for('reserve'))
+        return section(group(rows), 'Reserve',
+                       footer='The reserve is used only when every other seat is out; the menu bar turns red while '
+                              'it serves. Your biggest seat, such as a Pro 20× plan, makes a good reserve.')
+
+    def set_reserve(self, seat: mb.Seat, on: bool):
+        key = seat_key(seat)
+        self.where, self.pending = 'reserve', None
+        self.want_reserve[key] = on   # the checkbox shows the click until status.json agrees
+
+        def forget(_r=None):
+            if self.want_reserve.pop(key, None) is not None:
+                self.app.rebuild(self)
+
+        self.run(['reserve', key] + ([] if on else ['--off']), f'Updating {seat.label}…',
+                 f'{seat.label} is {"now the reserve: used last" if on else "a regular seat again"}',
+                 then=lambda r: None if r.ok else forget(), settled=forget)
+
+
 # -- Lanes ------------------------------------------------------------------------------------------------
 
 LANE_STATE = {   # member state from `lane list` -> (label, colour role)
@@ -1553,15 +1945,122 @@ LANE_STATE = {   # member state from `lane list` -> (label, colour role)
 }
 
 
+def state_pill(state: str):
+    text, role = LANE_STATE.get(state, (state.title() or 'Unknown', 'grey'))
+    fg = {'green': mb.C.green_text, 'orange': mb.C.orange_text, 'red': mb.C.red_text}.get(role, mb.C.secondary)
+    bg = {'green': lambda: mb.C.soft(mb.C.green()), 'orange': lambda: mb.C.soft(mb.C.orange()),
+          'red': lambda: mb.C.soft(mb.C.red())}.get(role, lambda: mb.C.wash(0.07))
+    return pill(text, fg, bg)
+
+
+def test_view(test: LaneTest | None, now: dt.datetime, never: str = 'Never tested', prefix: str = '',
+              short: bool = False, wrap: float | None = None):
+    """✓ Passed 2h ago / ✗ Failed: reason / – Never tested, for a member or a whole lane. short: a failure says
+    just Failed (the reason is in its tooltip and on the lane's own line)."""
+    if test is None:
+        icon, text, color = 'minus.circle', never, NSColor.secondaryLabelColor()
+    elif test.ok:
+        ago = mb.fmt_age((now - test.when).total_seconds()) if test.when else ''
+        icon, text, color = 'checkmark.circle.fill', f'{prefix}{"passed" if prefix else "Passed"} {ago}'.strip(), \
+            mb.C.green_text()
+    elif short:
+        icon, text, color = 'xmark.circle.fill', f'{prefix}{"failed" if prefix else "Failed"}', mb.C.red_text()
+    else:
+        icon, text, color = 'xmark.circle.fill', \
+            f'{prefix}{"failed" if prefix else "Failed"}: {test.reason or "see lane test"}', mb.C.red_text()
+    v = hstack([symbol_view(icon, 11, color, NSFontWeightMedium),
+                label(text, 11, color=NSColor.secondaryLabelColor() if test is None or prefix else None,
+                      wrap=wrap if test is not None and not test.ok else None)],
+               spacing=4, cluster=True)
+    if test is not None and not test.ok and test.reason:
+        v.setToolTip_(S(test.reason))
+    v.setContentCompressionResistancePriority_forOrientation_(751, 0)   # the model id gives way first, not this
+    return v
+
+
+@dataclass
+class Credential:
+    """A row in the Lanes pane's Credentials: a provider's sign-in or key, or a responses member's own key."""
+    title: str
+    needs: str                 # login | key
+    key_name: str | None       # for needs == key
+    ready: bool | None
+    uses: list                 # the lanes that need it
+    detail: str = ''
+    key_title: str = ''        # what the Add Key sheet calls the key ('' = title)
+
+
+CLI_HINT = re.compile(r'\s*\((?:codexpool|check the key)[^)]*\)|:\s*codexpool\s.*$')
+
+
+def plain_detail(text: str) -> str:
+    """A CLI detail without the terminal command it suggests, capitalised: 'the xAI credential is turned off:
+    codexpool enable x' -> 'The xAI credential is turned off' (the window has a button for it)."""
+    d = CLI_HINT.sub('', text or '').strip().rstrip(':;,').strip()
+    return d[:1].upper() + d[1:]
+
+
+def infer_ready(pid: str, lanes: list) -> bool | None:
+    """Whether a provider is signed in / has its key, from its members' states in `lane list` (for a codexpool
+    without `lane providers`)."""
+    states = {m.state for lane in lanes for m in lane.members if m.provider == pid}
+    if not states:
+        return None
+    if pid == 'xai':
+        if states & {'ready', 'active', 'cooldown', 'exhausted'}:
+            return True
+        return False if states & {'missing', 'blocked', 'disabled'} else None
+    return False if 'no key' in states else True
+
+
+def credentials(store: Store) -> list:
+    lanes = store.lanes or []
+    used: dict = {}
+    for lane in lanes:
+        for mem in lane.members:
+            names = used.setdefault(mem.provider, [])
+            if lane.name not in names:
+                names.append(lane.name)
+    out = []
+    for p in store.provider_list():
+        if p.id == 'responses':
+            continue
+        uses = used.get(p.id, [])
+        ready = p.ready if p.ready is not None else infer_ready(p.id, lanes)
+        if ready or uses:
+            out.append(Credential(p.title, 'login' if p.needs == 'login' else 'key', p.key_name, ready, uses,
+                                  p.detail))
+    title = store.provider('responses').title
+    for lane in lanes:
+        for mem in lane.members:
+            if mem.provider == 'responses':
+                out.append(Credential(f'{mem.name} ({title})', 'key', f'{lane.name}-{mem.id}',
+                                      mem.state != 'no key' if mem.state != 'unknown' else None,
+                                      [lane.name], key_title=mem.name))
+    return out
+
+
 class LanesPane(Pane):
     key, title, symbol, tint = 'lanes', 'Lanes', 'arrow.triangle.branch', 'purple'
 
+    def __init__(self, app):
+        super().__init__(app)
+        self.where = 'apply'       # the group that shows self.note: apply | credentials
+
     def shown(self):
-        if not SNAPSHOT and self.store.lanes is None and not self.store.lanes_busy:
+        if SNAPSHOT:
+            return
+        if self.store.lanes is None and not self.store.lanes_busy:
             self.store.fetch_lanes()
+        if self.store.providers is None:
+            self.store.fetch_providers()
+
+    def busy(self) -> bool:
+        return bool(self.note and self.note[0] == 'busy')
 
     def build(self):
         st, k = self.store, self.keep
+        busy = self.busy()
         docs = button('Open Docs', lambda _: open_thing(LANES_DOCS_URL), k)
         if st.lanes is None:
             if st.lanes_busy:
@@ -1575,61 +2074,115 @@ class LanesPane(Pane):
                                 'A lane hands token-heavy work, like sweeps, bulk edits and second opinions, to a '
                                 'model from another provider, as a native Codex subagent. Its tokens count against '
                                 'that provider, not your seats. Lanes are optional.',
-                                [button('Read About Lanes', lambda _: open_thing(LANES_DOCS_URL), k)])]
-        out = [padded(secondary('Lanes hand token-heavy work to a model from another provider, as a native Codex '
-                                'subagent. The pool serves each lane from its members in order.', 12,
-                                wrap=GROUP_W - 8), 0, 4, 0, 4)]
-        for lane in st.lanes:
-            out.append(self.lane_section(lane))
+                                [button('New Lane…', lambda _: self.app.edit_lane(None), k, primary=True),
+                                 button('Read About Lanes', lambda _: open_thing(LANES_DOCS_URL), k)])]
+        new = button('New Lane…', lambda _: self.app.edit_lane(None), k, enabled=not busy)
+        intro = hstack([secondary('Lanes hand token-heavy work to models from other providers, as native Codex '
+                                  'subagents. The pool serves each lane from its members in order.', 12,
+                                  wrap=GROUP_W - new.fittingSize().width - 24)], [new], spacing=12,
+                       insets=(0, 4, 0, 0))
+        out = [intro] + [self.lane_card(lane, busy) for lane in st.lanes]
         apply_row = form_row('Apply lanes', 'Regenerates the lane config and Codex role files from lanes.json.',
-                             button('Apply…', lambda _: self.confirm_apply(), k,
-                                    enabled=not (self.note and self.note[0] == 'busy')))
+                             button('Apply…', lambda _: self.confirm_apply(), k, enabled=not busy))
         rows = [apply_row, form_row('Documentation', 'How lanes work, providers, and lanes.json.', docs)]
-        note = note_row(self.note_now())
-        if note is not None:
-            rows.append(note)
+        if self.where == 'apply':
+            rows.append(note_row(self.note_now()))
         out.append(section(group(rows)))
+        out.append(self.credentials_section(busy))
         return out
 
-    def lane_section(self, lane: Lane):
+    def lane_card(self, lane: Lane, busy: bool):
         k = self.keep
+        picker = lane.display or default_display(lane.name)
+        sub = ' · '.join(x for x in (f'“{picker}” in the model picker', f'effort {lane.effort}' if lane.effort else '')
+                         if x)
+        title = hstack([label(lane.name, 13, NSFontWeightSemibold), secondary(sub, 11)], spacing=8, cluster=True)
+        delete = button('Delete…', lambda _: self.confirm_delete(lane), k, small=True, enabled=not busy)
+        actions = [button('Test…', lambda _: self.confirm_test(lane), k, small=True, enabled=not busy),
+                   button('Edit…', lambda _: self.app.edit_lane(lane), k, small=True, enabled=not busy)]
+        head = hstack([title], [delete] + actions, spacing=6, insets=(0, 4, 0, 2))
+        head.setCustomSpacing_afterView_(18, delete)   # the destructive one stands apart from the everyday ones
         rows = []
         if lane.role:
             rows.append(padded(secondary(lane.role, 12, wrap=GROUP_W - 2 * ROW_X), 11, ROW_X, 11, ROW_X))
         for i, mem in enumerate(lane.members, 1):
             rows.append(self.member_row(i, mem))
-        title = hstack([label(lane.name, 13, NSFontWeightSemibold),
-                        secondary(f'effort {lane.effort}' if lane.effort else '', 11)], spacing=8, cluster=True)
-        test = button('Test…', lambda _: self.confirm_test(lane), k, small=True)
-        head = hstack([title], [test], insets=(0, 4, 0, 2))
+        rows.append(hstack([test_view(lane.test, self.store.clock(), 'The lane as a whole hasn’t been tested yet',
+                                      prefix='Lane test ', wrap=GROUP_W - 2 * ROW_X - 20)],   # the full reason
+                           insets=(8, ROW_X, 9, ROW_X), min_h=32))
         return vstack([head, group(rows)], spacing=7)
 
     def member_row(self, i: int, mem: Member):
-        now = self.store.clock()
-        text, role = LANE_STATE.get(mem.state, (mem.state.title() or 'Unknown', 'grey'))
-        fg = {'green': mb.C.green_text, 'orange': mb.C.orange_text, 'red': mb.C.red_text}.get(role, mb.C.secondary)
-        bg = {'green': lambda: mb.C.soft(mb.C.green()), 'orange': lambda: mb.C.soft(mb.C.orange()),
-              'red': lambda: mb.C.soft(mb.C.red())}.get(role, lambda: mb.C.wash(0.07))
-        num = canvas(lambda w, h: (mb.fill_circle(w / 2, h / 2, 9, mb.C.wash(0.08)),
-                                   mb.draw_text(str(i), 0, (h - mb.line_height(mb.font(11, NSFontWeightSemibold))) / 2,
-                                                mb.font(11, NSFontWeightSemibold), mb.C.secondary(), width=w,
-                                                align='center')), 20, 20)
         names = vstack([label(mem.name, 13, NSFontWeightMedium),
-                        secondary(f'{mem.provider} · {mem.model}', 11)], spacing=2, full=False)
-        if mem.test is None:
-            test_icon, test_text, tc = 'minus.circle', 'Never tested', NSColor.secondaryLabelColor()
-        elif mem.test.ok:
-            ago = mb.fmt_age((now - mem.test.when).total_seconds()) if mem.test.when else ''
-            test_icon, test_text, tc = 'checkmark.circle.fill', f'Passed {ago}'.strip(), mb.C.green_text()
-        else:
-            test_icon, test_text, tc = 'xmark.circle.fill', f'Failed: {mem.test.reason or "see lane test"}', \
-                mb.C.red_text()
-        test = hstack([symbol_view(test_icon, 11, tc, NSFontWeightMedium),
-                       label(test_text, 11, color=NSColor.secondaryLabelColor() if mem.test is None else None)],
-                      spacing=4, cluster=True)
-        if mem.test and not mem.test.ok and mem.test.reason:
-            test.setToolTip_(S(mem.test.reason))
-        return hstack([num, names], [test, pill(text, fg, bg)], spacing=10, insets=(9, ROW_X, 9, ROW_X), min_h=48)
+                        secondary(f'{self.store.provider(mem.provider).title} · {mem.model}', 11)], spacing=2,
+                       full=False)
+        return hstack([number_badge(i), names], [test_view(mem.test, self.store.clock(), short=True),
+                                                 state_pill(mem.state)],
+                      spacing=10, insets=(9, ROW_X, 9, ROW_X), min_h=48)
+
+    # -- credentials -----------------------------------------------------------------------------------
+    def credentials_section(self, busy: bool):
+        k = self.keep
+        rows = []
+        for c in credentials(self.store):
+            if c.needs == 'login':
+                state = {True: 'Signed in', False: 'Not signed in', None: 'Not checked yet'}[c.ready]
+                act = button('Sign In Again…' if c.ready else 'Sign In…',
+                             lambda _: self.app.sign_in_xai(done=self.signed_in), k, enabled=not busy)
+            else:
+                state = {True: 'Key saved', False: 'No key yet', None: 'Not checked yet'}[c.ready]
+                act = button('Replace Key…' if c.ready else 'Add Key…',
+                             lambda _, c=c: self.app.add_key(c.key_name, c.key_title or c.title,
+                                                             replace=bool(c.ready), done=self.key_saved), k,
+                             enabled=not busy and bool(c.key_name))
+            uses = f'used by {", ".join(c.uses)}' if c.uses else 'not used by a lane yet'
+            sub = f'{state} · {uses}'
+            if c.ready is False and c.needs == 'login' and c.detail and not c.detail.startswith('not signed in') and \
+                    plain_detail(c.detail):
+                sub = f'{plain_detail(c.detail)} · {uses}'
+            color = (mb.C.green if c.ready else mb.C.orange if c.uses else mb.C.grey) if c.ready is not None else \
+                mb.C.grey
+            rows.append(form_row(c.title, sub, act, leading=dot(color)))
+        if not rows:
+            rows.append(hstack([secondary('No provider is signed in or has a key yet.', 12)],
+                               insets=(12, ROW_X, 12, ROW_X), min_h=40))
+        if self.where == 'credentials':
+            rows.append(note_row(self.note_now()))
+        return section(group(rows), 'Credentials',
+                       footer='They stay on this Mac, readable only by you. codexpool never shows a key.')
+
+    def signed_in(self, ok: bool):
+        if ok:
+            self.where = 'credentials'
+            self.say('ok', 'Signed in to xAI')
+            self.store.fetch_providers()
+            self.store.fetch_lanes()
+
+    def key_saved(self, title: str):
+        self.where = 'credentials'
+        self.say('ok', f'Saved the {title} key. Apply lanes so the bridge reads it.')
+        self.store.fetch_providers()
+        self.store.fetch_lanes()
+
+    # -- lane actions ----------------------------------------------------------------------------------
+    def lane_saved(self, name: str, new: bool):
+        self.where = 'apply'
+        self.say('ok', f'{"Added" if new else "Saved"} the {name} lane and applied it. Start a new Codex thread to '
+                       'use it.')
+        self.store.fetch_lanes()
+        self.store.fetch_providers()
+
+    def confirm_delete(self, lane: Lane):
+        self.app.ask(f'Delete the {lane.name} lane?',
+                     'codexpool takes it out of lanes.json and removes everything generated for it: its lines in the '
+                     'pool config and the bridge, its Codex role file and its part of ~/.codex/AGENTS.md. Sign-ins and '
+                     'keys stay.', 'Delete',
+                     lambda: self.delete(lane), destructive=True)
+
+    def delete(self, lane: Lane):
+        self.where = 'apply'
+        self.run(['lane', 'remove', lane.name], f'Deleting {lane.name}…', f'Deleted the {lane.name} lane',
+                 then=lambda r: self.store.fetch_lanes())
 
     def confirm_test(self, lane: Lane):
         self.app.ask(f'Test the {lane.name} lane?',
@@ -1642,8 +2195,11 @@ class LanesPane(Pane):
         self.app.ask('Apply lanes?',
                      'codexpool writes the lanes block in the pool config, the bridge config, the Codex role files in '
                      '~/.codex/agents and the lanes block in ~/.codex/AGENTS.md from lanes.json.', 'Apply',
-                     lambda: self.run(['lane', 'apply'], 'Applying lanes…', 'Lanes applied',
-                                      then=lambda r: self.store.fetch_lanes()))
+                     lambda: self.apply())
+
+    def apply(self):
+        self.where = 'apply'
+        self.run(['lane', 'apply'], 'Applying lanes…', 'Lanes applied', then=lambda r: self.store.fetch_lanes())
 
 
 # -- General ----------------------------------------------------------------------------------------------
@@ -1878,7 +2434,7 @@ def clickable(view, fn, ax_title: str = ''):
     return v
 
 
-PANE_CLASSES = (OverviewPane, SeatsPane, LanesPane, GeneralPane, HealthPane, AboutPane)
+PANE_CLASSES = (OverviewPane, SeatsPane, BalancingPane, LanesPane, GeneralPane, HealthPane, AboutPane)
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -2024,7 +2580,7 @@ def sidebar_status(m: mb.Model):
 class SettingsView:
     """Builds and updates the Settings window."""
 
-    GROUPS = (('overview', 'seats', 'lanes'), ('general', 'health', 'about'))
+    GROUPS = (('overview', 'seats', 'balancing', 'lanes'), ('general', 'health', 'about'))
 
     def __init__(self, app, panes: dict, height: float = WIN_H):
         self.app = app
@@ -2120,7 +2676,846 @@ class SettingsView:
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
-# 8. Setup assistant: Welcome (checklist) → Add accounts (sign-in links) → Done
+# 8. Sheets on the Settings window: the lane editor, Add Model, Add Key, the xAI sign-in
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+SHEET_PAD = 20.0
+SHEET_RADIUS = 12.0            # snapshots: the corners of a sheet drawn over the window
+
+
+def make_sheet(w: float):
+    """A window to show as a sheet (drawn as the key window in snapshots, like the Settings window)."""
+    cls = KeyLookWindow if SNAPSHOT else NSWindow
+    origin = (-20000, -20000) if SNAPSHOT else (0, 0)
+    win = cls.alloc().initWithContentRect_styleMask_backing_defer_((origin, (w, 200)), NSWindowStyleMaskTitled,
+                                                                   NSBackingStoreBuffered, False)
+    win.setReleasedWhenClosed_(False)
+    win.setContentView_(FlippedView.alloc().initWithFrame_(((0, 0), (w, 200))))
+    return win
+
+
+def cancel_button(fn, keep: list, enabled: bool = True):
+    b = button('Cancel', fn, keep, enabled=enabled)
+    b.setKeyEquivalent_('\x1b')   # Escape
+    return b
+
+
+def popup(titles, selected: int, fn, keep: list, width: float = 140.0):
+    p = auto(NSPopUpButton.alloc().initWithFrame_pullsDown_(((0, 0), (width, 26)), False))
+    p.addItemsWithTitles_([S(t) for t in titles])
+    p.selectItemAtIndex_(selected)
+    p.setTarget_(target(fn, keep))
+    p.setAction_('fire:')
+    fix(p, width)
+    return p
+
+
+class Sheet:
+    """A sheet: a title, sections built by build(), and a row of buttons, rebuilt by render(). It hangs on the
+    Settings window, or on another sheet (parent). harvest() reads what was typed before a rebuild."""
+    width = 460.0
+
+    def __init__(self, app, parent: Sheet | None = None):
+        self.app = app
+        self.parent = parent
+        self.keep: list = []
+        self.body = None
+        self.open = False
+        self.child: Sheet | None = None
+        self.win = make_sheet(self.width)
+
+    @property
+    def inner(self) -> float:
+        return self.width - 2 * SHEET_PAD
+
+    def host(self):
+        return self.parent.win if self.parent is not None else self.app.ensure_view().win
+
+    def heading(self) -> tuple:
+        return '', None
+
+    def build(self) -> list:
+        return []
+
+    def buttons(self) -> tuple:
+        return [], []
+
+    def harvest(self):
+        """Reads what the user typed into the controls, before they are rebuilt."""
+
+    def ended(self):
+        """The sheet closed: stop whatever it started (a sign-in)."""
+
+    def render(self):
+        self.harvest()
+        self.keep = []
+        root = self.win.contentView()
+        if self.body is not None:
+            self.body.removeFromSuperview()
+        title, sub = self.heading()
+        head = [label(title, 15, NSFontWeightSemibold)] + ([secondary(sub, 11, wrap=self.inner)] if sub else [])
+        left, right = self.buttons()
+        parts = [vstack(head, spacing=3, full=False)] + [v for v in self.build() if v is not None] + \
+            [hstack(left, right, spacing=10, insets=(4, 0, 0, 0), min_h=28)]
+        body = vstack(parts, spacing=16, insets=(SHEET_PAD, SHEET_PAD, 18, SHEET_PAD))
+        root.addSubview_(body)
+        activate(body.topAnchor().constraintEqualToAnchor_(root.topAnchor()),
+                 body.leadingAnchor().constraintEqualToAnchor_(root.leadingAnchor()),
+                 body.widthAnchor().constraintEqualToConstant_(self.width))
+        self.body = body
+        body.layoutSubtreeIfNeeded()
+        h = math.ceil(body.fittingSize().height)
+        content = self.win.contentRectForFrameRect_(self.win.frame())
+        if abs(content.size.height - h) > 0.5:   # grow or shrink with the top edge where it is
+            top = content.origin.y + content.size.height
+            frame = self.win.frameRectForContentRect_(((content.origin.x, top - h), (self.width, h)))
+            self.win.setFrame_display_animate_(frame, True, self.open and not SNAPSHOT)
+        root.layoutSubtreeIfNeeded()
+
+    def present(self):
+        self.render()
+        self.open = True
+        if not SNAPSHOT:
+            self.host().beginSheet_completionHandler_(self.win, None)
+
+    def close(self):
+        if self.child is not None:
+            self.child.close()
+        if not self.open:
+            return
+        self.open = False
+        self.ended()
+        self.host().endSheet_(self.win)
+        self.win.orderOut_(None)
+        if self.parent is not None and self.parent.child is self:
+            self.parent.child = None
+        self.app.sheet_closed(self)
+
+
+# -- the lane editor -----------------------------------------------------------------------------------
+
+@dataclass(eq=False)
+class Draft:
+    """A member in the lane editor: one of the lane's (id set) or one added in this edit (id '')."""
+    id: str
+    provider: str
+    model: str
+    name: str = ''             # its display name; '' = the model id
+    state: str = ''            # from lane list, for the lane's own members
+    base_url: str = ''         # a responses member's endpoint
+
+    def spec(self) -> str:
+        return f'{self.provider}:{self.model}' + (f':{self.name}' if self.name else '')
+
+
+def lane_args(lane: Lane | None, name: str, display: str, effort: str, role: str, members: list) -> list | None:
+    """The one codexpool command that saves the lane editor: `lane add` for a new lane, else `lane edit` with the
+    changes (None when nothing changed). lane edit applies its flags in the order given: the removals first, then the
+    additions (they go to the end, so they are added in the order the list has them), then the moves, from the last
+    place to the first, which puts every member where the list has it."""
+    url = next((d.base_url for d in members if d.provider == 'responses' and not d.id and d.base_url), '')
+    role = ' '.join(role.split())
+    if lane is None:
+        args = ['lane', 'add', name]
+        for d in members:
+            args.append(f'--member={d.spec()}')
+        args += ['--effort', effort]
+        if role:
+            args.append(f'--role={role}')          # the = form: a text that starts with - stays a value
+        if display:
+            args.append(f'--display={display}')
+        return args + ([f'--base-url={url}'] if url else [])
+    ops = []
+    if role and role != ' '.join(lane.role.split()):
+        ops.append(f'--role={role}')
+    if effort != lane.effort:
+        ops += ['--effort', effort]
+    shown = lane.display if lane.display and lane.display != default_display(lane.name) else ''
+    if display != shown:
+        ops.append(f'--display={display}' if display else '--no-display')
+    keep = {d.id for d in members if d.id}
+    order = []   # the lane's members as lane edit will have them after each step: ids, and Drafts for new ones
+    for m in lane.members:
+        if m.id in keep:
+            order.append(m.id)
+        else:
+            ops += ['--remove-member', m.id]
+    for d in members:
+        if not d.id:
+            ops.append(f'--add-member={d.spec()}')
+            order.append(d)
+    want = [d.id or d for d in members]
+    for pos in range(len(want), 0, -1):
+        item = want[pos - 1]
+        if isinstance(item, str) and order.index(item) != pos - 1:
+            order.remove(item)
+            order.insert(pos - 1, item)
+            ops += ['--move-member', item, '--to', str(pos)]
+    if not ops:
+        return None
+    return ['lane', 'edit', lane.name] + ops + ([f'--base-url={url}'] if url else [])
+
+
+class LaneEditor(Sheet):
+    """New Lane… and Edit…: the lane's name (new lanes), picker label, effort, role and members. Save runs one
+    `codexpool lane add` or `lane edit`, which also applies the lanes."""
+    width = SHEET_W
+
+    def __init__(self, app, lane: Lane | None, on_saved):
+        super().__init__(app)
+        self.lane, self.new, self.on_saved = lane, lane is None, on_saved
+        self.name = ''
+        self.display = '' if lane is None or not lane.display or lane.display == default_display(lane.name) else \
+            lane.display
+        self.effort = lane.effort if lane is not None and lane.effort in EFFORTS else 'xhigh'
+        self.role = lane.role if lane is not None else ''
+        self.members = [Draft(m.id, m.provider, m.model, '' if m.name == m.model else m.name, m.state)
+                        for m in (lane.members if lane is not None else [])]
+        self.problem = ''          # why Save didn't go ahead
+        self.output = ''           # ... and what the command printed
+        self.missing_keys: list = []   # the API keys lane apply asked for, each with an Add Key… here
+        self.job = None
+        self.fields: dict = {}
+
+    def harvest(self):
+        f = self.fields
+        if 'name' in f:
+            self.name = str(f['name'].stringValue()).strip()
+        if 'display' in f:
+            self.display = str(f['display'].stringValue()).strip()
+        if 'role' in f:
+            self.role = str(f['role'].string())
+        if 'effort' in f:
+            self.effort = EFFORTS[max(0, f['effort'].indexOfSelectedItem())]
+
+    def heading(self):
+        if self.new:
+            return 'New Lane', 'Codex spawns a lane as a subagent, and the pool serves it from its models in order.'
+        return f'Edit “{self.lane.name}”', 'Saving updates the lane in Codex; new threads use it.'
+
+    def build(self):
+        k, W = self.keep, self.inner
+        busy = self.job is not None
+        self.fields = {}
+        rows = []
+        if self.new:
+            f = self.fields['name'] = text_field(self.name, 220, 'e.g. review')
+            rows.append(form_row('Name', 'Lowercase letters, digits and -.', f, width=W))
+        base = self.name if self.new else self.lane.name
+        disp = self.fields['display'] = text_field(self.display, 220, default_display(base) if base else 'Review')
+        rows.append(form_row('Picker label', 'Its name in the Codex model picker.', disp, width=W))
+        eff = self.fields['effort'] = popup(EFFORTS, EFFORTS.index(self.effort), lambda _s: None, k, width=110)
+        rows.append(form_row('Effort', 'How hard the lane’s models think.', eff, width=W))
+        role, self.fields['role'] = role_field(self.role, W - 2 * ROW_X)
+        rows.append(vstack([row_text('Role', 'What the lane is for. The main agent reads it to decide when to use the '
+                                             'lane.', W - 2 * ROW_X), role], spacing=8, full=False,
+                           insets=(8, ROW_X, 12, ROW_X)))
+        for key, c in self.fields.items():
+            if key == 'role':
+                c.setEditable_(not busy)
+                c.setSelectable_(not busy)
+            else:
+                c.setEnabled_(not busy)
+        out = [group(rows, W)]
+        members = [self.member_row(i, d, busy) for i, d in enumerate(self.members)]
+        if not members:
+            members.append(hstack([secondary('No models yet. Add at least one.', 12)],
+                                  insets=(12, ROW_X, 12, ROW_X), min_h=40))
+        add = button('Add Model…', lambda _: self.add_model(), k, enabled=not busy)
+        members.append(hstack([secondary('The pool serves the lane from the first member that is available.', 11,
+                                         wrap=W - 2 * ROW_X - add.fittingSize().width - 16)], [add],
+                              insets=(8, ROW_X, 8, ROW_X - 2), min_h=40))
+        out.append(section(group(members, W), 'Members', header_right=secondary('In fallback order', 11), width=W))
+        if self.problem:
+            out.append(self.problem_box(W))
+        return out
+
+    def member_row(self, i: int, d: Draft, busy: bool):
+        k = self.keep
+        title = d.name or d.model
+        names = vstack([label(title, 13, NSFontWeightMedium),
+                        secondary(f'{self.app.store.provider(d.provider).title} · {d.model}', 11)],
+                       spacing=2, full=False)
+        right = [state_pill(d.state) if d.state else pill('New', mb.C.blue_text,
+                                                          lambda: mb.C.soft(NSColor.systemBlueColor()))]
+        right.append(up_down(lambda step, i=i: self.move(i, step), k, i > 0, i < len(self.members) - 1,
+                             enabled=not busy, what=title))
+        right.append(icon_button('minus', lambda _, i=i: self.remove(i), k, f'Remove {title}', enabled=not busy))
+        return hstack([number_badge(i + 1), names], right, spacing=8, insets=(8, ROW_X, 8, ROW_X), min_h=46)
+
+    def problem_box(self, W: float):
+        rows = [note_row(('error', self.problem), W)]
+        busy = self.job is not None
+        for key in self.missing_keys:
+            title = self.key_title(key)
+            rows.append(form_row(f'{title} key', 'It stays on this Mac and is never shown.',
+                                 button('Add Key…', lambda _, key=key, title=title: self.app.add_key(
+                                     key, title, parent=self, done=lambda _t, key=key: self.key_added(key)),
+                                     self.keep, enabled=not busy), width=W))
+        if self.output:
+            rows.append(padded(label(self.output, 11, color=NSColor.secondaryLabelColor(), mono=True,
+                                     wrap=W - 2 * ROW_X - 30, select=True), 0, ROW_X + 30, 10, ROW_X))
+        return group(rows, W, rules=False)
+
+    def key_title(self, key: str) -> str:
+        """What the Add Key sheet calls a key lane apply asked for: a provider's, or a new responses member's."""
+        p = next((q for q in self.app.store.provider_list() if q.key_name == key), None)
+        if p is not None:
+            return p.title
+        d = next((d for d in self.members if d.provider == 'responses' and not d.id), None)
+        if d is not None:
+            host = re.sub(r'^https://([^/:]+).*$', r'\1', d.base_url)
+            return d.name or host or d.model
+        return key
+
+    def key_added(self, key: str):
+        """A key lane apply asked for is saved: save again once none is missing (nothing was changed before)."""
+        if key in self.missing_keys:
+            self.missing_keys.remove(key)
+        self.app.store.fetch_providers()
+        if not self.missing_keys:
+            self.save()
+        else:
+            self.render()
+
+    def buttons(self):
+        k = self.keep
+        busy = self.job is not None
+        left = [hstack([spinner(), secondary('Saving and applying…', 11)], spacing=6, cluster=True)] if busy else []
+        save = button('Add Lane' if self.new else 'Save', lambda _: self.save(), k, primary=True,
+                      enabled=not busy and bool(self.members))
+        return left, [cancel_button(lambda _: self.close(), k, enabled=not busy), save]
+
+    def move(self, i: int, step: int):
+        j = i + step
+        if 0 <= j < len(self.members):
+            self.members[i], self.members[j] = self.members[j], self.members[i]
+            self.render()
+
+    def remove(self, i: int):
+        del self.members[i]
+        self.render()
+
+    def add_model(self):
+        self.harvest()
+        self.app.present_sheet(AddModelSheet(self.app, self, any(d.provider == 'xai' for d in self.members),
+                                             self.added), self)
+
+    def added(self, d: Draft):
+        self.members.append(d)
+        self.problem = self.output = ''
+        self.render()
+
+    def check(self) -> str:
+        if self.new:
+            if not self.name:
+                return 'Give the lane a name, e.g. review.'
+            if not LANE_NAME_OK.match(self.name) or self.name == 'default':
+                return ('A lane name is lowercase letters, digits and -, starts with a letter and has at most 31 '
+                        'characters.')
+            if any(lane.name == self.name for lane in (self.app.store.lanes or [])):
+                return f'There is already a lane called {self.name}.'
+        if len(self.display) > DISPLAY_MAX:
+            return f'The picker label has {len(self.display)} characters; the picker shows at most {DISPLAY_MAX}.'
+        if not self.new and not self.role.strip():
+            return 'Say what the lane is for: the main agent reads the role to decide when to use it.'
+        if not self.members:
+            return 'Add at least one model.'
+        if len({d.base_url for d in self.members if d.provider == 'responses' and not d.id}) > 1:
+            return 'Add one Responses endpoint at a time: save the lane, then add the next one.'
+        if sum(d.provider == 'xai' for d in self.members) > 1:
+            return 'A lane can have one xAI member: the pool has one xAI sign-in to fall back from.'
+        return ''
+
+    def save(self):
+        self.harvest()
+        problem = self.check()
+        if problem:
+            self.problem, self.output, self.missing_keys = problem, '', []
+            self.render()
+            return
+        args = lane_args(self.lane, self.name, self.display, self.effort, self.role, self.members)
+        if args is None:   # nothing changed
+            self.close()
+            return
+        self.problem = self.output = ''
+        self.missing_keys = []
+        name = self.name if self.new else self.lane.name
+
+        def done(r: Result):
+            self.job = None
+            if r.ok:
+                self.close()
+                self.on_saved(name, self.new)
+                return
+            if r.unknown:
+                self.problem, self.output = NEWER, ''
+            else:
+                text = r.err.strip() or r.out
+                missing = list(dict.fromkeys(re.findall(r'no API key for ([a-z0-9][a-z0-9-]{0,63})', text)))
+                if missing:   # lane apply stopped before changing anything: add the keys here, then it saves
+                    self.missing_keys = missing
+                    self.problem = ('Add the API key it needs, then the lane is saved.' if len(missing) == 1 else
+                                    'Add the API keys it needs, then the lane is saved.')
+                    self.output = ''
+                else:
+                    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                    lines = [ln[len('codexpool: '):] if ln.startswith('codexpool: ') else ln for ln in lines]
+                    self.problem = 'Couldn’t save the lane.'
+                    self.output = '\n'.join(lines[-8:])
+            self.render()
+        self.job = Job(args, done)
+        self.render()
+
+
+ROLE_MIN_H, ROLE_MAX_H = 58.0, 150.0
+ROLE_INSET = (4.0, 5.0)   # the text view's container inset (x, y)
+
+
+def role_field(text: str, width: float):
+    """A lane's role: a wrapping text view in a rounded box, as tall as its text (58 to 150 pt), scrolling past
+    that. Return and Tab end editing, like a field (a role is one paragraph: role_text flattens line breaks).
+    Returns (box, text view); read it with textView.string()."""
+    font = mb.font(12)
+    tv_w = width - 2
+    scroll = NSTextView.scrollableTextView()
+    scroll.setBorderType_(NSNoBorder)
+    scroll.setDrawsBackground_(False)
+    scroll.setAutohidesScrollers_(True)
+    scroll.setHasHorizontalScroller_(False)
+    tv = scroll.documentView()
+    tv.setRichText_(False)
+    tv.setImportsGraphics_(False)
+    tv.setAllowsUndo_(True)
+    tv.setFieldEditor_(True)
+    tv.setFont_(font)
+    tv.setTextColor_(NSColor.labelColor())
+    tv.setDrawsBackground_(False)
+    tv.setTextContainerInset_(ROLE_INSET)
+    tv.setString_(S(text))
+    try:   # NSTextView's placeholder (a documented property since macOS 10.x, set through KVC)
+        tv.setValue_forKey_(NSAttributedString.alloc().initWithString_attributes_(
+            S('What the lane is for, e.g. codebase sweeps, bulk edits and second opinions'),
+            {NSFontAttributeName: font, NSForegroundColorAttributeName: NSColor.placeholderTextColor()}),
+            'placeholderAttributedString')
+    except Exception:  # noqa: BLE001 - only the hint is lost
+        pass
+    pad = tv.textContainer().lineFragmentPadding()
+    need = NSAttributedString.alloc().initWithString_attributes_(S(text or ' '), {NSFontAttributeName: font}) \
+        .boundingRectWithSize_options_((tv_w - 2 * ROLE_INSET[0] - 2 * pad, 1e4),
+                                       NSStringDrawingUsesLineFragmentOrigin).size.height
+    h = max(ROLE_MIN_H, min(math.ceil(need) + 2 * ROLE_INSET[1] + 4, ROLE_MAX_H))
+    box = auto(NSBox.alloc().initWithFrame_(((0, 0), (width, h))))
+    box.setBoxType_(4)          # NSBoxCustom: drawn with the colours below, which follow light and dark
+    box.setTitlePosition_(0)    # NSNoTitle
+    box.setBorderColor_(NSColor.separatorColor())
+    box.setFillColor_(NSColor.textBackgroundColor())
+    box.setBorderWidth_(1.0)
+    box.setCornerRadius_(6.0)
+    box.setContentViewMargins_((0, 0))
+    scroll.setFrame_(((0, 0), (width - 2, h - 2)))
+    box.setContentView_(scroll)
+    fix(box, width, h)
+    return box, tv
+
+
+# -- Add Model -----------------------------------------------------------------------------------------
+
+class AddModelSheet(Sheet):
+    """A provider, a model (listed by `codexpool lane models`, or typed), a display name; a provider that isn't ready
+    gets its Sign In or Add Key right here."""
+    width = 520.0
+
+    def __init__(self, app, parent: Sheet, has_xai: bool, on_add, provider: str | None = None):
+        super().__init__(app, parent)
+        self.has_xai, self.on_add = has_xai, on_add
+        usable = [p for p in app.store.provider_list() if not (p.id == 'xai' and has_xai)]
+        first = next((p for p in usable if p.ready), usable[0] if usable else app.store.provider_list()[0])
+        self.provider = provider or first.id
+        self.model = self.name = self.auto_name = self.base_url = ''
+        self.models: list | None = None
+        self.models_note = ''
+        self.loading = False
+        self.problem = ''
+        self.fields: dict = {}
+        self.load_models()
+
+    def harvest(self):
+        f = self.fields
+        for key in ('model', 'name', 'base_url'):
+            if key in f:
+                setattr(self, key, str(f[key].stringValue()).strip())
+
+    def load_models(self):
+        pid = self.provider
+        p = self.app.store.provider(pid)
+        self.models, self.models_note, self.loading = self.app.store.models.get(pid), '', False
+        if self.models is not None or pid == 'responses' or (p.needs == 'key' and p.ready is False):
+            return   # listed already; typed by hand; or it needs its key before it can list anything
+        self.loading = True
+
+        def done(models, note):
+            if pid != self.provider:
+                return
+            self.loading, self.models, self.models_note = False, models, note
+            if self.open:
+                self.render()
+        self.app.store.fetch_models(pid, done)
+
+    def heading(self):
+        return 'Add a Model', 'It joins the lane last; move it up in the list afterwards.'
+
+    def build(self):
+        k, W = self.keep, self.inner
+        st = self.app.store
+        p = st.provider(self.provider)
+        provs = st.provider_list()
+        self.fields = {}
+        pop = popup([q.title + (' (one per lane)' if q.id == 'xai' and self.has_xai else '') for q in provs],
+                    max(0, next((i for i, q in enumerate(provs) if q.id == p.id), 0)),
+                    lambda s: self.pick_provider(provs[s.indexOfSelectedItem()].id), k, width=240)
+        pop.setAutoenablesItems_(False)
+        for i, q in enumerate(provs):
+            if q.id == 'xai' and self.has_xai:
+                pop.itemAtIndex_(i).setEnabled_(False)
+        rows = [form_row('Provider', self.provider_line(p), pop, width=W)]
+        if p.id == 'responses':
+            url = self.fields['base_url'] = text_field(self.base_url, 240, 'https://api.example.com/v1')
+            rows.append(form_row('Base URL', 'The bridge posts to <base URL>/responses.', url, width=W))
+        combo = auto(NSComboBox.alloc().initWithFrame_(((0, 0), (240, 26))))
+        combo.setCompletes_(True)
+        combo.setNumberOfVisibleItems_(10)
+        combo.addItemsWithObjectValues_([S(m.id) for m in self.models or []])
+        combo.setStringValue_(S(self.model))
+        combo.setPlaceholderString_(S('Model id'))
+        combo.setTarget_(target(lambda s: self.picked(), k))
+        combo.setAction_('fire:')
+        fix(combo, 240)
+        self.fields['model'] = combo
+        model = hstack([spinner(), combo], spacing=6, cluster=True) if self.loading else combo
+        model_row = form_row('Model', self.model_line(p), model, width=W)
+        if self.models_note and self.models_note != NEWER and not self.loading and self.models is None:
+            model_row.setToolTip_(S(plain_detail(self.models_note)))   # why the list failed, without the CLI hint
+        rows.append(model_row)
+        name = self.fields['name'] = text_field(self.name, 240, self.default_name() or 'The model id')
+        rows.append(form_row('Display name', 'Its name here and in the lane description Codex reads.', name, width=W))
+        if self.problem:
+            rows.append(note_row(('error', self.problem), W))
+        out = [group(rows, W)]
+        if p.ready is False and p.id != 'responses':
+            out.append(self.credential_box(p, W))
+        return out
+
+    def provider_line(self, p: Provider) -> str:
+        if p.id == 'responses':
+            return 'Your own endpoint. Saving the lane asks for its API key.'
+        if p.needs == 'login':
+            return {True: 'Signed in.', False: 'Not signed in yet.'}.get(p.ready, 'Signs in with your account.')
+        return {True: 'Key saved.', False: 'Needs an API key.'}.get(p.ready, 'Uses an API key.')
+
+    def model_line(self, p: Provider) -> str:
+        if p.id == 'responses':
+            return 'Type the model id the endpoint expects.'
+        if self.loading:
+            return 'Loading the models…'
+        if self.models is not None:
+            n = len(self.models)
+            return f'{n} model{"s" if n != 1 else ""} listed, or type an id.' if n else 'None listed; type an id.'
+        if p.ready is False:
+            return 'Add its key to list them.' if p.needs == 'key' else 'Sign in to list them.'
+        if self.models_note == NEWER:
+            return 'This codexpool can’t list models yet; type an id.'
+        return 'Couldn’t list the models; type an id.' if self.models_note else 'Type an id.'
+
+    def default_name(self) -> str:
+        m = next((m for m in self.models or [] if m.id == self.model), None)
+        return m.name if m and m.name else ''
+
+    def credential_box(self, p: Provider, W: float):
+        k = self.keep
+        if p.needs == 'login':
+            title, sub = 'Not signed in', f'Sign in to {p.title} so the pool can serve its models.'
+            act = button(f'Sign In to {p.title}…', lambda _: self.app.sign_in_xai(parent=self, done=self.signed_in), k)
+        else:
+            title, sub = 'No key yet', f'{p.title} needs an API key. It stays on this Mac and is never shown.'
+            act = button('Add Key…', lambda _: self.app.add_key(p.key_name, p.title, parent=self, done=self.key_saved),
+                         k, enabled=bool(p.key_name))
+        icon = symbol_view('key.fill', 13, mb.C.orange_text(), NSFontWeightMedium, box=18)
+        return group([form_row(title, sub, act, leading=icon, width=W)], W)
+
+    def ready_now(self, pid: str):
+        """A sign-in or key just worked: the provider is ready (until `lane providers` says otherwise)."""
+        p = next((q for q in self.app.store.providers or [] if q.id == pid), None)
+        if p is not None:
+            p.ready = True
+        self.app.store.models.pop(pid, None)
+        self.app.store.fetch_providers()
+        if pid == self.provider:
+            self.harvest()
+            self.load_models()
+            self.render()
+
+    def signed_in(self, ok: bool):
+        if ok:
+            self.ready_now('xai')
+
+    def key_saved(self, title: str):
+        self.ready_now(self.provider)
+
+    def pick_provider(self, pid: str):
+        if pid == self.provider:
+            return
+        self.harvest()
+        self.provider, self.problem = pid, ''
+        if self.name == self.auto_name:
+            self.name = self.auto_name = ''
+        self.load_models()
+        self.render()
+
+    def picked(self):
+        """A model picked from the list (or typed and Return): its listed name becomes the display name, unless one
+        was typed."""
+        self.harvest()
+        name = self.default_name()
+        if name and self.name in ('', self.auto_name):
+            self.name = self.auto_name = name
+            if 'name' in self.fields:
+                self.fields['name'].setStringValue_(S(name))
+
+    def buttons(self):
+        k = self.keep
+        return [], [cancel_button(lambda _: self.close(), k), button('Add', lambda _: self.add(), k, primary=True)]
+
+    def add(self):
+        self.harvest()
+        model = self.model
+        if not model:
+            self.problem = 'Pick a model or type its id.'
+        elif not re.match(r'^[A-Za-z0-9._/-]+$', model):
+            self.problem = 'A model id is letters, digits and . _ / -.'
+        elif self.provider == 'responses' and not re.match(r'^https://[A-Za-z0-9.-]+', self.base_url):
+            self.problem = 'Give the https:// base URL of its Responses API.'
+        elif any(d.provider == self.provider and d.model == model for d in self.parent.members):
+            same = next(d for d in self.parent.members if d.provider == self.provider and d.model == model)
+            self.problem = f'{same.name or model} is already in this lane.'
+        elif self.provider == 'responses' and any(d.provider == 'responses' and not d.id and d.base_url != self.base_url
+                                                  for d in self.parent.members):
+            self.problem = 'Add one Responses endpoint at a time: save the lane, then add the next one.'
+        else:
+            self.problem = ''
+        if self.problem:
+            self.render()
+            return
+        name = self.name or self.default_name()
+        d = Draft('', self.provider, model, '' if name == model else name, '', self.base_url)
+        self.close()
+        self.on_add(d)
+
+
+# -- Add Key -------------------------------------------------------------------------------------------
+
+class KeySheet(Sheet):
+    """A provider key in a secure field, piped to `codexpool lane key NAME -`; the field is cleared as it goes."""
+    width = 460.0
+
+    def __init__(self, app, key_name: str, title: str, replace: bool = False, parent: Sheet | None = None, done=None):
+        super().__init__(app, parent)
+        self.key_name, self.title, self.replace, self.done = key_name, title, replace, done
+        self.problem = ''
+        self.job = None
+        self.field = None
+
+    def heading(self):
+        return (f'{"Replace" if self.replace else "Add"} the {self.title} Key',
+                f'Paste the API key from your {self.title} account. It stays on this Mac and is never shown.')
+
+    def build(self):
+        W = self.inner
+        f = auto(NSSecureTextField.alloc().initWithFrame_(((0, 0), (290, 24))))
+        f.setBezelStyle_(NSTextFieldRoundedBezel)
+        f.setPlaceholderString_(S('API key'))
+        f.setEnabled_(self.job is None)
+        f.setTarget_(target(lambda _s: self.save(), self.keep))
+        f.setAction_('fire:')
+        fix(f, 290)
+        self.field = f
+        rows = [form_row('API key', None, f, width=W)]
+        if self.problem:
+            rows.append(note_row(('error', self.problem), W))
+        return [group(rows, W)]
+
+    def buttons(self):
+        k = self.keep
+        busy = self.job is not None
+        left = [hstack([spinner(), secondary('Saving…', 11)], spacing=6, cluster=True)] if busy else []
+        return left, [cancel_button(lambda _: self.close(), k, enabled=not busy),
+                      button('Save Key', lambda _: self.save(), k, primary=True, enabled=not busy)]
+
+    def ended(self):
+        if self.field is not None:   # Cancel: a pasted key that wasn't saved doesn't stay in the field
+            self.field.setStringValue_('')
+
+    def save(self):
+        if self.job is not None or self.field is None:
+            return
+        data = str(self.field.stringValue()).strip().encode()
+        self.field.setStringValue_('')   # the key lives on only in the pipe to codexpool
+        if not data:
+            self.problem = 'Paste the key first.'
+            self.render()
+            return
+
+        def done(r: Result):
+            self.job = None
+            if r.ok:
+                self.close()
+                if self.done:
+                    self.done(self.title)
+            else:
+                self.problem = r.message()
+                self.render()
+        self.problem = ''
+        self.job = Job(['lane', 'key', self.key_name, '-'], done, stdin=data + b'\n')
+        del data
+        self.render()
+
+
+# -- xAI sign-in ---------------------------------------------------------------------------------------
+
+class XaiLoginSheet(Sheet):
+    """`codexpool lane login xai --no-open`: the link it prints, with Open and Copy like the Setup assistant (the
+    sheet puts it on the clipboard itself, so CODEXPOOL_NO_CLIPBOARD keeps the CLI's copy out)."""
+    width = 580.0
+
+    def __init__(self, app, parent: Sheet | None = None, done=None):
+        super().__init__(app, parent)
+        self.done = done
+        self.phase = 'starting'    # starting | waiting | finishing | done | failed
+        self.url = ''
+        self.copied = 0            # the pasteboard's change count after the copy (0: not, or no longer, there)
+        self.message = ''
+        self.job = None
+        self.timer = None
+        self.chrome = None
+
+    def present(self):
+        super().present()
+        if not SNAPSHOT:
+            self.start()
+
+    def start(self):
+        self.phase, self.url, self.copied, self.message = 'starting', '', 0, ''
+        run = {}
+
+        def line(text: str):
+            if run.get('job') is not self.job:
+                return
+            if 'Authentication saved to ' in text and self.phase in ('starting', 'waiting'):
+                self.phase = 'finishing'   # signed in: codexpool is saving the credential; never stop it now
+                self.stop_timer()
+                self.render()
+            elif not self.url and first_url(text):
+                self.url, self.phase = first_url(text), 'waiting'
+                self.copied = copy_text(self.url)
+                self.render()
+                self.start_timer()
+
+        def finished(r: Result):
+            if run.get('job') is not self.job:
+                return
+            self.job = None
+            self.stop_timer()
+            if run['job'].stopped:
+                return
+            if r.ok:
+                self.phase = 'done'
+                if self.done:
+                    self.done(True)
+            else:
+                self.phase, self.message = 'failed', r.message()
+            self.render()
+        self.job = run['job'] = Job(['lane', 'login', 'xai', '--no-open'], finished, line,
+                                    env={'CODEXPOOL_NO_CLIPBOARD': '1'})
+        self.render()
+
+    def start_timer(self):
+        self.stop_timer()
+        self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0, target(lambda _t: self.tick(), []), 'fire:', None, True)
+
+    def stop_timer(self):
+        if self.timer is not None:
+            self.timer.invalidate()
+            self.timer = None
+
+    def tick(self):
+        if self.phase == 'waiting' and self.copied and clipboard_count() != self.copied:
+            self.copied = 0   # something else was copied since: the link is gone from the clipboard
+            self.render()
+
+    def ended(self):
+        self.stop_timer()
+        if self.job is not None and self.phase in ('starting', 'waiting'):
+            self.job.stop()
+            self.job = None
+
+    def heading(self):
+        return 'Sign In to xAI', ('The pool signs in to xAI once, with an account whose quota your lanes may use. '
+                                  'That sign-in serves lane models only.')
+
+    def build(self):
+        k, W = self.keep, self.inner
+        if self.phase == 'starting':
+            return [group([hstack([spinner(), label('Getting a sign-in link…', 13)], spacing=8,
+                                  insets=(12, ROW_X, 12, ROW_X), min_h=44)], W)]
+        if self.phase == 'finishing':
+            return [group([hstack([spinner(), label('Signed in. Saving the sign-in…', 13, NSFontWeightSemibold)],
+                                  spacing=8, insets=(12, ROW_X, 12, ROW_X), min_h=44)], W)]
+        if self.phase == 'done':
+            return [group([hstack([symbol_view('checkmark.circle.fill', 18, mb.C.green_text(), NSFontWeightMedium),
+                                   vstack([label('Signed in to xAI', 13, NSFontWeightSemibold),
+                                           secondary('Lane members on xAI can serve now.', 11)], spacing=2,
+                                          full=False)], spacing=10, insets=(12, ROW_X, 12, ROW_X), min_h=52)], W)]
+        if self.phase == 'failed':
+            return [group([note_row(('error', self.message or 'The sign-in did not complete.'), W)], W)]
+        title = hstack([spinner(), label('Waiting for you to sign in', 13, NSFontWeightSemibold)], spacing=8,
+                       cluster=True)
+        buttons = [button('Open in Browser', lambda _: open_thing(self.url), k)]
+        if self.chrome is None:
+            self.chrome = True if SNAPSHOT else app_installed(CHROME_BUNDLE)
+        if self.chrome:
+            buttons.append(button('Open in Private Chrome Window', lambda _: open_private_chrome(self.url), k))
+        buttons.append(button('Copy Link', lambda _: self.copy(), k))
+        copied = None
+        if self.copied:
+            copied = hstack([symbol_view('checkmark.circle.fill', 12, mb.C.green_text(), NSFontWeightMedium),
+                             secondary('Copied', 12)], spacing=4, cluster=True)
+            copied.setAccessibilityLabel_(S('The sign-in link is on the clipboard'))
+        url = label(self.url, 11, color=NSColor.secondaryLabelColor(), mono=True, middle=True, select=True)
+        url.setToolTip_(S(self.url))
+        rows = [hstack([title], insets=(12, ROW_X, 4, ROW_X)),
+                padded(secondary('To sign in to a different xAI account than the one your browser uses, open the '
+                                 'link in a private window.', 12, wrap=W - 2 * ROW_X), 0, ROW_X, 6, ROW_X),
+                hstack(buttons, [copied], spacing=8, insets=(4, ROW_X, 8, ROW_X)),
+                hstack([url], insets=(4, ROW_X, 12, ROW_X))]
+        return [group(rows, W, rules=False)]
+
+    def copy(self):
+        self.copied = copy_text(self.url)
+        self.render()
+
+    def buttons(self):
+        k = self.keep
+        if self.phase == 'done':
+            return [], [button('Done', lambda _: self.close(), k, primary=True)]
+        if self.phase == 'failed':
+            return [], [cancel_button(lambda _: self.close(), k), button('Try Again', lambda _: self.start(), k,
+                                                                         primary=True)]
+        return [], [cancel_button(lambda _: self.close(), k, enabled=self.phase != 'finishing')]
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 9. Setup assistant: Welcome (checklist) → Add accounts (sign-in links) → Done
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 
 STEPS = ('welcome', 'accounts', 'done')
@@ -2594,7 +3989,7 @@ class SetupAssistant:
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
-# 9. App controller: single instance, windows, menus, the Dock icon, confirmations, command plumbing
+# 10. App controller: single instance, windows, menus, the Dock icon, confirmations, command plumbing
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 
 _LOCK_FD = None
@@ -2667,6 +4062,7 @@ class SettingsController(NSObject):
         self.start_pane = 'overview'
         self.sheet = None
         self.stream_job = None     # the lane test streaming into a sheet, stopped on quit
+        self.top_sheet = None      # a Lanes sheet on the Settings window (its own sheets hang on it)
         self.quitting = False      # a quit is waiting for a sign-in to finish (NSTerminateLater)
         self.last_status = None
         return self
@@ -2754,6 +4150,10 @@ class SettingsController(NSObject):
             lg.job.stop()   # a sign-in still waiting for the browser (once signed in, it is never stopped)
         if self.stream_job is not None:
             self.stream_job.stop()   # a lane test, and the subagents it started, would run on with no reader
+        s = self.top_sheet
+        while s is not None:         # an xAI sign-in still waiting for the browser
+            s.ended()
+            s = s.child
         release_single_instance()
 
     def showRequested_(self, note):
@@ -2780,7 +4180,8 @@ class SettingsController(NSObject):
         if status != self.last_status:
             self.last_status = status
             self.store.notify('status')
-        if self.view is not None and self.view.current in ('overview', 'seats', 'general', 'health', 'lanes'):
+        if self.view is not None and self.view.current in ('overview', 'seats', 'balancing', 'general', 'health',
+                                                          'lanes'):
             pane = self.panes[self.view.current]
             if pane.note and pane.note[0] == 'ok' and time.monotonic() - pane.note_at > NOTE_S:
                 pane.note = None
@@ -2801,6 +4202,8 @@ class SettingsController(NSObject):
             step = {'setup-welcome': 'welcome', 'setup-done': 'done'}.get(pane, 'accounts')
             self.open_setup(pane, step=step)
             return
+        if pane in LANE_SHOTS:
+            pane = 'lanes'
         view = self.ensure_view()
         view.select(pane if pane in self.panes else view.current)
         if not view.win.isVisible():
@@ -2855,8 +4258,8 @@ class SettingsController(NSObject):
     @objc.python_method
     def data_changed(self, what: str):
         if self.view is not None:
-            relevant = {'status': ('overview', 'seats', 'general', 'about'), 'doctor': ('health',),
-                        'lanes': ('lanes',), 'version': ('about',)}.get(what, ())
+            relevant = {'status': ('overview', 'seats', 'balancing', 'general', 'about'), 'doctor': ('health',),
+                        'lanes': ('lanes',), 'providers': ('lanes',), 'version': ('about',)}.get(what, ())
             if self.view.current in relevant and not self.editing():
                 self.view.render()
             elif what == 'status':   # the sidebar's status line
@@ -2895,6 +4298,37 @@ class SettingsController(NSObject):
             if then:
                 then()
         Job(['guard'], finished)
+
+    # -- the Lanes pane's sheets ---------------------------------------------------------------------------
+    @objc.python_method
+    def edit_lane(self, lane: Lane | None):
+        """New Lane… (lane None) and Edit…."""
+        if self.top_sheet is None:
+            self.present_sheet(LaneEditor(self, lane, self.panes['lanes'].lane_saved))
+
+    @objc.python_method
+    def sign_in_xai(self, parent: Sheet | None = None, done=None):
+        if parent is not None or self.top_sheet is None:
+            self.present_sheet(XaiLoginSheet(self, parent, done), parent)
+
+    @objc.python_method
+    def add_key(self, key_name: str, title: str, replace: bool = False, parent: Sheet | None = None, done=None):
+        if parent is not None or self.top_sheet is None:
+            self.present_sheet(KeySheet(self, key_name, title, replace, parent, done), parent)
+
+    @objc.python_method
+    def present_sheet(self, sheet: Sheet, parent: Sheet | None = None):
+        if parent is not None:
+            parent.child = sheet
+        else:
+            self.open_pane('lanes')
+            self.top_sheet = sheet
+        sheet.present()
+
+    @objc.python_method
+    def sheet_closed(self, sheet: Sheet):
+        if self.top_sheet is sheet:
+            self.top_sheet = None
 
     # -- confirmations and long commands ---------------------------------------------------------------
     @objc.python_method
@@ -3102,7 +4536,7 @@ def run_app(pane: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
-# 10. Snapshot mode and main()
+# 11. Snapshot mode and main()
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 
 def render_window(win) -> tuple:
@@ -3116,8 +4550,9 @@ def render_window(win) -> tuple:
     return rep, size.width, size.height
 
 
-def compose_snapshot(rep, w: float, h: float, dark: bool, appearance, out: str):
-    """The window on a soft backdrop with rounded corners, a hairline and a shadow, like the popover shots."""
+def compose_snapshot(rep, w: float, h: float, dark: bool, appearance, out: str, sheets=()):
+    """The window on a soft backdrop with rounded corners, a hairline and a shadow, like the popover shots; sheets
+    ((rep, w, h), bottom first) hang below its toolbar, centred, each on the one before."""
     margin, radius = 34.0, 12.0
     W, H = w + 2 * margin, h + 2 * margin
     card = ((margin, margin), (w, h))
@@ -3142,6 +4577,22 @@ def compose_snapshot(rep, w: float, h: float, dark: bool, appearance, out: str):
         mb.stroke_rounded(card, radius, mb.rgb(1, 1, 1, 0.14) if dark else mb.rgb(0, 0, 0, 0.16), 1.0)
         if dark:   # the inner light edge dark windows have
             mb.stroke_rounded(((margin + 1, margin + 1), (w - 2, h - 2)), radius - 1, mb.rgb(1, 1, 1, 0.05), 1.0)
+        for srep, sw, sh_ in sheets:
+            box = ((margin + round((w - sw) / 2), margin + BAR_H - 4), (sw, sh_))
+            NSGraphicsContext.saveGraphicsState()
+            shadow = NSShadow.alloc().init()
+            shadow.setShadowBlurRadius_(24)
+            shadow.setShadowOffset_((0, -8))
+            shadow.setShadowColor_(mb.rgb(0, 0, 0, 0.55 if dark else 0.28))
+            shadow.set()
+            mb.fill_rounded(box, SHEET_RADIUS, NSColor.windowBackgroundColor())
+            NSGraphicsContext.restoreGraphicsState()
+            NSGraphicsContext.saveGraphicsState()
+            mb.rounded(box, SHEET_RADIUS).addClip()
+            srep.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+                box, ((0, 0), (0, 0)), NSCompositingOperationSourceOver, 1.0, True, None)
+            NSGraphicsContext.restoreGraphicsState()
+            mb.stroke_rounded(box, SHEET_RADIUS, mb.rgb(1, 1, 1, 0.12) if dark else mb.rgb(0, 0, 0, 0.14), 1.0)
 
     mb.write_png(mb.render_offscreen(compose, W, H, appearance), out)
 
@@ -3160,10 +4611,11 @@ def snapshot(args):
         generated = mb.parse_time(raw.get('generated_at'))
         now = generated + dt.timedelta(seconds=12) if generated else None
     store = Store(args.status, now or mb.utcnow(), args.history)   # no --history: no pace line (deterministic)
-    store.load_fixtures(args.doctor, args.lanes)
+    store.load_fixtures(args.doctor, args.lanes, args.providers, args.models)
     controller = SettingsController.alloc().init()
     controller.configure(store, args.pane, args.height or WIN_H)
 
+    sheets = []
     if args.pane.startswith('setup-'):
         setup = controller.ensure_setup()
         setup.win.setAppearance_(appearance)
@@ -3180,26 +4632,78 @@ def snapshot(args):
     else:
         view = controller.ensure_view()
         view.win.setAppearance_(appearance)
-        view.select(args.pane)
+        view.select('lanes' if args.pane in LANE_SHOTS else args.pane)
+        chain = demo_sheets(controller, args.pane) if args.pane in LANE_SHOTS else []
+        for sheet in chain:
+            sheet.win.setAppearance_(appearance)
+            sheet.render()
+        need = max([0.0] + [BAR_H + sheet.win.contentView().frame().size.height + 40 for sheet in chain])
         if not args.height:   # fit the content, like a window the user sized to it
-            want = BAR_H + view.content_height()
+            want = max(BAR_H + view.content_height(), need)
             h = max(MIN_H, min(900.0, want))
             view.win.setContentSize_((WIN_W, h))
             view.render()
         rep, w, h = render_window(view.win)
-    compose_snapshot(rep, w, h, dark, appearance, args.snapshot)
+        sheets = [render_view(sheet.win.contentView()) for sheet in chain]
+    compose_snapshot(rep, w, h, dark, appearance, args.snapshot, sheets)
     print(args.snapshot)
+
+
+def demo_sheets(controller, pane: str) -> list:
+    """The sheets a lanes-* snapshot shows, from the fixtures, bottom first."""
+    st = controller.store
+    lanes = st.lanes or []
+    providers = st.provider_list()
+    if pane == 'lanes-key':
+        p = next((q for q in providers if q.needs == 'key' and q.key_name and not q.ready), None) or \
+            next((q for q in providers if q.key_name), providers[0])
+        return [KeySheet(controller, p.key_name or 'opencode-go', p.title)]
+    if pane == 'lanes-signin':
+        sheet = XaiLoginSheet(controller)
+        sheet.phase, sheet.url, sheet.copied = 'waiting', DEMO_XAI_URL, 1
+        return [sheet]
+    if pane == 'lanes-new' or not lanes:
+        editor = LaneEditor(controller, None, lambda *a: None)
+        editor.name, editor.effort = 'review', 'high'
+        editor.role = 'Reviews diffs before they land and gives a second opinion on risky changes.'
+        p = next((q for q in providers if q.ready and q.id not in ('xai', 'responses')), providers[0])
+        m = (st.demo_models or [LaneModel('model-id', '', None)])[0]
+        editor.members = [Draft('', p.id, m.id, m.name)]
+    else:
+        editor = LaneEditor(controller, lanes[0], lambda *a: None)
+    chain = [editor]
+    if pane in ('lanes-model', 'lanes-model-key'):
+        has_xai = any(d.provider == 'xai' for d in editor.members)
+        want = [q for q in providers if q.id not in ('xai', 'responses') and bool(q.ready) == (pane == 'lanes-model')]
+        sheet = AddModelSheet(controller, editor, has_xai, lambda d: None, (want or providers)[0].id)
+        if pane == 'lanes-model' and sheet.models:
+            taken = {d.model for d in editor.members if d.provider == sheet.provider}
+            m = next((x for x in sheet.models if x.id not in taken), sheet.models[0])
+            sheet.model, sheet.name = m.id, m.name
+        chain.append(sheet)
+    return chain
+
+
+def render_view(view) -> tuple:
+    """A view (a sheet's content) cached offscreen at 2x: (rep, width, height)."""
+    view.layoutSubtreeIfNeeded()
+    size = view.bounds().size
+    rep = mb.new_bitmap(size.width, size.height)
+    view.cacheDisplayInRect_toBitmapImageRep_(view.bounds(), rep)
+    return rep, size.width, size.height
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog='codexpool-settings', description='codexpool Settings window and Setup assistant')
-    p.add_argument('--pane', default='overview', choices=PANES + SETUP_PANES,
-                   help='the pane or Setup assistant step to open')
+    p.add_argument('--pane', default='overview', choices=PANES + SETUP_PANES + LANE_SHOTS,
+                   help='the pane or Setup assistant step to open (lanes-*: a Lanes sheet, snapshots only)')
     p.add_argument('--snapshot', metavar='OUT.png', help='render the window to a PNG and exit (runs no command)')
     p.add_argument('--appearance', choices=('light', 'dark'), default='light', help='(snapshot)')
     p.add_argument('--status', type=Path, default=mb.STATUS_FILE, help='status.json to render (snapshot)')
     p.add_argument('--doctor', type=Path, help='codexpool doctor --json output to render (snapshot)')
     p.add_argument('--lanes', type=Path, help='codexpool lane list --json output to render (snapshot)')
+    p.add_argument('--providers', type=Path, help='codexpool lane providers --json output to render (snapshot)')
+    p.add_argument('--models', type=Path, help='codexpool lane models --json output, for every provider (snapshot)')
     p.add_argument('--history', type=Path, help='history.jsonl for the pace line (snapshot; default: none)')
     p.add_argument('--now', help='pretend the time is this ISO-8601 instant (snapshot)')
     p.add_argument('--height', type=float, help='window height in pt (snapshot; default: fit the content)')

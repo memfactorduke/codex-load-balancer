@@ -13,5 +13,7 @@
   "_headline": "What the headline % covers: \"all\" (every seat that is not off, reserve seats included, weighted by size) or \"regular\" (reserve seats left out).",
   "headline": "all",
   "_display": "How every number and bar reads: \"left\" (counts down from 100%, bars drain) or \"used\" (counts up from 0%, bars fill).",
-  "display": "left"
+  "display": "left",
+  "_balancing": "Which seat new threads get: \"priority\" (your fill order: codexpool order; the first seat until it runs out, then the next) or \"reset\" (the regular seat whose weekly quota resets soonest, so none of it goes to waste; the guard keeps the order up to date and the reserve stays last).",
+  "balancing": "priority"
 }

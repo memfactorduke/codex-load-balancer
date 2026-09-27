@@ -64,6 +64,9 @@ class ParseSettings(unittest.TestCase):
         self.assertEqual(parse({'display': 'used', 'headline': 'regular'})['display'], 'used')
         self.assertRefused({'display': 'Left'}, 'display (one of: left, used)')
         self.assertRefused({'headline': 'reserve'}, 'headline (one of: all, regular)')
+        self.assertEqual(parse({'balancing': 'reset'})['balancing'], 'reset')
+        for bad in ('soonest', 'Reset', None, 1):
+            self.assertRefused({'balancing': bad}, 'balancing (one of: priority, reset)')
 
     def test_unknown_keys_and_notes(self):
         message = self.assertRefused({'colour': 'red', 'port': 9000}, 'unknown key(s) colour', 'keys starting with _')
@@ -125,10 +128,11 @@ class SetCommand(unittest.TestCase):
     def settings_text(self):
         return cp.SETTINGS_FILE.read_text()
 
-    def test_no_args_prints_both(self):
+    def test_no_args_prints_all_three(self):
         code, out, _ = run(cp.cmd_set, key=None, value=None)
         self.assertEqual(code, 0)
-        self.assertEqual([line.split()[:2] for line in out.splitlines()], [['display', 'left'], ['headline', 'all']])
+        self.assertEqual([line.split()[:2] for line in out.splitlines()],
+                         [['display', 'left'], ['headline', 'all'], ['balancing', 'priority']])
 
     def test_rejects_unknown_key_and_bad_values(self):
         before = self.settings_text()
@@ -137,7 +141,8 @@ class SetCommand(unittest.TestCase):
                                  ('display', 'sideways', 'display is left or used, not "sideways"'),
                                  ('display', 'LEFT', 'display is left or used'),
                                  ('headline', None, 'headline is all or regular'),
-                                 ('headline', 'left', 'headline is all or regular')):
+                                 ('headline', 'left', 'headline is all or regular'),
+                                 ('balancing', 'fair', 'balancing is priority or reset, not "fair"')):
             code, out, err = run(cp.cmd_set, key=key, value=value)
             self.assertEqual(code, 1, (key, value))
             self.assertIn(text, err)

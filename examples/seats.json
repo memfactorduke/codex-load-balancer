@@ -1,23 +1,28 @@
 {
   "codex-1a2b3c4d-<email>-team.json": {
     "label": "Team",
-    "weight": 1
+    "weight": 1,
+    "manual_priority": 980
   },
   "codex-5e6f7a8b-<email>-self-serve-business-prolite.json": {
     "label": "Work A",
-    "weight": 5
+    "weight": 5,
+    "manual_priority": 1000
   },
   "codex-9c0d1e2f-<email>-self-serve-business-prolite.json": {
     "label": "Work B",
-    "weight": 5
+    "weight": 5,
+    "manual_priority": 990
   },
   "codex-3a4b5c6d-<email>-plus.json": {
     "label": "Personal",
-    "weight": 1
+    "weight": 1,
+    "manual_priority": 970
   },
   "codex-7e8f9a0b-<email>-pro.json": {
     "label": "Pro 20x",
     "weight": 20,
-    "reserve": true
+    "reserve": true,
+    "manual_priority": 960
   }
 }

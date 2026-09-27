@@ -215,10 +215,13 @@ class FakePool:
     """A stand-in for the pool on cp.PORT: /v1/models (403 for a browser-like request, as the gate answers), and
     the management API calls codexpool makes for seats (auth-files from the fake auth dir, fields, status, delete).
     It checks the management key. models: the /v1/models ids, or a function that returns them (to follow config.yaml
-    the way the real pool reloads it). Use it as a context manager."""
+    the way the real pool reloads it). xai_models: what /v0/management/model-definitions/xai answers; extra_files:
+    more auth-file rows (an xAI credential, say). Use it as a context manager."""
 
-    def __init__(self, models=()):
+    def __init__(self, models=(), xai_models=None, extra_files=()):
         self.models = models if callable(models) else list(models)
+        self.xai_models = xai_models
+        self.extra_files = list(extra_files)
         self.priorities = {}
         self.patches = []
         self.deleted = []
@@ -230,7 +233,7 @@ class FakePool:
             prio = self.priorities.get(f.name, json.loads(f.read_text()).get('priority', 0))
             out.append({'name': f.name, 'id': f.name, 'provider': 'codex', 'path': str(f), 'priority': prio,
                         'disabled': False, 'status': 'active'})
-        return out
+        return out + self.extra_files
 
     def __enter__(self):
         pool = self
@@ -262,6 +265,9 @@ class FakePool:
                 elif self.path == '/v0/management/auth-files':
                     if self.managed():
                         self.reply(200, {'files': pool.seat_files()}, [('X-CPA-VERSION', '7.0.0+gate.test')])
+                elif self.path == '/v0/management/model-definitions/xai' and pool.xai_models is not None:
+                    if self.managed():
+                        self.reply(200, pool.xai_models)
                 else:
                     self.reply(404, {'error': 'not here'})
 

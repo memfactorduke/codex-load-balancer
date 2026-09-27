@@ -8,7 +8,7 @@ Lanes are optional. Without `~/.codexpool/lanes.json`, nothing on this page runs
 
 - [What a lane is](#what-a-lane-is) and [when to use one](#when-to-use-one)
 - [How it works](#how-it-works) and [providers](#providers)
-- [Set up a lane](#set-up-a-lane), [commands](#commands) and [lanes.json](#lanesjson)
+- [Set up a lane](#set-up-a-lane), [edit one](#edit-a-lane), [commands](#commands) and [lanes.json](#lanesjson)
 - [What `lane apply` generates](#what-lane-apply-generates)
 - [Fallback and stickiness](#fallback-and-stickiness), [known limits](#known-limits), [privacy](#privacy)
 - [Troubleshooting](#troubleshooting)
@@ -111,14 +111,17 @@ You need a working install (`codexpool doctor` ends with `OK`) and an account wi
 ```sh
 codexpool lane login xai            # opens the xAI sign-in; --no-open prints the link instead
 codexpool lane key opencode-go      # asks for the key without echoing it
+codexpool lane providers            # what each provider needs, and whether it is ready
 ```
 
 `lane login xai` runs CLIProxyAPI's own xAI login, like `codexpool login` does for seats, and prints the name
-of the credential file it saved in `~/.codexpool/auth/`. That credential serves lane aliases only.
+of the credential file it saved in `~/.codexpool/auth/`. That credential serves lane aliases only. The sign-in
+link also goes on the clipboard when it is printed (`--no-copy` leaves the clipboard alone).
 
 `lane key` writes `~/.codexpool/lanes/secrets/<keyname>.key` (mode 600, in a folder with mode 700) and never
 prints the key. It also takes the key from a file (`codexpool lane key opencode-go ~/key.txt`; delete the file
-afterwards) or on stdin. Key names are `opencode-go`, `opencode-zen`, and `<lane>-<id>` for a `responses`
+afterwards) or on stdin (`pbpaste | codexpool lane key opencode-go -`; the Settings window pipes a key the same
+way, so it never lands in a file or on a command line). Key names are `opencode-go`, `opencode-zen`, and `<lane>-<id>` for a `responses`
 member. To replace a key, run the command again, then `codexpool lane apply`, which restarts the bridge when a
 key file changed.
 
@@ -183,9 +186,47 @@ lane bulk: grok ● ready → muse ● bridge ok
 them." The main agent may also pick a lane by itself when a task fits the lane's role. It is told to check what
 a lane returns before relying on it.
 
-**Changing or removing a lane.** Edit `lanes.json` and run `codexpool lane apply`, or run
-`codexpool lane remove bulk`, which takes the lane out of `lanes.json` and applies. Keys stay in
-`lanes/secrets/` either way.
+## Edit a lane
+
+**In the Settings window.** The Lanes pane shows one card per lane: its name, picker name, effort, role, the
+members in fallback order with their state, and the last test. **Edit…** opens the lane editor: picker label,
+effort, role, and the members, whose order is the fallback order (up and down buttons; − removes one).
+**Add Model…** picks a provider (with its readiness), then a model from that provider's list, or a model id typed
+by hand, and a display name. A provider that isn't ready offers **Sign in to xAI…** (the same link flow as a seat
+sign-in, with the link on the clipboard) or **Add Key…**. Save runs one `codexpool lane add` or `lane edit`
+command and shows its output if it fails; Cancel changes nothing. **New Lane…** starts an empty editor, where the
+name can be set and at least one member is needed. **Delete…** runs `codexpool lane remove`. The Credentials
+section at the bottom lists each provider in use or ready, with Sign in, Add Key and Replace Key.
+
+**In a terminal**, `codexpool lane edit` changes a lane in `lanes.json` and applies it, as `lane add` does:
+
+```sh
+codexpool lane edit bulk --effort high --display "Bulk: Grok, then Muse"
+codexpool lane edit bulk --add-member "opencode-zen:<model>:<Display Name>" --move-member muse --to 1
+codexpool lane edit bulk --remove-member grok --dry-run
+codexpool lane edit bulk --rename heavy        # a new agent_type too: say so in your own instructions
+                                               # (a responses member's key, <lane>-<id>, moves with it)
+```
+
+The flags apply in the order given, so a member added in one call can be moved in the same call; the result is
+checked like a new lane. `--role` turns line breaks into spaces (`lanes.json` keeps a role on one line), and
+`--no-display` goes back to the default picker name. `--add-member` takes the same `PROVIDER:MODEL[:DISPLAY NAME]`
+as `lane add --member`, and a new member gets the next free id from its model id; `--base-url` and
+`--session-header` apply to the `responses` members it adds. `--move-member ID --to POS` puts a member at
+position POS (1 is first). `lane edit` writes every member's id into `lanes.json`, so moving or removing one never
+changes another's id (or its alias, `<lane>-<id>`).
+
+**What you can pick from.** `codexpool lane providers` lists the providers and whether each is ready (xAI: a
+sign-in the pool can use; a key provider: its key file exists; a `responses` member has a key of its own, so that
+provider never shows as ready). `codexpool lane models <provider>` lists the provider's models with their names and
+context windows where the provider gives them: xAI's come from the pool (`codexpool lane models xai`), OpenCode's
+from its `/models`, asked with your stored key and the bridge's User-Agent (only the provider's own address gets
+the key: a redirect is refused), and a `responses` endpoint's with `--base-url URL --key-name <lane>-<id>`. Both
+take `--json`, which the Settings window reads; a model list that can't be had is `{"error": "..."}` with exit
+status 1.
+
+**Removing a lane.** `codexpool lane remove bulk` takes the lane out of `lanes.json` and applies. You can still
+edit `lanes.json` by hand and run `codexpool lane apply`. Keys stay in `lanes/secrets/` either way.
 
 ## Commands
 
@@ -193,10 +234,13 @@ a lane returns before relying on it.
 |---|---|
 | `codexpool lane` (same as `lane list`) | Every lane with its effort and its name in the Codex model picker, then its members in order: id, provider, model, state and last test. State for xAI is the xAI login's state: `ready`, `cooldown`, `exhausted`, `blocked` (sign in again), `disabled`, `missing` (no login), or `unknown` when the pool doesn't answer. For a bridge member: `bridge ok` when the bridge is up, lists the model, and the key file exists; else `no key`, `bridge down` or `not in bridge` (run `lane apply`). |
 | `lane add NAME --member PROVIDER:MODEL[:DISPLAY NAME] ... [--role TEXT] [--effort E] [--display TEXT] [--base-url URL] [--session-header NAME] [--dry-run]` | Adds a lane to `lanes.json` (creating the file), then applies. `--display` sets the lane's name in the Codex model picker. `--base-url` and `--session-header` are for `responses` members. |
+| `lane edit NAME [--rename NEW] [--role TEXT] [--effort E] [--display TEXT \| --no-display] [--add-member PROVIDER:MODEL[:DISPLAY NAME]] [--remove-member ID] [--move-member ID --to POS] [--base-url URL] [--session-header NAME] [--dry-run]` | Changes a lane in `lanes.json`, the flags in the order given, then applies (see [Edit a lane](#edit-a-lane)). |
 | `lane remove NAME [--dry-run]` | Removes a lane from `lanes.json`, then applies. |
+| `lane providers [--json]` | Each provider a member can use: how the pool reaches it, what it needs (a sign-in or a key, and the key's name) and whether it is ready. |
+| `lane models PROVIDER [--base-url URL] [--key-name NAME] [--json]` | The provider's models: `id`, `name` and `context` where known. `--base-url` and `--key-name` are for `responses`. |
 | `lane apply [--dry-run]` | Renders and writes everything below. `--dry-run` prints every change as a unified diff and writes nothing. |
-| `lane key KEYNAME [FILE]` | Stores a provider key from FILE, stdin, or a prompt without echo. Never prints it. |
-| `lane login xai [--no-open]` | Signs in to xAI. `--no-open` prints the link instead of opening it. |
+| `lane key KEYNAME [FILE]` | Stores a provider key from FILE, stdin (`-` or a pipe), or a prompt without echo. Never prints it. |
+| `lane login xai [--no-open] [--no-copy]` | Signs in to xAI. `--no-open` prints the link instead of opening it; a printed link also goes on the clipboard unless `--no-copy`. |
 | `lane test [LANE] [--member ID] [--compaction]` | Real subagent test through Codex, per member and then per lane. Offers the member aliases (`<lane>-<id>`) while it runs and withdraws them afterwards. Spends a little quota. |
 
 The rest of codexpool knows about lanes too:
@@ -572,16 +616,17 @@ and follow AGENTS.md: a live pool carries all my Codex traffic, yours included.
 
 1. Ask me which lane providers I have accounts with (xAI, OpenCode Go, OpenCode Zen, or another OpenAI
    Responses API endpoint), which models I want from each, and what role each lane should play, for example a
-   fast lane for sweeps, bulk edits and second opinions. Propose the lanes: a name, the members in fallback
-   order, a one-sentence role and an effort. Wait for my OK.
+   fast lane for sweeps, bulk edits and second opinions. `codexpool lane providers` shows which providers are
+   ready, and `codexpool lane models <provider>` lists a provider's models once it is. Propose the lanes: a
+   name, the members in fallback order, a one-sentence role and an effort. Wait for my OK.
 2. Credentials. For xAI, run `codexpool lane login xai` and wait while I sign in. For a key, ask me to run
    `codexpool lane key <keyname>` in my own terminal (it asks without echo), or, if I give you a file path,
    run `codexpool lane key <keyname> <file>` without opening the file. Never print, echo, log, copy or paste
    a key, and never read anything in ~/.codexpool/lanes/secrets/ or ~/.codexpool/auth/.
 3. For each lane, run `codexpool lane add <name> --member PROVIDER:MODEL[:DISPLAY NAME] ... --role "..."
-   --effort <effort> --dry-run`, show me the output, and once I agree run it again without --dry-run. For
-   settings `lane add` does not take, edit ~/.codexpool/lanes.json, then run `codexpool lane apply --dry-run`
-   and `codexpool lane apply`. Never hand-edit the generated blocks in ~/.codexpool/config.yaml and
+   --effort <effort> --dry-run`, show me the output, and once I agree run it again without --dry-run. To
+   change a lane later, use `codexpool lane edit <name> ... --dry-run` the same way. For settings neither
+   takes, edit ~/.codexpool/lanes.json, then run `codexpool lane apply --dry-run` and `codexpool lane apply`. Never hand-edit the generated blocks in ~/.codexpool/config.yaml and
    ~/.codex/AGENTS.md or the role files in ~/.codex/agents/.
 4. Ask me before running `codexpool lane test`: it spends a little provider quota and seat quota. Then run
    `codexpool lane test` and `codexpool doctor`.

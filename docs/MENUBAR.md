@@ -10,7 +10,8 @@ keeps the menu bar item running. The design spec, for anyone changing them, is
 - [What it can touch](#what-it-can-touch)
 - [The item next to the clock](#the-item-next-to-the-clock), [the popover](#the-popover) and
   [seat actions](#seat-actions)
-- [The Settings window](#the-settings-window) and [the Setup assistant](#the-setup-assistant)
+- [The Settings window](#the-settings-window): [Balancing](#balancing), [editing lanes](#editing-lanes); and
+  [the Setup assistant](#the-setup-assistant)
 - [Running it](#running-it), [snapshots](#snapshots), [SwiftBar or xbar instead](#swiftbar-or-xbar-instead)
 
 <p>
@@ -25,8 +26,10 @@ chart, and `settings.json` only to find the Python that runs codexpool. The `hea
 it through `status.json`, where the guard copies them. It never touches the Keychain, never
 calls the network and never talks to the pool's management API. Actions run the `codexpool` command in the
 background, or open Terminal for commands that need one. The Settings window and the Setup assistant follow the
-same rules; they also read what `codexpool doctor --json`, `codexpool lane list --json` and `codexpool version`
-print.
+same rules; they also read what `codexpool doctor --json`, `codexpool lane list --json`,
+`codexpool lane providers --json`, `codexpool lane models PROVIDER --json` and `codexpool version` print. A
+provider key you paste into the Lanes pane goes to `codexpool lane key NAME -` on its standard input: never on a
+command line, never in a file.
 
 ## The item next to the clock
 
@@ -46,7 +49,8 @@ for the rightmost spot among third-party items; ⌘-drag it anywhere and it stay
 
 ## The popover
 
-Click the item.
+Click the item. Click it again, or anywhere outside the popover (another app, the desktop), or press Escape to
+close it; it also closes when you switch to another app.
 
 1. **Header**: "Codex Pool", when the status was last updated and which seat is serving. The pill on the right
    says `Regular` (green), `Reserve` (red), or `All out`, `Down`, `Stale`, `No seats`, `No data` (grey). After
@@ -131,22 +135,23 @@ After any action the app runs one guard pass, so the popover shows the effect at
 
 ## The Settings window
 
-A window in the style of System Settings: a sidebar with the pool's number and serving seat, and six panes. It
+A window in the style of System Settings: a sidebar with the pool's number and serving seat, and seven panes. It
 shows the same data as the popover, in the same colours, and every change it makes is a `codexpool` command run
 in the background, the same one you could type in a terminal.
 
-![The Settings window, Seats pane: the five seats in fill order with Work A selected, and its Name, Size, Priority, Reserve and In rotation settings, its banked reset, and buttons to sign in again or remove it](images/settings-seats-light.png)
+![The Settings window, Seats pane: the five seats in fill order with Work A selected, and its Name and Size, its place in the fill order with a link to Balancing, its In rotation switch, its banked reset, and buttons to sign in again or remove it](images/settings-seats-light.png)
 
 **Open it** with **Settings…** (⌘,) in the popover, or with `codexpool gui` from a terminal
 (`codexpool gui seats` opens it on a pane). Only one runs at a time: opening it again brings the open window
-forward on the pane you asked for. While it is open it has a Dock icon and a menu bar of its own, with ⌘1 to ⌘6
+forward on the pane you asked for. While it is open it has a Dock icon and a menu bar of its own, with ⌘1 to ⌘7
 for the panes. Closing the window quits it.
 
 | Pane | Shows | You can |
 |---|---|---|
 | **Overview** | The headline number and its bar, the seat new threads go to, how many regular seats are ready, the reserve, the next seat back, a banked reset you could use, the pace, and every seat with its plan, size, weekly and 5-hour bars and reset times | When the pool is down, not reporting or has no seats: Restart Pool…, Check Health or Add a ChatGPT Account… |
-| **Seats** | The seats in fill order; pick one for its settings | Rename it (`codexpool label`), set its Size (`weight`) and Priority (`priority`), switch Reserve (`reserve`, `--off`) and In rotation (`enable`, `disable`; a parked seat asks first, since it would spend credits), Redeem Reset… (`reset --yes`, after saying it spends one banked free reset and never buys one), Sign In Again… (the Setup assistant, keeping the seat's name and priority), Remove… (`remove --yes`, after a confirmation), Add Account… |
-| **Lanes** | Each [lane](LANES.md) with its effort, role and members in order, with their state and last test | Test… (confirms first, since it spends lane quota and can take minutes; the output streams into a sheet with Stop), Apply… (`lane apply`), Open Docs |
+| **Seats** | The seats in fill order; pick one for its settings and its place in the fill order | Rename it (`codexpool label`), set its Size (`weight`), switch In rotation (`enable`, `disable`; a parked seat asks first, since it would spend credits), Redeem Reset… (`reset --yes`, after saying it spends one banked free reset and never buys one), Sign In Again… (the Setup assistant, keeping the seat's name and priority), Remove… (`remove --yes`, after a confirmation), Add Account…; its Fill order row opens Balancing |
+| **Balancing** | How the pool picks a seat, the fill order (with each seat's week left and reset) and the reserve | Your order or Soonest reset first (`codexpool set balancing priority\|reset`), move seats up or down (`codexpool order`), Use last (reserve) per seat (`reserve`, `--off`). [More below](#balancing). |
+| **Lanes** | Each [lane](LANES.md): its name in the model picker, effort, role, members in order with their state and last test, and the lane's own last test; then the provider sign-ins and keys | New Lane… and Edit… (a sheet, below), Test… (confirms first, since it spends lane quota and can take minutes; the output streams into a sheet with Stop), Delete… (`lane remove`, after a confirmation), Apply… (`lane apply`), Open Docs, and per provider Sign In… / Add Key… / Replace Key…. [More below](#editing-lanes). |
 | **General** | The menu bar settings | Numbers show Left or Used (`codexpool set display`), Headline covers All seats or Regular seats (`codexpool set headline`), Restart… the pool, Open Logs, Reopen Codex… (quits the Codex app and opens it again), open the Setup assistant |
 | **Health** | `codexpool doctor`'s report: a summary, then each check with ✓, ! or ✗ and how to fix it | Run Again, Copy Report (the full text, which stays on your Mac until you paste it) |
 | **About** | The codexpool and CLIProxyAPI versions, links to the website, source, docs and issues, the license and the disclaimer | |
@@ -154,6 +159,47 @@ for the panes. Closing the window quits it.
 A change takes effect at once: the window runs one guard pass after it and shows the result inline. If a command
 the window needs is missing (an older `codexpool`), the pane says "This needs a newer codexpool" instead: run the
 installer again. The window's output goes to `~/.codexpool/logs/settings.log`.
+
+### Balancing
+
+![The Balancing pane: Your order selected; the seat order Work A, Work B, Team, Personal, each with its week left and reset and up and down arrows, then the Pro 20x reserve, always last; and a Use last (reserve) checkbox for every seat](images/settings-balancing-light.png)
+
+**How the pool picks a seat.** *Your order* uses the first seat until it runs out, then the next, which is best
+for prompt caching (the default, `codexpool set balancing priority`). *Soonest reset first* uses the seat whose
+weekly quota resets soonest, so quota that would expire unused gets used first (`codexpool set balancing reset`).
+Either way new threads follow the order, while threads already running stay on their seat until it runs out.
+
+**Seat order.** In *Your order* the arrows move a seat up or down; a burst of clicks is saved once, as one
+`codexpool order` with every regular seat in the new order. In *Soonest reset first* the list is read-only: it
+shows the order the guard computed, re-sorted every minute by weekly reset, with seats that have no usage data
+after the others in your order. Switching back to *Your order* brings your own order back. The reserve is always
+last.
+
+**Reserve.** Tick *Use last (reserve)* for the seat the pool should keep until every other seat is out
+(`codexpool reserve`, `--off` to clear it). A big seat, such as a Pro 20× plan, makes a good reserve. The menu bar
+turns red while it serves.
+
+### Editing lanes
+
+![The lane editor on the bulk lane: its picker label, effort and role, and its two members in fallback order, each with up and down arrows and a remove button, then Add Model…, Cancel and Save](images/settings-lanes-edit-light.png)
+
+**New Lane…** (at the top of the Lanes pane, and in its empty state) and **Edit…** on a lane open the lane editor:
+the name (new lanes only), the picker label (its name in the Codex model picker; empty means the lane name with a
+capital first letter), the effort, the role (what the lane is for; the main agent reads it) and the members in
+fallback order, with arrows to reorder them and − to remove one. **Add Model…** picks a provider, lists its models
+with `codexpool lane models` (or type a model id by hand) and takes a display name; a provider that isn't ready
+offers **Sign In to xAI…** or **Add Key…** right there. A model the lane already has is refused, and so is a second
+new Responses endpoint before the first is saved. **Save** runs one command, `codexpool lane add` for a new lane or
+`codexpool lane edit` with the changes, which writes `lanes.json` and applies it; if it fails, the sheet stays open
+and shows what codexpool said. When the lane still needs a key (a new responses member has a key of its own,
+named after the lane), the sheet asks for it right there and saves once it is in. **Cancel** discards the changes. Start a new Codex thread to use a
+changed lane.
+
+**Credentials**, at the bottom of the pane, lists each provider a lane uses or that is ready, with its state:
+**Sign In…** for xAI runs `codexpool lane login xai --no-open` and shows the link with Open in Browser, Open in
+Private Chrome Window and Copy Link, like the Setup assistant (the link goes on the clipboard at once).
+**Add Key…** and **Replace Key…** take the key in a secure field and pipe it to `codexpool lane key NAME -`; the
+field is cleared as soon as it is sent, or when you cancel. Apply the lanes after a new key so the bridge reads it.
 
 ## The Setup assistant
 
@@ -228,11 +274,15 @@ The Settings window and the Setup assistant do the same, and run no command whil
     --snapshot /tmp/seats.png --pane seats --appearance light --status docs/images/demo/status-regular.json
 ```
 
-`--pane` takes any pane, or a Setup assistant step (`setup-welcome`, `setup-accounts`, `setup-signin`,
-`setup-added`, `setup-again`, `setup-done`). Add `--doctor PATH` and `--lanes PATH` (the JSON that
-`codexpool doctor --json` and `codexpool lane list --json` print; demo files are in `docs/images/demo/`),
-`--history PATH` for the pace line, `--now ISO-8601` and `--height PT`. Without `--status` it renders the live
-`status.json`.
+`--pane` takes any pane, a Setup assistant step (`setup-welcome`, `setup-accounts`, `setup-signin`,
+`setup-added`, `setup-again`, `setup-done`), or one of the Lanes pane's sheets over the pane: `lanes-edit` (the
+lane editor on the first lane), `lanes-new`, `lanes-model` and `lanes-model-key` (Add Model on a provider that is
+ready, and on one that needs a key), `lanes-key` (Add Key) and `lanes-signin` (the xAI sign-in, with a made-up
+link). Add `--doctor PATH`, `--lanes PATH`, `--providers PATH` and `--models PATH` (the JSON that
+`codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json` and
+`codexpool lane models PROVIDER --json` print; demo files are in `docs/images/demo/`), `--history PATH` for the
+pace line, `--now ISO-8601` and `--height PT`. Without `--status` it renders the live `status.json`;
+`docs/images/demo/status-reset.json` is the demo pool with `"balancing": "reset"`.
 
 To rebuild every image in `docs/images/`:
 

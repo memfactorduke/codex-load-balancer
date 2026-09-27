@@ -6,6 +6,54 @@ All notable changes to codexpool are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-27
+
+### Added
+
+- **Load balancing: soonest reset first.** A new setting, `"balancing"`, decides which seat new threads get.
+  `"priority"` (the default) is the fill order you set, as before: the first seat until it runs out, then the
+  next. `"reset"` has the guard order the regular seats by their weekly resets, the soonest first, so quota that
+  is about to reset gets used before it goes to waste: a seat without a weekly window counts by its 5-hour
+  window, seats without usage data follow in your order, seats that are out, parked, blocked or off stay where
+  they are, and the reserve stays last. The guard changes priorities only when the order is wrong (resets within
+  five minutes of each other count as a tie), writes one line to the guard log and never notifies; running
+  threads stay on their seat, new threads follow the new order. Switching back to `"priority"` restores your own
+  order on the guard's next pass. `codexpool set balancing priority|reset` changes it (`codexpool set` alone now
+  prints all three settings), `codexpool status` shows the mode in its first line and each seat's reset in its
+  note, and `status.json` has `pool.balancing` and, per seat, `order_reason` ("resets in 1d 4h").
+- **`codexpool order SEAT [SEAT ...]` sets the fill order in one go.** The seats named come first in that order,
+  the other regular seats keep their order after them, and reserve seats always come last. Priorities go down
+  from 1000 in steps of 10. `seats.json` keeps the order as yours (`manual_priority`, which `codexpool priority`
+  now writes too), for the way back from `"reset"`. Under `"reset"`, `order` and `priority` change only that saved
+  order, so the live order never flips for a minute. A fill order you change yourself (`order`, `priority`,
+  `reserve`, Make first) is no longer announced as "Codex now on …", and `priority` and `reserve` now wait for
+  a running guard pass like `order` does.
+- **Lanes can be edited in place.** `codexpool lane edit NAME` changes a lane and applies it: `--rename NEW`,
+  `--role TEXT` (line breaks become spaces, in `lane add` too), `--effort E`, `--display TEXT` or `--no-display`,
+  `--add-member PROVIDER:MODEL[:DISPLAY NAME]`, `--remove-member ID` and `--move-member ID --to POS`, applied in
+  the order given and checked like `lane add`; `--dry-run` prints the change. `lane edit` writes every member's
+  id into `lanes.json`, so moving or removing one never renames the others, and `--rename` takes a responses
+  member's own key (`<lane>-<id>`) along.
+- **What a lane can use.** `codexpool lane providers [--json]` lists the lane providers, how each signs in (xAI
+  sign-in or an API key) and whether it is ready. `codexpool lane models PROVIDER [--json]` lists a provider's
+  models: xAI's from the pool, OpenCode's from its `/models` with your stored key (sent with the bridge's
+  User-Agent, only to the provider's own address; a redirect is refused, and the key is never printed), and a
+  responses endpoint's with `--base-url` and `--key-name` (its own key: never the bridge's or an OpenCode key).
+  With `--json`, an error is `{"error": "..."}` and exit status 1.
+- **The Settings window edits lanes.** The Lanes pane has New Lane…, Edit… and Delete… for each lane, a lane
+  editor (picker label, effort, role, members in fallback order, Add Model… with each provider's model list),
+  and the xAI sign-in and provider keys (a key goes from a secure field straight to `codexpool lane key NAME -`;
+  a key the lane still needs when you save, such as a new responses member's, is asked for right there).
+- **A Balancing pane in the Settings window.** Choose "Your order" or "Soonest reset first", set the seat order,
+  and mark the reserve, which is used only when every other seat is out.
+- `codexpool lane login xai` copies the sign-in link to the clipboard, as seat sign-ins do (`--no-copy` leaves
+  the clipboard alone). `codexpool gui balancing` opens the Balancing pane.
+
+### Fixed
+
+- **The menu bar popover closes when you click anywhere else**, press Escape or switch to another app, as menu
+  bar popovers do. Clicks inside it and on the menu bar item work as before.
+
 ## [1.1.0] - 2026-09-27
 
 ### Added
@@ -159,6 +207,7 @@ keep it; codexpool 1.0.0 and later are licensed under the PolyForm Noncommercial
   syntax, checks, dry-runs and shellchecks `install.sh`, runs the unit tests and scans for secrets and personal
   data.
 
-[Unreleased]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/memfactorduke/codex-load-balancer/releases/tag/v1.0.0
