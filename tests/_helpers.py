@@ -3,9 +3,11 @@ module codexpool_cli.
 
 Every test module imports this first. bin/codexpool computes its paths, ports and launchd labels from HOME and
 settings.json when it loads, so the fake home must exist before it does. Nothing here touches the real
-~/.codexpool, ~/.codex, ~/Library/LaunchAgents, the Keychain or the network: launchctl, security, osascript and
-mdfind are stubs that log their arguments and fail, the pool and bridge ports are free ports picked at random, and
-the launchd labels are test labels. Standard library only; Python 3.9+.
+~/.codexpool, ~/.codex, ~/Library/LaunchAgents, the Keychain, the clipboard or the network: launchctl, security,
+osascript and mdfind are stubs that log their arguments and fail, pbcopy is a stub that writes to a file in the fake
+home (all of them first on PATH, for bin/codexpool run as a command too; CODEXPOOL_NO_CLIPBOARD=1 keeps even the
+pbcopy stub off unless a test turns it on), the pool and bridge ports are free ports picked at random, and the
+launchd labels are test labels. Standard library only; Python 3.9+.
 """
 import argparse
 import atexit
@@ -65,6 +67,11 @@ def build_home():
         stub = stubs / name
         stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "$HOME/stub-calls.log"\nexit 1\n')
         stub.chmod(0o755)
+    # the clipboard: what pbcopy gets on stdin lands in $HOME/clipboard.txt; FAKE_PBCOPY_EXIT=1 makes it fail
+    pbcopy = stubs / 'pbcopy'
+    pbcopy.write_text('#!/bin/sh\necho "pbcopy $*" >> "$HOME/stub-calls.log"\ncat > "$HOME/clipboard.txt"\n'
+                      'exit "${FAKE_PBCOPY_EXIT:-0}"\n')
+    pbcopy.chmod(0o755)
     root = home / '.codexpool'
     for d in ('state', 'logs', 'auth', 'bin/current', 'lanes/secrets'):
         (root / d).mkdir(parents=True)
@@ -91,8 +98,9 @@ os.environ['HOME'] = str(HOME)
 os.environ['PATH'] = f'{HOME / "stubs"}{os.pathsep}{os.environ.get("PATH", "")}'
 os.environ['CODEXPOOL_HOME'] = str(HOME / '.codexpool')  # what lanes/bridge.py reads
 for _name in ('CODEXPOOL_SETTINGS', 'CODEX_HOME', 'CODEXPOOL_REEXEC', 'CODEXPOOL_HEADLINE_NOTE',
-              'CODEXPOOL_VIA_INSTALLER'):
+              'CODEXPOOL_VIA_INSTALLER', 'FAKE_PBCOPY_EXIT'):
     os.environ.pop(_name, None)
+os.environ['CODEXPOOL_NO_CLIPBOARD'] = '1'  # subprocesses too; tests.test_setup.clipboard() turns copies on in-process
 
 
 def load_cli():
@@ -119,9 +127,14 @@ def load_bridge():
 
 cp = load_cli()
 ROOT = HOME / '.codexpool'
+PBCOPY_STUB = HOME / 'stubs' / 'pbcopy'
+CLIPBOARD = HOME / 'clipboard.txt'
+cp.PBCOPY = str(PBCOPY_STUB)  # the fallback for a PATH without pbcopy too, in-process: never the real clipboard
 # Refuse to run anything unless the module really points at the fake home.
 assert cp.HOME == HOME and cp.ROOT == ROOT and cp.SETTINGS_FILE == ROOT / 'settings.json', 'fake HOME not in effect'
 assert cp.POOL_JOB == TEST_LABELS['pool_label'] and cp.PORT != 8319 and cp.BRIDGE_PORT != 8320, 'live settings'
+assert cp.pbcopy_tool() == str(PBCOPY_STUB) and cp.PBCOPY == str(PBCOPY_STUB) and not cp.clipboard_wanted(), \
+    'the real clipboard is in reach'
 PRISTINE_SETTINGS = dict(cp.SETTINGS)
 EXAMPLE_LANES = json.loads((REPO / 'examples' / 'lanes.json').read_text())
 
@@ -288,7 +301,8 @@ class FakePool:
 
 FAKE_CPA = '''#!{python}
 """A stand-in for CLIProxyAPI's -codex-login: prints what the real one prints (with -no-browser, its SSH-tunnel
-block first), then saves a made-up seat file. Like the real one with logging-to-file on (as install sets it), it
+block first), then saves a made-up seat file. Without -no-browser it says it opens the browser and, like the real one
+when the browser opens, prints no link (FAKE_CPA_BROWSER=fail: the browser did not open, and the link follows). Like the real one with logging-to-file on (as install sets it), it
 logs the failures that are AuthenticationErrors to logs/main.log and not to its output: FAKE_CPA_MODE fail (a state
 mismatch) and expire (the 5-minute callback wait ran out, after the paste prompt). denied prints its error, as the
 real one does for an OAuth error; silent fails without a word anywhere."""
@@ -302,7 +316,9 @@ def log_error(message):
     with open(root / 'logs' / 'main.log', 'a') as f:
         stamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         f.write('[' + stamp + '] [--------] [error] [openai_login.go:58] ' + message + '\\n')
-if '-no-browser' in args:
+if '-no-browser' not in args:
+    print('Opening browser for Codex authentication', flush=True)
+if '-no-browser' in args or os.environ.get('FAKE_CPA_BROWSER') == 'fail':
     border = '=' * 80
     for line in ('To authenticate from a remote machine, an SSH tunnel may be required.', border,
                  '  Run one of the following commands on your local machine (NOT the server):', '',
@@ -311,8 +327,8 @@ if '-no-browser' in args:
                  '  ssh -i <path_to_your_key> -L 1455:127.0.0.1:1455 root@192.0.2.1 -p 22', '',
                  "  NOTE: If your server's SSH port is not 22, please modify the '-p 22' part accordingly.", border):
         print(line, flush=True)
-print('Visit the following URL to continue authentication:', flush=True)
-print('https://auth.example.invalid/oauth/authorize?client_id=app_test&state=s1', flush=True)
+    print('Visit the following URL to continue authentication:', flush=True)
+    print('https://auth.example.invalid/oauth/authorize?client_id=app_test&state=s1', flush=True)
 print('Waiting for Codex authentication callback...', flush=True)
 if mode == 'fail':
     log_error('Authentication failed. Please try again.')

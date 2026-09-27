@@ -290,10 +290,29 @@ def app_installed(bundle_id: str) -> bool:
     return NSWorkspace.sharedWorkspace().URLForApplicationWithBundleIdentifier_(bundle_id) is not None
 
 
-def copy_text(text: str):
-    pb = NSPasteboard.generalPasteboard()
-    pb.clearContents()
-    pb.setString_forType_(S(text), NSPasteboardTypeString)
+def copy_text(text: str) -> int:
+    """Puts text on the clipboard. Returns the pasteboard's change count after, which moves on when anything else is
+    copied; 0 when the pasteboard did not take it, and in snapshots, which never touch the clipboard. It never
+    raises, so a sign-in link shows whether or not it could be copied."""
+    if SNAPSHOT:
+        return 0
+    try:
+        pb = NSPasteboard.generalPasteboard()
+        pb.clearContents()
+        if not pb.setString_forType_(S(text), NSPasteboardTypeString):
+            return 0
+        return int(pb.changeCount())
+    except Exception:   # PyObjC raises its own errors too; a copy that failed is just not copied
+        return 0
+
+
+def clipboard_count() -> int:
+    if SNAPSHOT:
+        return 0
+    try:
+        return int(NSPasteboard.generalPasteboard().changeCount())
+    except Exception:
+        return 0
 
 
 def tilde(path) -> str:
@@ -1258,6 +1277,9 @@ class OverviewPane(Pane):
         if seat.state == 'blocked':
             parts.append(padded(label(f'Re-login needed · {seat.detail or "needs attention"}', 11,
                                       color=mb.C.red_text(), middle=True), 0, 20, 0, 0))
+        elif seat.sign_in_soon:   # still served on its access token, for up to a day
+            parts.append(padded(label(f'Re-login soon · {mb.SIGN_IN_ENDED}', 11,
+                                      color=mb.C.orange_text(), middle=True), 0, 20, 0, 0))
         v = vstack(parts, spacing=7, insets=(11, ROW_X, 12, ROW_X))
         if seat.serving and m.serving_now:
             v.setToolTip_(S('New threads land on this seat'))
@@ -1489,7 +1511,9 @@ class SeatsPane(Pane):
             form_row('Banked resets', reset_sub,
                      button('Redeem Reset…', lambda _: self.confirm_reset(seat), k,
                             enabled=bool(seat.resets) and not busy)),
-            form_row('ChatGPT sign-in', 'Sign in again if the seat is blocked or you changed its password.',
+            form_row('ChatGPT sign-in', f'{mb.SIGN_IN_ENDED}. The seat serves until its access runs out, within a '
+                     'day: sign in again before then.' if seat.sign_in_soon else
+                     'Sign in again if the seat is blocked or you changed its password.',
                      button('Sign In Again…', lambda _: self.app.open_setup(
                          'setup-accounts', label=seat.label,
                          priority=None if seat.priority is None else int(seat.priority)), k, enabled=not busy)),
@@ -1753,8 +1777,10 @@ class HealthPane(Pane):
             lines += ['', title] + [f' {mark.get(c.status, "?")} {c.text}' + (
                 f'\n     → {c.fix}' if c.fix and c.status != 'ok' else '') for c in checks]
         lines += ['', 'OK' if not doc.problems else f'{doc.problems} problem(s)']
-        copy_text('\n'.join(lines) + '\n')
-        self.say('ok', 'Report copied')
+        if copy_text('\n'.join(lines) + '\n'):
+            self.say('ok', 'Report copied')
+        else:
+            self.say('error', 'Couldn’t copy the report')
 
 
 # -- About ------------------------------------------------------------------------------------------------
@@ -2110,10 +2136,12 @@ class Login:
     before: dict = field(default_factory=dict)   # seat file -> label, when the sign-in started
     url: str = ''
     deadline: float = 0.0      # time.monotonic() when the link expires
+    copied: int = 0            # the link is on the clipboard: its change count then (0: it isn't, or no longer)
     job: Job | None = None
     seat_file: str = ''
     plan: str = ''             # 'Business 5×', from status.json once the guard has seen the seat
     message: str = ''
+    switch_note: str = ''      # the sign-in could not point Codex at the pool (switch_problem)
     reserve_done: bool = False
     lines: list = field(default_factory=list)
 
@@ -2121,6 +2149,21 @@ class Login:
 def first_url(text: str) -> str:
     m = re.search(r'https://[^\s<>"\']+', text)
     return m.group(0).rstrip('.,)') if m else ''
+
+
+def switch_problem(lines) -> str:
+    """What to show when `codexpool login` could not point Codex at the pool after the first seat: it printed that it
+    could not write the Codex config, or that openai_base_url was changed by hand and left as it is. '' otherwise."""
+    for ln in lines:
+        text = ln.strip()
+        m = re.match(r'warning: could not point Codex at the pool \((.*?)\)', text)
+        if m:
+            return (f'Codex isn’t pointed at the pool: its config couldn’t be changed ({m.group(1)}). Run '
+                    'codexpool install in Terminal, then quit and reopen Codex.')
+        if text.startswith('openai_base_url was ') and 'by hand' in text:
+            return ('Codex isn’t pointed at the pool: its openai_base_url was changed by hand, so it was left as it '
+                    'is. To use the pool, run codexpool install in Terminal, then quit and reopen Codex.')
+    return ''
 
 
 class SetupAssistant:
@@ -2310,10 +2353,13 @@ class SetupAssistant:
                                         NSFontWeightMedium, box=18),
                             vstack([label(f'That was {lg.label} again', 13, NSFontWeightSemibold),
                                     secondary('The same ChatGPT account and workspace: its sign-in is refreshed and '
-                                              'nothing was added. For another account, open the link in a private '
-                                              'window.', 11, wrap=W - 200)], spacing=2, full=False)],
+                                              'nothing was added. For another account, close every private window, '
+                                              'then open the link in a new one.', 11, wrap=W - 200)],
+                                   spacing=2, full=False)],
                            [button('Add Another…', lambda _: self.reset_login(), k)], spacing=10,
                            insets=(12, ROW_X, 12, ROW_X), min_h=56)]
+            if lg.switch_note:
+                rows.append(note_row(('error', lg.switch_note)))
             return section(group(rows, W), 'Add a ChatGPT account', width=W)
         if lg.phase == 'added':
             verb = 'Signed in again:' if lg.relogin else 'Added'
@@ -2327,6 +2373,8 @@ class SetupAssistant:
                                               f'{lg.label} is now a reserve seat.', 11, wrap=W - 300)],
                                    spacing=2, full=False)],
                            [reserve, another], spacing=10, insets=(12, ROW_X, 12, ROW_X), min_h=56)]
+            if lg.switch_note:
+                rows.append(note_row(('error', lg.switch_note)))
             if lg.message:
                 rows.append(note_row(('error', lg.message)))
             return section(group(rows, W), 'Add a ChatGPT account', width=W)
@@ -2350,12 +2398,17 @@ class SetupAssistant:
             self.chrome = True if SNAPSHOT else app_installed(CHROME_BUNDLE)
         if self.chrome:
             buttons.append(button('Open in Private Chrome Window', lambda _: open_private_chrome(lg.url), k))
-        buttons.append(button('Copy Link', lambda _: (copy_text(lg.url), self.flash_copied()), k))
+        buttons.append(button('Copy Link', lambda _: self.copy_link(), k))
+        copied = None
+        if lg.copied:
+            copied = hstack([symbol_view('checkmark.circle.fill', 12, mb.C.green_text(), NSFontWeightMedium),
+                             secondary('Copied', 12)], spacing=4, cluster=True)
+            copied.setAccessibilityLabel_(S('The sign-in link is on the clipboard'))
         rows = [
             hstack([title], [self.countdown], spacing=10, insets=(12, ROW_X, 4, ROW_X)),
             padded(secondary('To add a different account than the one your browser is signed in to, use a private '
                              'window.', 12, wrap=W - 2 * ROW_X), 0, ROW_X, 6, ROW_X),
-            hstack(buttons, spacing=8, insets=(4, ROW_X, 8, ROW_X)),
+            hstack(buttons, [copied], spacing=8, insets=(4, ROW_X, 8, ROW_X)),
             hstack([url], [link_button('Cancel', lambda _: self.cancel_login(), k)], spacing=10,
                    insets=(4, ROW_X, 10, ROW_X)),
         ]
@@ -2370,9 +2423,16 @@ class SetupAssistant:
 
     snapshot_clock = 0.0
 
-    def flash_copied(self):
+    def copy_link(self):
+        """Copy Link: the link on the clipboard once more (anything copied since took its place)."""
+        lg = self.login
+        lg.copied = copy_text(lg.url)
+        self.render()
+        self.flash_copied('Link copied' if lg.copied else 'Couldn’t copy the link')
+
+    def flash_copied(self, text: str):
         if self.countdown is not None:
-            self.countdown.setStringValue_('Link copied')
+            self.countdown.setStringValue_(S(text))
             AppHelper.callLater(1.5, self.tick)
 
     # -- login flow ------------------------------------------------------------------------------------
@@ -2389,7 +2449,8 @@ class SetupAssistant:
         pr = self.login.priority if same else None
         lg = self.login = Login(phase='starting', label=name, priority=pr, relogin=self.login.relogin and same,
                                 before={s.name: s.label for s in self.app.store.model().seats if s.name})
-        args = ['login', name, '--no-open'] + (['--priority', str(pr)] if pr is not None else [])
+        # --no-copy: the assistant puts the link on the clipboard itself, and shows that it did
+        args = ['login', name, '--no-open', '--no-copy'] + (['--priority', str(pr)] if pr is not None else [])
 
         def line(text: str):
             if lg is not self.login:
@@ -2405,6 +2466,7 @@ class SetupAssistant:
                 url = first_url(text)
                 if url:
                     lg.url, lg.phase, lg.deadline = url, 'waiting', time.monotonic() + LOGIN_TTL_S
+                    lg.copied = copy_text(url)
                     self.render()
                     self.start_timer()
 
@@ -2422,12 +2484,14 @@ class SetupAssistant:
                 lg.phase, lg.plan = 'added', mb.plan_badge(plan.group(1), None) if plan else ''
                 old = lg.before.get(lg.seat_file)
                 if old is not None and not lg.relogin:
-                    # The browser signed in to an account that is already a seat: its login was refreshed and
-                    # `login LABEL` renamed it. Nothing was added; give it its name back.
-                    lg.phase = 'again'
-                    if old != lg.label:
-                        self.app.run(['label', lg.seat_file, old], lambda r: self.app.after_change())
-                    lg.label = old
+                    # The browser signed in to an account that is already a seat: its login was refreshed, nothing
+                    # was added, and `codexpool login` left its name as it was.
+                    lg.phase, lg.label = 'again', old
+                lg.switch_note = switch_problem(lg.lines)
+                if lg.switch_note:
+                    self.switch_note = lg.switch_note
+                elif any('Codex now uses the pool' in ln for ln in lg.lines):
+                    self.switch_note = ''
                 self.render()
                 self.app.after_change(lambda: self.fill_plan(lg))
             else:
@@ -2466,6 +2530,9 @@ class SetupAssistant:
                 lg.job.stop()
             self.stop_timer()
             self.render()
+        elif lg.copied and clipboard_count() != lg.copied:   # something else was copied since: the link is gone
+            lg.copied = 0
+            self.render()
         elif self.countdown is not None:
             self.countdown.setStringValue_(S(self.countdown_text()))
 
@@ -2497,10 +2564,14 @@ class SetupAssistant:
     # -- step 3 -----------------------------------------------------------------------------------------
     def done(self):
         k = self.keep
-        icon = symbol_view('checkmark.circle.fill', 54, mb.C.green_text(), NSFontWeightMedium, box=64)
-        head = self.heading('You’re all set',
-                            'Quit and reopen the Codex app so it uses the pool. Your threads stay where they are.',
-                            icon)
+        if self.switch_note:   # a sign-in could not point Codex at the pool: reopening it would not help yet
+            icon = symbol_view('exclamationmark.triangle.fill', 54, mb.C.orange_text(), NSFontWeightMedium, box=64)
+            head = self.heading('One more step', self.switch_note, icon)
+        else:
+            icon = symbol_view('checkmark.circle.fill', 54, mb.C.green_text(), NSFontWeightMedium, box=64)
+            head = self.heading('You’re all set',
+                                'Quit and reopen the Codex app so it uses the pool. Your threads stay where they are.',
+                                icon)
         reopen = button('Quit and Reopen Codex…', lambda _: self.app.reopen_codex(None, self), k)
         note = note_row(self.done_note) if self.done_note else None
         rows = [form_row('Codex app', 'Picks up the pool when it starts.', reopen, width=SETUP_BODY_W)]
@@ -2519,6 +2590,7 @@ class SetupAssistant:
         return [head, group(rows, SETUP_BODY_W), tips]
 
     done_note = None
+    switch_note = ''   # the last sign-in that tried to point Codex at the pool could not (switch_problem)
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -3098,7 +3170,7 @@ def snapshot(args):
         step = {'setup-welcome': 'welcome', 'setup-done': 'done'}.get(args.pane, 'accounts')
         if args.pane == 'setup-signin':
             setup.snapshot_clock = 1000.0
-            setup.login = Login(phase='waiting', label='Work C', url=DEMO_SIGNIN_URL, deadline=1000.0 + 252)
+            setup.login = Login(phase='waiting', label='Work C', url=DEMO_SIGNIN_URL, deadline=1000.0 + 252, copied=1)
         elif args.pane == 'setup-added':
             setup.login = Login(phase='added', label='Work C', seat_file='codex-work-c.json', plan='Business 5×')
         elif args.pane == 'setup-again':

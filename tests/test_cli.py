@@ -341,9 +341,10 @@ class LaneListJson(unittest.TestCase):
         data = self.lanes()
         self.assertEqual(list(data), ['lanes'])
         (lane,) = data['lanes']
-        self.assertEqual(set(lane), {'name', 'effort', 'role', 'agent_type', 'last_test', 'members'})
+        self.assertEqual(set(lane), {'name', 'display', 'effort', 'role', 'agent_type', 'last_test', 'members'})
         self.assertEqual((lane['name'], lane['effort'], lane['agent_type'], lane['last_test']),
                          ('bulk', 'xhigh', 'bulk', None))
+        self.assertEqual(lane['display'], 'Bulk')
         self.assertTrue(lane['role'].startswith('A capable, fast model'))
         self.assertEqual([set(m) for m in lane['members']], [self.MEMBER_KEYS] * 2)
         self.assertEqual([(m['id'], m['provider'], m['model'], m['name'], m['state'], m['last_test'])
@@ -399,6 +400,51 @@ class LaneListJson(unittest.TestCase):
         code, out, _ = run(cp.cmd_lane)
         self.assertEqual(code, 0)
         self.assertIn('agent_type "bulk"', out)
+
+    def test_display_set_in_lanes_json(self):
+        raw = json.loads(cp.LANES_FILE.read_text())
+        raw['lanes']['bulk']['display'] = 'Bulk: Grok, then Muse'
+        with preserved(cp.LANES_FILE):
+            cp.LANES_FILE.write_text(json.dumps(raw))
+            self.assertEqual(self.lanes()['lanes'][0]['display'], 'Bulk: Grok, then Muse')
+            code, text, _ = run(cp.cmd_lane_list, json=False)
+        self.assertEqual(code, 0)
+        self.assertIn('\n  in the Codex model picker: Bulk: Grok, then Muse\n', text)
+
+    def test_text_list_shows_the_default_display(self):
+        code, text, _ = run(cp.cmd_lane_list, json=False)
+        self.assertEqual(code, 0)
+        self.assertIn('\n  in the Codex model picker: Bulk\n', text)
+
+
+class LaneAddDisplay(unittest.TestCase):
+    """lane add --display writes the lane's picker name into lanes.json (a dry run here: it only prints the diff)."""
+
+    def add(self, *extra):
+        args = cp.build_parser().parse_args(['lane', 'add', 'quick', '--member', 'opencode-go:kimi-9:Kimi 9',
+                                             '--role', 'Quick lookups.', '--dry-run'] + list(extra))
+        before = cp.LANES_FILE.read_bytes()
+        with FakePool(models=['gpt-test']):
+            code, out, err = run(args.lane_fn, **{k: v for k, v in vars(args).items() if k not in ('fn', 'lane_fn')})
+        self.assertEqual(cp.LANES_FILE.read_bytes(), before)  # a dry run writes nothing
+        self.assertIn(code, (0, 1), err)
+        return out
+
+    def test_display(self):
+        out = self.add('--display', 'Quick: Kimi')
+        self.assertIn('+    "quick": {', out)
+        self.assertIn('+      "display": "Quick: Kimi",', out)
+        self.assertIn('display-name: "Quick: Kimi"', out)
+
+    def test_default(self):
+        out = self.add()
+        self.assertNotIn('"display"', out)
+        self.assertIn('display-name: "Quick"', out)
+
+    def test_too_long(self):
+        with self.assertRaises(cp.LaneError) as ctx:
+            self.add('--display', 'x' * 41)
+        self.assertIn('"display" must be a one-line string of 1 to 40 characters', str(ctx.exception))
 
 
 class CodexBin(unittest.TestCase):

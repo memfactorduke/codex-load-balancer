@@ -165,6 +165,7 @@ OUT_STATES = ('exhausted', 'cooldown')
 UNAVAILABLE = OUT_STATES + ('parked', 'disabled', 'blocked')   # rows that cannot serve are dimmed
 STATE_PILL = {'active': 'Serving', 'ready': 'Ready', 'exhausted': 'Out', 'cooldown': 'Out',
               'parked': 'Parked', 'blocked': 'Blocked', 'disabled': 'Off'}
+SIGN_IN_ENDED = 'OpenAI ended this sign-in'   # a seat that still serves on its access token: Re-login soon
 
 # Plan families, matched in order against the plan string ("self_serve_business_prolite" is Business).
 PLAN_NAMES = (('enterprise', 'Enterprise'), ('business', 'Business'), ('team', 'Team'), ('edu', 'Edu'),
@@ -297,10 +298,15 @@ class Seat:
     short: Window | None         # the 5-hour window (Team seats)
     resets: int = 0              # banked free resets (codexpool reset uses one)
     reset_expiry: dt.datetime | None = None   # when the soonest banked reset expires
+    sign_in_ended: bool = False  # OpenAI ended its sign-in: only a new one helps
 
     @property
     def serving(self) -> bool:
         return self.state == SERVING
+
+    @property
+    def sign_in_soon(self) -> bool:  # still served on an access token that has not run out yet (up to a day)
+        return self.sign_in_ended and self.available
 
     @property
     def available(self) -> bool:
@@ -415,7 +421,8 @@ def parse_seat(d) -> Seat | None:
                 detail=as_str(d.get('detail')).strip(), until=parse_time(d.get('until')),
                 priority=as_num(d.get('priority')), weight=weight, reserve=d.get('reserve') is True,
                 week=week, short=short, resets=int(as_num(as_dict(d.get('resets')).get('available'), 0) or 0),
-                reset_expiry=parse_time(as_dict(d.get('resets')).get('next_expiry')))
+                reset_expiry=parse_time(as_dict(d.get('resets')).get('next_expiry')),
+                sign_in_ended=d.get('sign_in_ended') is True)
 
 
 def weighted_used(seats: list[Seat]) -> float | None:
@@ -1376,8 +1383,8 @@ class PopoverLayout:
 
     def seat_row(self, seat: Seat, y: float) -> float:
         """Line 1: name, plan (and reserve) in small text, state at the right. Then the weekly bar (Team seats
-        add a thin 5-hour bar under it), then '49% used' / 'Resets in 6d 12h'. Blocked seats get a detail line.
-        Returns the y below the row."""
+        add a thin 5-hour bar under it), then '49% used' / 'Resets in 6d 12h'. Blocked seats get a detail line, and
+        so do seats that still serve after OpenAI ended their sign-in ('Re-login soon'). Returns the y below the row."""
         m = self.m
         stale = not m.reporting
         dim = stale or seat.unavailable
@@ -1385,8 +1392,8 @@ class PopoverLayout:
         lh, sh = line_height(name_f), SMALL_LH
         bars = [(seat.week, 5.0)] + ([(seat.short, 3.0)] if seat.short else [])
         bars_h = sum(h for _, h in bars) + 3.0 * (len(bars) - 1)
-        blocked = seat.state == 'blocked'
-        detail = (seat.detail or 'Needs attention') if blocked else ''
+        blocked, soon = seat.state == 'blocked', seat.sign_in_soon
+        detail = (seat.detail or 'Needs attention') if blocked else (SIGN_IN_ENDED if soon else '')
         row_h = ROW_PAD + lh + 4 + bars_h + 4 + sh + (sh + 1 if detail else 0) + ROW_PAD
         key = ('seat', seat.name or seat.label)
         reset_tip = ''
@@ -1435,13 +1442,15 @@ class PopoverLayout:
 
         # line 3
         lw = self.usage_text(seat, PAD, y3, small_f, dim, stale)
-        if blocked:
+        if blocked or soon:
             f = font(11, NSFontWeightMedium)
-            self.text('Re-login needed', PAD + lw + 12, y3, f, C.secondary() if stale else C.red_text(),
+            self.text('Re-login needed' if blocked else 'Re-login soon', PAD + lw + 12, y3, f,
+                      C.secondary() if stale else C.red_text() if blocked else C.orange_text(),
                       width=INNER - lw - 12, align='right')
             dy = y3 + sh + 1
-            self.add(draw_symbol, 'exclamationmark.circle.fill', PAD + 5, dy + sh / 2, 10,
-                     C.secondary() if stale else C.red(), NSFontWeightRegular, (10, 10))
+            self.add(draw_symbol, 'exclamationmark.circle.fill' if blocked else 'exclamationmark.triangle.fill',
+                     PAD + 5, dy + sh / 2, 10, C.secondary() if stale else C.red() if blocked else C.orange(),
+                     NSFontWeightRegular, (10, 10))
             self.text(detail, PAD + 14, dy, small_f, C.secondary(), width=INNER - 14, truncate='middle')
         else:
             right = seat_right_text(seat, m.now)
@@ -2055,7 +2064,8 @@ class Controller(NSObject):
         if seat.resets:   # a banked free reset brings the seat back to full right now
             exp = f', expires {fmt_day(seat.reset_expiry)}' if seat.reset_expiry else ''
             add(f'Use reset now… ({seat.resets} banked{exp})', 'arrow.counterclockwise.circle', 'reset')
-        if seat.state == 'blocked':   # the fix comes first
+        relogin_first = seat.state == 'blocked' or seat.sign_in_soon
+        if relogin_first:   # the fix comes first
             add('Re-login…', 'person.badge.key', 'login')
         if seat.state == 'parked':
             add('Enable (spends credits)…', 'play.circle', 'enable-parked')
@@ -2068,7 +2078,7 @@ class Controller(NSObject):
         # The reserve stays last: moving it first would serve it before the regular seats.
         add('Make first', 'arrow.up.to.line', 'first', enabled=not first and not seat.reserve,
             extra=f'{int(top) + 10}')
-        if seat.state != 'blocked':
+        if not relogin_first:
             add('Re-login…', 'person.badge.key', 'login')
         return menu
 

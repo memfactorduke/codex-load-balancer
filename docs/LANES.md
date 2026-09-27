@@ -22,6 +22,8 @@ Lanes are optional. Without `~/.codexpool/lanes.json`, nothing on this page runs
   member while it can, then from the next.
 - **A role**: one sentence on what the lane is for. The main agent reads it to decide when to use the lane.
 - **An effort**: the reasoning effort every member runs at (`low`, `medium`, `high` or `xhigh`).
+- **A picker label** (optional): the lane's entry in the Codex model picker. Without one, it is the lane's name
+  with a capital first letter, such as "Bulk"; the members stay under the hood.
 
 You describe lanes in `~/.codexpool/lanes.json`. `codexpool lane apply` generates everything else from it.
 
@@ -68,8 +70,9 @@ model, for instance), and `lane test` refuses a member alias the same way before
 take over another model's requests.
 
 The pool offers one model per lane, under the lane's name, so the Codex model picker shows one entry per lane,
-such as "Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)". To test one member at a time, `lane test`
-also offers each member under a member alias of its own (`bulk-grok`, `bulk-muse`), but only while it runs.
+such as "Bulk", or the name you give the lane with `display` in `lanes.json`. To test one member at a time,
+`lane test` also offers each member under a member alias of its own (`bulk-grok`, `bulk-muse`), but only while
+it runs.
 
 ## Providers
 
@@ -133,8 +136,10 @@ codexpool lane add bulk \
 Each `--member` is `PROVIDER:MODEL[:DISPLAY NAME]`, in fallback order; it splits at the first two colons, so a
 model id that contains `:` goes into `lanes.json` by hand. A member's id defaults to the first word of its model
 id (`grok`, `muse`). `--effort` defaults to `xhigh`. Give every lane a `--role`: it is what the main agent
-reads. `--base-url` and `--session-header` apply to the lane's `responses` members. `lane add` writes
-`~/.codexpool/lanes.json` and then runs `lane apply`.
+reads. `--display` sets the lane's entry in the Codex model picker, up to 40 characters, for example
+`--display "Bulk: Grok, then Muse"`; the picker cuts long names short, and without it the entry is the
+lane name with a capital first letter, "Bulk". `--base-url` and `--session-header` apply to the lane's
+`responses` members. `lane add` writes `~/.codexpool/lanes.json` and then runs `lane apply`.
 
 For anything `lane add` doesn't take (a member's `context` or `id`), edit `~/.codexpool/lanes.json` and run
 `codexpool lane apply --dry-run`, then `codexpool lane apply`.
@@ -186,8 +191,8 @@ a lane returns before relying on it.
 
 | Command | What it does |
 |---|---|
-| `codexpool lane` (same as `lane list`) | Every lane with its effort, then its members in order: id, provider, model, state and last test. State for xAI is the xAI login's state: `ready`, `cooldown`, `exhausted`, `blocked` (sign in again), `disabled`, `missing` (no login), or `unknown` when the pool doesn't answer. For a bridge member: `bridge ok` when the bridge is up, lists the model, and the key file exists; else `no key`, `bridge down` or `not in bridge` (run `lane apply`). |
-| `lane add NAME --member PROVIDER:MODEL[:DISPLAY NAME] ... [--role TEXT] [--effort E] [--base-url URL] [--session-header NAME] [--dry-run]` | Adds a lane to `lanes.json` (creating the file), then applies. `--base-url` and `--session-header` are for `responses` members. |
+| `codexpool lane` (same as `lane list`) | Every lane with its effort and its name in the Codex model picker, then its members in order: id, provider, model, state and last test. State for xAI is the xAI login's state: `ready`, `cooldown`, `exhausted`, `blocked` (sign in again), `disabled`, `missing` (no login), or `unknown` when the pool doesn't answer. For a bridge member: `bridge ok` when the bridge is up, lists the model, and the key file exists; else `no key`, `bridge down` or `not in bridge` (run `lane apply`). |
+| `lane add NAME --member PROVIDER:MODEL[:DISPLAY NAME] ... [--role TEXT] [--effort E] [--display TEXT] [--base-url URL] [--session-header NAME] [--dry-run]` | Adds a lane to `lanes.json` (creating the file), then applies. `--display` sets the lane's name in the Codex model picker. `--base-url` and `--session-header` are for `responses` members. |
 | `lane remove NAME [--dry-run]` | Removes a lane from `lanes.json`, then applies. |
 | `lane apply [--dry-run]` | Renders and writes everything below. `--dry-run` prints every change as a unified diff and writes nothing. |
 | `lane key KEYNAME [FILE]` | Stores a provider key from FILE, stdin, or a prompt without echo. Never prints it. |
@@ -237,6 +242,7 @@ temporary roles) are not allowed.
 |---|---|---|
 | `role` | yes | What the lane is for, one sentence. It goes into the role file's description and the `AGENTS.md` block. |
 | `effort` | no, `xhigh` | Reasoning effort for every member: `low`, `medium`, `high` or `xhigh`. |
+| `display` | no | The lane's name in the Codex model picker, one line of 1 to 40 characters (the picker cuts longer names short). Default: the lane name with a capital first letter (`Bulk`). |
 | `members` | yes | The members, in fallback order. At least one. |
 
 **Members.**
@@ -246,7 +252,7 @@ temporary roles) are not allowed.
 | `provider` | yes | `xai`, `opencode-go`, `opencode-zen` or `responses`. At most one `xai` member per lane. |
 | `model` | yes | The provider's model id (letters, digits and `._:/-`). |
 | `id` | no | Up to 16 lowercase letters and digits, unique in the lane. Default: the first `-` or `.` separated word of the model id, lowercased, with a digit added if two members would clash. |
-| `name` | no | Display name, used in the role file, the `AGENTS.md` block and the lane's entry in the Codex model picker. Default: the model id. |
+| `name` | no | Display name, used in the role file, the `AGENTS.md` block and the member's own entry while `lane test` runs. Default: the model id. |
 | `context` | no | Context window in tokens, a positive integer. Default: from the pool's model list for xAI, 272000 for bridge members. |
 | `base_url` | `responses` only | The endpoint's base URL, https; the bridge posts to `<base_url>/responses`. |
 | `session_header` | no, `responses` only | A header the provider needs with a per-thread session id. |
@@ -265,7 +271,7 @@ alias before it offers one.
 | What | Pattern | Example |
 |---|---|---|
 | Lane alias | `<lane>` | `bulk` |
-| Lane display name, its entry in the Codex model picker | `<Lane> lane (<name>, then <name>)` | `Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)` |
+| Lane display name, its entry in the Codex model picker (unless the lane sets `display`) | `<Lane>`: the lane name with a capital first letter | `Bulk` |
 | Member alias, which pins one member; offered only while `lane test` runs | `<lane>-<id>` | `bulk-grok`, `bulk-muse` |
 | Member display name | `<Lane> lane: <name> only` | `Bulk lane: Grok 4.7 Fast only`, `Bulk lane: Muse Spark 1.3 contributor only` |
 | Bridge model id | `lane-<lane>-<id>` | `lane-bulk-muse` |
@@ -292,14 +298,14 @@ A marked block at the end of the pool's config. For the example it reads (the br
 # >>> codexpool lanes (generated by `codexpool lane apply` from lanes.json; edit lanes.json, not this block) >>>
 oauth-model-alias:
   xai:
-    - { name: "grok-4.7-build-fast", alias: "bulk", fork: false, display-name: "Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)" }
+    - { name: "grok-4.7-build-fast", alias: "bulk", fork: false, display-name: "Bulk" }
 meta-api-key:
   # The local lane bridge (lanes/bridge.py) holds the provider keys; this key only admits the pool.
   - api-key: "<bridge key>"
     priority: -10
     base-url: "http://127.0.0.1:8320/lane/bulk/muse/v1"
     models:
-      - { name: "lane-bulk-muse", alias: "bulk", display-name: "Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)", max-context-length: 500000 }
+      - { name: "lane-bulk-muse", alias: "bulk", display-name: "Bulk", max-context-length: 500000 }
 payload:
   override:
     - models: [ { name: "bulk", protocol: "codex" } ]

@@ -22,11 +22,79 @@ Paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash
 ```
 
-Then add your accounts in the Setup assistant, then reopen Codex:
+<a name="set-it-up-with-your-coding-agent"></a>**Or set it up with your coding agent.** Paste the prompt below into
+Codex, Claude Code or any other coding agent running on the Mac you are setting up. It runs the installer, asks what
+to call each ChatGPT account, hands you a sign-in link for each one and checks the result: all you do is sign in.
+It also works when you are not at that Mac's screen: through Screen Sharing, an SSH tunnel, or by sending the
+agent the address the sign-in ends on, from any device.
 
-1. The installer checks your Mac and builds the pool from source, then opens the **Setup assistant**.
-2. **Add your ChatGPT accounts** there, one by one; each becomes a seat. For an account your browser is not signed
-   in to, open the sign-in link in a private window.
+<details>
+<summary>The setup prompt for your coding agent</summary>
+
+```text
+Set up codexpool on this Mac (https://github.com/memfactorduke/codex-load-balancer): it pools my ChatGPT
+accounts behind the Codex app and CLI. This message is my go-ahead to install it (and uv, Astral's
+Python manager, if this Mac has no Python 3.11 or later), sign in my accounts and mark the reserve.
+Rules: no sudo; never ask for my Mac or ChatGPT password; never read ~/.codexpool/auth/ or
+~/.codex/auth.json and never print a token; ask me before `codexpool uninstall`; if a step fails, stop
+and show me the error and the fix it prints, don't retry in a loop; if the install stops at the
+Keychain, ask me to unlock it (I run `security unlock-keychain` myself) and wait. You can't answer
+terminal prompts, so use exactly the commands below (not `codexpool setup`, which needs a terminal).
+They need the network, the login Keychain and files outside your workspace: if you have a sandbox, ask
+me to approve running them outside it.
+
+1. Ask me in one message: a short name for each ChatGPT account (for example Personal, Work, Team), in
+   the order to use them; which one is the reserve, used last (usually the biggest plan); and whether
+   I'm at this Mac's screen or somewhere else (over SSH, or you run on a Mac I'm not sitting at). If I'm
+   not at the screen, tell me first: this Mac has to be logged in to its desktop as this user and stay
+   logged in (log in once through Screen Sharing, and again after a restart), because the pool runs as
+   launchd agents in that login.
+2. Install. Run this in the background (your tool's background mode, or `nohup ... &`), since the first
+   install builds the pool from source and can take up to 15 minutes, and wait for it to end:
+     (curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash -s -- --yes --no-gui) > /tmp/codexpool-install.log 2>&1
+   Then read the log. When the install worked, its last line starts with "Docs:"; otherwise it stopped,
+   so show me its last lines (the "✗" line and the fix under it). If `codexpool` isn't on your PATH, use
+   ~/.local/bin/codexpool. Run `codexpool version`: if it is older than 1.1.0, stop and tell me. The
+   closing doctor check in the log reports 0 seats and a warning under "Codex app" (Codex keeps its own
+   login until the first seat): both expected until step 3. If a Setup assistant window opens on this
+   Mac, I can close it. Then read ~/.codexpool/AGENTS.md and follow it.
+3. Sign in each account, one at a time. Run this in the background too and read its log:
+     codexpool login "<Name>" --no-open < /dev/null > /tmp/codexpool-login.log 2>&1
+   Send me the https:// link from the log and tell me: first close every private window left from the
+   previous account (a browser's private windows share one session until the last one closes), then open
+   the link in a new private (incognito) window, sign in to THAT account and pick its workspace; the
+   link expires after about 5 minutes (then run the login again). The login has ended when the log has a
+   line starting "seat " (it worked) or "login did not complete" (it did not; the reason follows). If
+   the log also has a line starting "That was", the browser signed in to an account that is already in,
+   and nothing was added: tell me, and run this login again.
+   If I'm not at this Mac's screen, the sign-in ends at http://localhost:1455 on THIS Mac. Tell me to do
+   one of these. Open the link in a browser on this Mac through Screen Sharing. Or keep this running on
+   my own computer and open the link there (it needs Remote Login on in this Mac's Sharing settings):
+     ssh -N -L 1455:localhost:1455 <user>@<address>
+   Fill it in for me: <user> is `whoami`; on the same network, <address> is `scutil --get LocalHostName`
+   plus .local. If the page already failed, I start the tunnel and reload it while the login is still
+   waiting. Or, from any device (a phone too): I open the link there and sign in, and when the page
+   fails to load, I send you its full address (it starts http://localhost:1455/auth/callback?code= and
+   holds a one-time code, not a token); you then run `curl -s "<that address>" > /dev/null` on this Mac
+   while the login is still waiting.
+4. Run `codexpool reserve "<Reserve name>"` (skip it if I named none), then `codexpool doctor` (it must
+   end with OK) and `codexpool status --live`.
+5. Report the seat table and the doctor result, then tell me to quit the Codex app fully (⌘Q) and reopen
+   it (through Screen Sharing if I'm not at the screen). If you are Codex: this thread keeps working
+   until then and is still there afterwards; from then on it and every new thread go through the pool.
+6. Ask whether I also want subagent lanes (models from other providers for token-heavy subagent work).
+   If yes, follow "Paste this to your agent" in ~/.codexpool/docs/LANES.md.
+```
+
+</details>
+
+With the one-liner, you then add your accounts in the Setup assistant and reopen Codex:
+
+1. The installer checks your Mac and builds the pool from source, then opens the **Setup assistant**. Codex keeps
+   working normally until you add your first account.
+2. **Add your ChatGPT accounts** there, one by one; each becomes a seat. The assistant puts each sign-in link on
+   the clipboard; for an account your browser is not signed in to, paste it into a private window. The first account
+   you add points Codex at the pool.
 3. **Quit the Codex app fully (⌘Q) and reopen it.** Your threads are all there, and the meter sits next to the
    clock. From then on the **Settings window** (Settings… in the menu bar, or `codexpool gui`) manages your seats.
 
@@ -124,7 +192,7 @@ Beside the request path:
 
 | Piece | What it does |
 |---|---|
-| **guard** (`codexpool guard`, every 60 s under launchd) | Polls each seat's usage and banked resets, parks a seat that would start spending credits, retries seats blocked by auth errors, notifies you when the pool changes seat, reaches the reserve or runs dry, and writes `state/status.json` plus a usage sample every 10 minutes to `state/history.jsonl`. |
+| **guard** (`codexpool guard`, every 60 s under launchd) | Polls each seat's usage and banked resets, parks a seat that would start spending credits, retries seats blocked by auth errors (and asks for a new sign-in at once when OpenAI ended one), notifies you when the pool changes seat, reaches the reserve or runs dry, and writes `state/status.json` plus a usage sample every 10 minutes to `state/history.jsonl`. |
 | **menu bar app** (`menubar/codexpool_menubar.py`, under launchd) | A native macOS item next to the clock with a popover for every seat. It reads those two files: no Keychain, no network. |
 | **Settings window and Setup assistant** (`menubar/codexpool_settings.py`) | Opened on demand: from the menu bar, by `codexpool gui`, or by the installer. Every change they make is a `codexpool` command. Same rules as the menu bar app. |
 | **`codexpool`** | The command you use: install, setup, add seats, status, doctor, resets, upgrades, lanes. |
@@ -188,15 +256,20 @@ steps, each safe to re-run:
    PyObjC for the menu bar app and the Settings window. macOS shows a "Background Items Added" notification; they
    appear in System Settings → General → Login Items & Extensions under names like `python3.13` and
    `cli-proxy-api`. Leave them on: with the pool switched off, Codex can't reach the model.
-6. Backs up `~/.codex/config.toml`, records the keys it may change, and sets
-   `openai_base_url = "http://127.0.0.1:8319/v1"`. If your config has `model_provider` or `model_catalog_json`,
-   it warns; re-run with `--fix-config` to remove them (uninstall puts them back).
+6. Backs up `~/.codex/config.toml` and records the keys it may change. Once the pool has a seat, it sets
+   `openai_base_url = "http://127.0.0.1:8319/v1"`. On a first install that waits for your first sign-in, which
+   sets it instead, so Codex keeps working on its own login until the pool can serve it (and while the pool has
+   no seat, a line that already points at it goes back to what it was before install). If your config has
+   `model_provider` or `model_catalog_json`, it warns; re-run with `--fix-config` to remove them (uninstall puts
+   them back).
 7. Writes the `codexpool` command to `~/.local/bin` and runs `codexpool doctor`.
 
-The doctor run at the end reports "0 Codex seats in the pool" as a problem: expected, since you haven't added
-any yet. **From here until you add a seat, Codex requests fail.** Add seats now (the Setup assistant,
-`codexpool setup` or `codexpool login`), or run `codexpool uninstall --yes` to undo the install. The menu bar app
-also opens the Setup assistant by itself the first time it finds the pool running with no seats.
+The doctor run at the end reports "0 Codex seats in the pool" as a problem and warns that Codex still talks to
+OpenAI directly: both expected, since you haven't added a seat yet. **Codex keeps working normally until you add
+your first account.** Add seats now (the Setup assistant, `codexpool setup` or `codexpool login`): the first
+sign-in points Codex at the pool and says so, and then you quit and reopen the Codex app. To undo the install,
+run `codexpool uninstall --yes`. The menu bar app also opens the Setup assistant by itself the first time it finds
+the pool running with no seats.
 
 If `~/.local/bin` is not on your `PATH`, the installer says so: add it and open a new terminal.
 
@@ -217,13 +290,21 @@ codexpool login "Pro 20x" --priority 10 --no-open
 ```
 
 Your browser is usually signed in to one account. For every other account use `--no-open` and open the printed
-link in a private window; the link expires after a few minutes. `--device` uses a device code instead, which only
-works where device-code sign-in is enabled in the account's ChatGPT security settings. The label is optional:
-without one, the seat is named from its email and plan (`codexpool label` renames it later). `login` prints the
-seat's `plan=`, which sets its default size.
+link in a private window; the link expires after a few minutes. Whenever `login` prints the link (with `--no-open`
+or `--device`, or when the browser did not open), it also copies it to the clipboard and says so under it, so you
+can paste it straight in (`--no-copy` leaves the clipboard alone, and `CODEXPOOL_NO_CLIPBOARD=1` does that for
+every sign-in, `codexpool setup` included). `--device` uses a device code instead, which only works where
+device-code sign-in is enabled in the account's ChatGPT security settings. The label is optional: without one,
+the seat is named from its email and plan (`codexpool label` renames it later). `login` prints the seat's `plan=`,
+which sets its default size. Signing in to an account that is already a seat refreshes its login and keeps its
+name; with another name it also prints "That was <seat> once more": the browser used that account again, and
+nothing was added.
 
-Then **quit the Codex app fully (⌘Q) and reopen it**, so it picks up `openai_base_url`. The app still shows its
-own account and its own usage meter; that is expected.
+The first `login` points Codex at the pool (it sets `openai_base_url` and prints "Codex now uses the pool"). If
+you changed `openai_base_url` by hand since the install, it leaves your value and says so; `codexpool install`
+then makes the switch.
+Then **quit the Codex app fully (⌘Q) and reopen it**, so it picks that up. The app still shows its own account and
+its own usage meter; that is expected.
 
 ### Sizes and the reserve
 
@@ -269,8 +350,8 @@ Most of this is also in the menu bar popover and the [Settings window](docs/MENU
 | Take a seat out / put it back | `codexpool disable <seat>` / `codexpool enable <seat>` |
 | Change the fill order (higher first) | `codexpool priority <seat> <n>` |
 | Rename, resize, mark the reserve | `codexpool label <seat> <name>`, `codexpool weight <seat> <n>`, `codexpool reserve <seat>` (moves it last in the fill order; `--off` to undo) |
-| Fix a seat that says blocked | `codexpool refresh <seat>`, then if needed `codexpool login "<Label>" --priority <n> --no-open` |
-| Remove a seat | `codexpool remove <seat> --yes` (deletes its login file; does not sign the account out) |
+| Fix a seat that says blocked | `codexpool refresh <seat>`, then if needed `codexpool login "<Label>" --priority <n> --no-open`; when it says "OpenAI ended this sign-in", only the login helps |
+| Remove a seat | `codexpool remove <seat> --yes` (deletes its login file; does not sign the account out). Removing the last one puts Codex back on its own login until you add a seat |
 | Watch requests | `codexpool logs -f` (`--guard` for the guard's log) |
 | Restart the pool | `codexpool restart` |
 | Test that threads move between two seats | `codexpool selftest <from> <to> --compact` |
@@ -405,7 +486,9 @@ Then start a new Codex thread. `codexpool lane apply` (which `lane add` runs) ge
 `~/.codexpool/lanes.json`: a marked block in the pool's `config.yaml`, a small local bridge for providers that
 need their requests adapted (a fourth launchd agent), a Codex role file per lane in `~/.codex/agents/`, and a
 short block in `~/.codex/AGENTS.md` that tells the main agent what each lane is for. The Codex model picker shows
-one entry per lane. Seat traffic never touches any of it. Without `lanes.json`, nothing changes. The Lanes pane of
+one entry per lane, under the lane's name ("Bulk" for `bulk`), with its members under the hood; `lane add --display
+"<name>"` gives it a name of your own.
+Seat traffic never touches any of it. Without `lanes.json`, nothing changes. The Lanes pane of
 the Settings window lists your lanes and runs `lane test` and `lane apply`.
 
 [docs/LANES.md](docs/LANES.md) covers the supported providers, setup, what `lane apply` generates and why, fallback

@@ -999,6 +999,67 @@ code {
 .step .cmd { margin-top: 14px; position: relative; z-index: 1; }
 .step .step-note { margin-top: 12px; color: var(--text-3); font-size: 14px; }
 
+/* The second way in: a prompt for a coding agent, under the Terminal one-liner. */
+.agent-setup { margin-top: 28px; }
+.step .step-or {
+  max-width: 620px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 18px;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 600;
+}
+.step-or::before, .step-or::after { content: ""; flex: 1; height: 1px; background: var(--line-strong); }
+.step h4 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.012em; }
+
+.prompt {
+  position: relative;
+  z-index: 1;
+  margin-top: 14px;
+  max-width: 620px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-card), inset 0 1px 0 var(--hi);
+  overflow: hidden;
+}
+/* The prompt scrolls inside its card; the fade says there is more, and the bottom padding lets the last line
+   clear it. */
+.prompt::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 36px;
+  background: linear-gradient(to bottom, transparent, var(--surface));
+  pointer-events: none;
+}
+.prompt-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px 8px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.prompt-name { color: var(--text-3); font: 600 13px/1.4 var(--font); }
+.prompt-text {
+  margin: 0;
+  max-height: 336px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 14px 18px 36px;
+  font: 12.5px/1.6 var(--font-mono);
+  color: var(--text);
+  white-space: normal; /* the line breaks come from the spans: one block per line, with a hanging indent */
+}
+.prompt-text:focus-visible { outline-offset: -3px; border-radius: 0; }
+.prompt-text .pl { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-text .pl:empty { height: 1.6em; }
+.prompt-text .pl-3 { padding-left: 3ch; text-indent: -3ch; }
+.prompt-text .pl-5 { padding-left: 5ch; text-indent: -5ch; }
+
 .requirements {
   padding: 28px;
   border-radius: var(--radius);
@@ -1209,7 +1270,7 @@ code {
   .step-num { width: 32px; height: 32px; font-size: 14px; }
   .step:not(:last-child)::before { left: 15.5px; top: 40px; }
   .step-body { padding-top: 3px; }
-  .step .cmd { margin-left: -48px; }
+  .step .cmd, .step .prompt { margin-left: -48px; }
 
   /* The comparison becomes one card per row. */
   .compare thead { display: none; }
@@ -1236,6 +1297,8 @@ code {
 @media (max-width: 420px) {
   .cmd { padding: 12px 10px 12px 14px; }
   .cmd code { font-size: 13px; }
+  .prompt-bar { padding-left: 14px; }
+  .prompt-text { padding: 12px 14px 36px; font-size: 12px; }
   .copy .copy-label { display: none; }
   .copy { width: 34px; padding: 0; justify-content: center; }
 }

@@ -80,7 +80,8 @@ Click the item.
    5-hour bar for seats that have one), how much is left ("56% left", or "Week 24% left · 5h 100% left"), and when
    it resets or comes back. Bars drain as a seat is used: green above 30% left, orange at 30% or less, red at 10%
    or less, and grey for a seat that can't serve. A seat that needs a new sign-in says "Re-login needed" and shows
-   the error.
+   the error. "Re-login soon" (orange) is a seat whose sign-in OpenAI ended but that still serves until its access
+   runs out, within a day: sign in again before then.
 6. **Footer**: Status… (Terminal, `codexpool status --live`), Doctor, Pool log (`codexpool logs -f`), Docs (the
    README), Refresh (runs one guard pass now); then **Add a ChatGPT account…** (the Setup assistant's Add
    accounts step), **Settings…** (⌘,, which also works while the popover is open), Quit, and the running
@@ -108,7 +109,7 @@ Click a seat row for its menu. The first line shows the seat's label and account
 | Item | When | What it runs |
 |---|---|---|
 | **Use reset now… (n banked, expires Oct 3)** | the seat has banked free resets | asks first, then `codexpool reset <seat> --yes` |
-| **Re-login…** | always (near the top when the seat is blocked) | Terminal: `codexpool login <Label> --no-open --priority <current>` |
+| **Re-login…** | always (near the top when the seat is blocked or says "Re-login soon") | Terminal: `codexpool login <Label> --no-open --priority <current>` |
 | **Enable (spends credits)…** | the credit guard parked the seat | asks first, then `codexpool enable <seat>` |
 | **Enable** / **Disable** | the seat is off / on | `codexpool enable` / `codexpool disable` |
 | **Make first** | any regular seat that isn't already first | `codexpool priority <seat> <top + 10>` |
@@ -120,8 +121,9 @@ the seat's weekly and 5-hour limits go back to full and the pool can use it righ
 reset, ChatGPT declines and the credit is kept; the header shows the reason.
 
 **Re-login** opens Terminal with the sign-in link printed rather than opened, and reminds you which account to
-use: open the link in a private window and sign in to that account. It passes the seat's current priority back,
-because a new login rewrites the seat file that holds it.
+use: open the link in a private window and sign in to that account. The link is on the clipboard too, so you can
+paste it straight into the private window. It passes the seat's current priority back, because a new login
+rewrites the seat file that holds it.
 
 **Make first** is disabled for reserve seats: moving the reserve first would drain it before the regular seats.
 
@@ -166,9 +168,11 @@ A three-step window for adding ChatGPT accounts. It opens:
 1. **Welcome**: what codexpool does, and a checklist from `codexpool doctor` (pool running, Codex app pointed at
    the pool, menu bar running), with the fix for any check that fails.
 2. **Add accounts**: the seats already in the pool, then a name field and **Get Sign-In Link**, which runs
-   `codexpool login <name> --no-open` in the background. Open the link in the browser, in a private Chrome window
-   (when Chrome is installed) or copy it; to add an account other than the one your browser is signed in to, use
-   a private window. The link is good for 5 minutes, with Try Again after that. Once you have signed in, the
+   `codexpool login <name> --no-open --no-copy` in the background. The link goes on the clipboard as soon as it
+   appears ("Copied" shows next to **Copy Link** while it is still there). Open it in the browser or in a private
+   Chrome window (when Chrome is installed), or paste it; to add an account other than the one your browser is
+   signed in to, use a private window. **Copy Link** copies it again. The link is good for 5 minutes, with Try
+   Again after that. Once you have signed in, the
    assistant shows the seat's plan and size, and offers **Mark as Reserve** and **Add Another…**. If the browser
    signed in to an account that is already a seat, nothing is added: it says so and gives that seat its old name
    back.

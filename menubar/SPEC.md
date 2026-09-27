@@ -89,17 +89,20 @@ hairlines. If the popover would not fit on the screen, only the seat list scroll
    - Line 3: "51% left" / "49% used" (or "Week 36% left · 5h 0% left" / "Week 64% · 5h 100%", the binding window
      emphasised) left; "Resets in 3d 20h", or
      "Back in 3h 56m" for out and parked seats, right, plus "· reset available" when a reset would bring it back.
-     Blocked seats say "Re-login needed" and show the error on an extra line.
+     Blocked seats say "Re-login needed" and show the error on an extra line. A seat the pool still serves after
+     OpenAI ended its sign-in (`sign_in_ended` in its status.json row, state `active`/`ready`) says "Re-login soon"
+     in orange, with "OpenAI ended this sign-in" on an extra line; it serves until its access token runs out.
    - Tooltip: the blocked detail and "n banked resets, soonest expires Oct 3. Click to use one."
    - Clicking a row opens an `NSMenu` (seat file name `name` is what gets passed to codexpool):
      - **Use reset now… (n banked, expires Oct 3)** when the seat has a banked reset. Asks first ("Use a reset on
        Work B?"), then runs `codexpool reset <seat> --yes`, which redeems one banked **free** reset (the
        soonest-expiring) and never buys one.
-     - Re-login… first when the seat is blocked (Terminal, `codexpool login <label> --no-open --priority <n>`,
-       with a hint to sign in as the seat's email in a private window).
+     - Re-login… first when the seat is blocked or says "Re-login soon" (Terminal, `codexpool login <label> --no-open --priority <n>`,
+       with a hint to sign in as the seat's email in a private window; the command also puts the link on the
+       clipboard).
      - Enable (spends credits)… for a parked seat, with a confirmation; Enable for a disabled one; else Disable.
      - Make first (priority above the current first; disabled for reserve seats and for the seat already first).
-     - Re-login… (when not blocked).
+     - Re-login… (when not first).
    - After a successful action the app runs one `codexpool guard` pass so the popover shows the effect at once.
 6. **Footer rows** (SF Symbols): Status… (`terminal`, Terminal `codexpool status --live`), Doctor (`stethoscope`),
    Pool log (`doc.text`, `codexpool logs -f`), Docs (`book`, opens `~/.codexpool/README.md`, else the README on
@@ -179,17 +182,22 @@ row in the Seats list is a radio button and an About link row is a link, each la
 **Setup assistant** (its own 640 × 560 window, step dots in the title bar; a pane name starting with `setup-` opens
 it): 1 **Welcome**: what codexpool does and a checklist from `codexpool doctor --json` (pool running, Codex app
 pointed at the pool, menu bar running; a failing check shows its fix). 2 **Add accounts**: the seats found, then a
-name field and Get Sign-In Link, which runs `codexpool login NAME --no-open` (plus `--priority N` for Sign In
-Again) in the background and takes the first `https://` URL it prints. Then: Open in Browser (`open URL`), Open in
-Private Chrome Window (only when Chrome is installed: `open -na "Google Chrome" --args --incognito URL`), Copy
-Link, the hint "To add a different account than the one your browser is signed in to, use a private window.", a
-5-minute countdown (at zero the login is stopped and Try Again offered) and Cancel. Once CLIProxyAPI prints
+name field and Get Sign-In Link, which runs `codexpool login NAME --no-open --no-copy` (plus `--priority N` for
+Sign In Again) in the background and takes the first `https://` URL it prints. It puts that URL on the clipboard
+itself (NSPasteboard; `--no-copy` keeps the CLI's own copy out of it) and shows a green check and "Copied" after
+the buttons while the pasteboard's change count says the link is still there. Then: Open in Browser (`open URL`),
+Open in Private Chrome Window (only when Chrome is installed: `open -na "Google Chrome" --args --incognito URL`),
+Copy Link (copies it again, "Link copied" in place of the countdown for 1.5 s, or "Couldn’t copy the link" when the pasteboard refused it; "Copied" shows only for a copy that worked), the hint "To add a different
+account than the one your browser is signed in to, use a private window.", a 5-minute countdown (at zero the login is stopped and Try Again offered) and Cancel. Once CLIProxyAPI prints
 "Authentication saved to", the countdown and Cancel go away ("Signed in. Adding Work C…"): codexpool may still be
 naming the seat and is never stopped then. Success is exit 0 and a line starting with `seat `: it shows the plan
 and, after a guard pass, the size the pool gave it (`Business 5×`), with Mark as Reserve (`codexpool reserve SEAT`)
 and Add Another…. If the seat file was already in the pool (the browser signed in to an account that is already a
-seat), nothing was added: it says so, points to a private window, and gives that seat its old name back
-(`codexpool label SEAT OLD`, since `login LABEL` renamed it). Closing the window stops a login that is still
+seat), nothing was added: it says so, calls the seat by its name (`login LABEL` never renames a seat that is
+already in the pool) and says to close every private window before opening the link in a new one. If the login
+printed that it could not point Codex at the pool ("warning: could not point Codex at the pool", or
+"openai_base_url was changed by hand"), the card says so with the fix, `codexpool install`, and so does Done,
+which then reads "One more step" instead of "You're all set". Closing the window stops a login that is still
 waiting for the browser. One that is finishing keeps running (its result shows when the assistant opens again),
 and quitting, or closing the last window, waits for it (up to 45 s). A request from another launch (the
 installer, the menu bar's first run) only brings an open assistant forward when it would send it back to Welcome
@@ -197,14 +205,15 @@ or away from a sign-in in progress.
 3 **Done**: Quit and Reopen Codex… (confirm), and where Settings live.
 
 **Commands the GUI codes against.** Existing: `status --json` (same shape as status.json), `login LABEL --no-open
-[--priority N]`, `label`, `weight`, `priority`, `reserve [--off]`, `enable`, `disable`, `reset --yes`, `remove
+--no-copy [--priority N]`, `label`, `weight`, `priority`, `reserve [--off]`, `enable`, `disable`, `reset --yes`, `remove
 --yes`, `restart`, `lane test LANE`, `lane apply`, `guard`. New (stage 2): `doctor --json` → `{"ok": bool,
 "problems": int, "warnings": int, "sections": [{"title": str, "checks": [{"status": "ok"|"warn"|"fail", "text": str,
-"fix": str|null}]}]}`; `lane list --json` → `{"lanes": [{"name": str, "effort": str, "role": str, "members":
-[{"id": str, "provider": str, "model": str, "name": str, "state": str, "last_test": {"ok": bool, "when": str,
-"reason": str}|null}]}]}`; `set KEY VALUE` (keys `display`, `headline`); `version` (prints `codexpool X.Y.Z`). Until
-a command exists, argparse's answer (exit 2, "invalid choice" or "unrecognized arguments") shows as "This needs a
-newer codexpool. Run the installer again to update it, then try again." in place of that data.
+"fix": str|null}]}]}`; `lane list --json` → `{"lanes": [{"name": str, "display": str (the lane's name in the Codex
+model picker), "effort": str, "role": str, "members": [{"id": str, "provider": str, "model": str, "name": str, "state":
+str, "last_test": {"ok": bool, "when": str, "reason": str}|null}]}]}`; `set KEY VALUE` (keys `display`,
+`headline`); `version` (prints `codexpool X.Y.Z`). Until a command exists, argparse's answer (exit 2, "invalid
+choice" or "unrecognized arguments") shows as "This needs a newer codexpool. Run the installer again to update it,
+then try again." in place of that data.
 
 **Snapshot mode**, for QA and the docs, shows no UI and runs no command (a guard in the code refuses to):
 ```

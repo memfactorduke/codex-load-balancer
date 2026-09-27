@@ -16,8 +16,9 @@
 #   3. Downloads the codexpool source of the latest release (or --version TAG) from GitHub as a tarball into a
 #      temporary directory. Without any release it uses the main branch.
 #   4. Runs `bin/codexpool install` from that source. That is the real installer: it copies the code into
-#      ~/.codexpool, builds the pool, sets up the launchd agents and points the Codex app at the pool. Every step
-#      of it is safe to repeat, so running this script again upgrades in place and keeps your seats and settings.
+#      ~/.codexpool, builds the pool, sets up the launchd agents and records the Codex config; the first seat's
+#      sign-in points the Codex app at the pool. Every step of it is safe to repeat, so running this script again
+#      upgrades in place and keeps your seats and settings.
 #   5. Opens the Setup assistant, where you add your ChatGPT accounts, and prints what to do next.
 #
 # It never uses sudo, never edits your shell profile, and deletes its temporary directory when it exits.
@@ -557,7 +558,8 @@ run_install() {
     else
       say "      It checks this Mac again, then: copies the code into ~/.codexpool, gets Go from go.dev, builds the"
       say "      gated CLIProxyAPI pool, stores a management key in the Keychain, starts the launchd agents (pool,"
-      say "      guard, menu bar), points the Codex app at the pool and writes the codexpool command to ~/.local/bin."
+      say "      guard, menu bar), records the Codex config (the first account's sign-in points Codex at the pool)"
+      say "      and writes the codexpool command to ~/.local/bin."
     fi
     return
   fi
@@ -680,7 +682,8 @@ finish() {
       say "  1. Add each ChatGPT account: $cmd login \"<Label>\" --priority <n>"
       say "     (for an account your browser is not signed in to, add --no-open and use a private window)"
     fi
-    say "  2. Quit the Codex app fully (⌘Q) and reopen it, so it goes through the pool."
+    say "  2. After the first account is in, quit the Codex app fully (⌘Q) and reopen it, so it goes through"
+    say "     the pool. Until then Codex keeps its own login and works as before."
     say "  3. Check everything: $cmd doctor (it should end with OK)"
   fi
   say "  Docs: $REPO_URL · Undo: $cmd uninstall --yes"

@@ -62,8 +62,9 @@ different token family, even for the same account) for its usage meter, cloud ta
 
 **codexpool never handles tokens.** Usage and reset calls go through the pool's management `api-call` endpoint
 with a `$TOKEN$` placeholder, and the pool substitutes the seat's token. codexpool reads only identity claims
-(email, plan, account id) from seat files. The single-seat refresh response embeds tokens, so `codexpool refresh`
-prints only the status.
+(email, plan, account id) and the time of the last sign-in or refresh (`last_refresh`) from seat files. The
+single-seat refresh response embeds tokens, so `codexpool refresh` prints only the status, and the guard reads only
+the error of a refresh that failed.
 
 **The guard parks seats that would spend credits.** It runs every 60 seconds from launchd. When a seat that the
 pool still considers ready is at 100% and would pay with credits, the guard disables it until its window resets
@@ -73,6 +74,16 @@ disabled seat. `codexpool enable` turns a park into an override that lasts until
 **The guard heals auth blocks.** A seat blocked by an auth error is refreshed every 15 minutes (hourly once you
 have been told). After three failed attempts it notifies you to sign in again. A healed seat leaves probation
 once a real request succeeds, or after two hours without another block; until then its flapping isn't announced.
+A sign-in that OpenAI ended is not healed: when a `credential refresh failed` line in the pool's log (the pool
+still serves the seat on its access token) or the answer to the guard's own refresh (the pool blocked the seat)
+shows `refresh_token_invalidated` ("Your session has ended"), `refresh_token_reused`, `refresh_token_revoked`,
+`refresh_token_expired` or `invalid_grant`, no refresh can work again, so the guard marks the seat, notifies you on
+that pass, and stops refreshing it. The mark holds until the seat file's `last_refresh` changes (a new sign-in, or a
+refresh that worked after all); a log line older than it doesn't count. The pool's seat list is no evidence: it only
+says "unauthorized", and its state can outlast a new sign-in. The pool keeps serving a marked seat on an access
+token that has not run out (up to a day), so while it does, the seat stays ready ("sign in again soon", a doctor
+warning) and the guard announces no move and no dry pool; once the pool stops serving it, it is blocked until the
+new sign-in.
 
 **Resets are redeemed, never bought.** The guard polls each seat's banked resets every 10 minutes and puts the
 count and soonest expiry into `status.json`. `codexpool reset` redeems the soonest-expiring credit, then calls
@@ -108,8 +119,10 @@ the guard included, rather than letting it run against the wrong port or labels.
 **Install is idempotent and reversible.** Each step checks first and changes only what is missing or wrong;
 `--dry-run` prints the plan. Before touching `~/.codex/config.toml`, install backs it up (a dated copy in
 `state/`, never overwritten) and records the original values of `openai_base_url`, `model_provider` and
-`model_catalog_json` in `state/install.json`. Uninstall restores `openai_base_url` unless you have changed it
-since, and puts back only the keys `--fix-config` removed. A symlinked `config.toml` is edited where it points.
+`model_catalog_json` in `state/install.json`. It sets `openai_base_url` only once the pool has a seat: before
+that the pool can serve nothing, and pointing Codex at it would cut Codex off (a Codex agent running the install
+included), so install notes the switch in `state/install.json` and the first seat sign-in makes it. Uninstall
+restores `openai_base_url` unless you have changed it since, and puts back only the keys `--fix-config` removed. A symlinked `config.toml` is edited where it points.
 Install writes `~/.codex/config.toml` whatever `CODEX_HOME` says, because the Codex app started from Finder
 never sees that variable. The management key counts as missing only when the Keychain says it is not there
 (`security` exit 44); a locked or unreachable Keychain stops install instead of minting a second key.

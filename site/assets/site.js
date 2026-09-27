@@ -67,18 +67,21 @@
     });
   }
 
-  document.querySelectorAll('button[data-copy]').forEach(function (button) {
+  // data-copy holds the text itself; data-copy-from names the element whose text is copied (the setup prompt).
+  document.querySelectorAll('button[data-copy], button[data-copy-from]').forEach(function (button) {
     var label = button.querySelector('.copy-label');
+    var source = button.hasAttribute('data-copy-from') && document.getElementById(button.getAttribute('data-copy-from'));
     var timer;
+    if (source === null) return;
     button.hidden = false;
     button.addEventListener('click', function () {
-      copy(button.getAttribute('data-copy')).then(function () {
+      copy(source ? source.textContent : button.getAttribute('data-copy')).then(function () {
         button.classList.add('is-copied');
         if (label) label.textContent = 'Copied';
-        if (status) status.textContent = 'Install command copied to the clipboard.';
+        if (status) status.textContent = button.getAttribute('data-copied') || 'Install command copied to the clipboard.';
       }, function () {
         if (label) label.textContent = 'Press ⌘C';
-        var code = button.parentElement.querySelector('code');
+        var code = source || button.parentElement.querySelector('code');
         if (code) window.getSelection().selectAllChildren(code);
       }).then(function () {
         clearTimeout(timer);

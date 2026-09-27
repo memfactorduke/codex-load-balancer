@@ -28,12 +28,36 @@ login.
 
 ## Codex
 
-### Codex stopped working right after the install
+### Codex still talks to OpenAI directly
 
-Install points Codex at the pool, and the pool has no seats until you add them, so every request fails in
-between. Add a seat: in the Setup assistant (Add a ChatGPT account… in the menu bar, or
-`codexpool gui setup-welcome`), with `codexpool setup`, or by hand with `codexpool login "<Label>" --priority <n>`.
-Then quit (⌘Q) and reopen Codex. To go back instead, run `codexpool uninstall --yes` and reopen Codex.
+Codex goes through the pool once `~/.codex/config.toml` has `openai_base_url = "http://127.0.0.1:8319/v1"` and the
+Codex app has been reopened since. `codexpool doctor` shows the line under "Codex app".
+
+- **No seat yet** (doctor warns "Codex still talks to OpenAI directly until you add the first seat"). Expected
+  after a first install: install leaves the Codex config alone until the pool has a seat, so Codex keeps working
+  on its own login. Add a seat in the Setup assistant (Add a ChatGPT account… in the menu bar, or
+  `codexpool gui setup-welcome`), with `codexpool setup`, or with `codexpool login "<Label>"`. The first sign-in
+  sets the line and prints "Codex now uses the pool; quit and reopen the Codex app".
+- **Seats, but the app hasn't been reopened.** It reads `config.toml` at start. Quit it fully (⌘Q) and open it
+  again; your next prompt then shows up in `codexpool logs -n 20`.
+- **Seats, and the line is missing or different** (doctor reports `openai_base_url = (unset)` or another value as
+  a problem). The sign-in could not write the file (it printed "could not point Codex at the pool"), the line was
+  changed by hand before the first sign-in (it printed "openai_base_url was changed by hand since install", and
+  left it), or it was edited or removed since. Run `codexpool install`, which sets it now that the pool has a
+  seat, and reopen Codex.
+- **The `codex` CLI only**, with `CODEX_HOME` set: install configures `~/.codex/config.toml`, the file the app
+  reads. Add the same line to `$CODEX_HOME/config.toml` yourself.
+
+After `codexpool uninstall`, Codex talking to OpenAI directly is the point.
+
+### Every Codex request fails and the pool has no seats
+
+Codex points at the pool, but the pool has no seat to serve it: an install from before 1.1.0 switched Codex over
+straight away. Run `codexpool install`: with no seat in the pool it puts `openai_base_url` back as it was before
+install, so Codex goes back to its own login, and the first seat you add points it at the pool again. Then quit
+(⌘Q) and reopen Codex. Or add a seat right away (the Setup assistant, `codexpool setup` or
+`codexpool login "<Label>"`) and reopen Codex. Removing the last seat with `codexpool remove` puts the line back by
+itself.
 
 ### Codex can't reach the model / every request fails at once
 
@@ -77,11 +101,19 @@ already retries a refresh every 15 minutes and notifies you after three failures
 
 ```sh
 codexpool refresh "Work B"
-codexpool login "Work B" --priority 300 --no-open     # if it stays blocked; open the link in a private window
+codexpool login "Work B" --priority 300 --no-open     # if it stays blocked; paste the link into a private window
 ```
 
-Pass the seat's current `--priority` again: the new login rewrites the file that holds it. The menu bar's
-**Re-login…** does this for you.
+Pass the seat's current `--priority` again: the new login rewrites the file that holds it. With `--no-open`, `login`
+puts the link on the clipboard. The menu bar's **Re-login…** does all this for you.
+
+When the seat says **OpenAI ended this sign-in**, refreshing cannot help: OpenAI refused the seat's refresh
+token for good (`refresh_token_invalidated`, "Your session has ended", `refresh_token_reused` or
+`invalid_grant`), for instance after you signed out of all devices or changed the password. The guard notifies
+you the first time it sees that, from the pool's log or its own refresh, and stops refreshing the seat. When the
+pool log showed it, the seat usually still serves on its access token for up to a day: it says **Re-login soon**
+until then, and blocked after. Sign in again with the `codexpool login` line from the notification (or
+**Re-login…** in the menu bar); the seat is back on the guard's next pass after the sign-in.
 
 ### doctor reports `refresh_token_reused`
 
@@ -142,13 +174,29 @@ the email.
 
 ### The sign-in opened in the wrong account
 
-Your browser is signed in to another account. Use `--no-open` and open the printed link in a private window:
+Your browser is signed in to another account. Use `--no-open` and paste the link, which is also on the
+clipboard, into a private window:
 
 ```sh
 codexpool login "Work B" --priority 300 --no-open
 ```
 
 Pick the right workspace on the ChatGPT page; each workspace is a separate seat.
+
+### After signing in, the browser can't connect to localhost:1455
+
+The sign-in ends at `http://localhost:1455` on the Mac that runs `codexpool login`, where the pool waits for it.
+A browser on another computer (you reach the Mac over SSH, or a coding agent runs the login on a Mac you aren't
+at) goes to its own localhost instead, and the sign-in never finishes. Either open the link in a browser on that
+Mac, in person or through Screen Sharing, or forward the port from your own computer and keep it open while you
+sign in (it needs Remote Login on in that Mac's System Settings → General → Sharing):
+
+```sh
+ssh -N -L 1455:localhost:1455 <user>@<that Mac's name>.local
+```
+
+If the page has already failed, start the forward and reload it while the login is still waiting (5 minutes);
+after that, run the login again and open its new link.
 
 ### "login did not complete; nothing changed"
 
@@ -409,15 +457,24 @@ the `agent_type` is the lane's name.
 
 ### The model picker lists a lane's members
 
-The picker should show one entry per lane, named `<Lane> lane (<member>, then <member>)` after the members'
-display names in `lanes.json`. Entries named `<Lane> lane: <member> only` are member aliases (`<lane>-<id>`),
-which the pool offers only while `codexpool lane test` runs. A test that was killed before it could withdraw
-them leaves them behind. `codexpool doctor` then warns that `/v1/models` still lists the member aliases from a
-lane test, and says the lanes block in `config.yaml` no longer matches `lanes.json`. Withdraw them:
+The picker should show one entry per lane, named by the lane's `display` in `lanes.json`, or else after the lane
+itself with a capital first letter, such as "Bulk". Entries named `<Lane> lane: <member> only` are member aliases
+(`<lane>-<id>`), which the pool offers only while
+`codexpool lane test` runs. A test that was killed before it could withdraw them leaves them behind.
+`codexpool doctor` then warns that `/v1/models` still lists the member aliases from a lane test, and says the
+lanes block in `config.yaml` no longer matches `lanes.json`. Withdraw them:
 
 ```sh
 codexpool lane apply
 ```
+
+### A lane's name is cut short in the model picker
+
+A lane's entry in the picker is its name with a capital first letter ("Bulk"), unless you gave it one of your own
+with `"display"`, and the picker shows only the start of a long one. Shorten it: set `"display"` on the lane in
+`~/.codexpool/lanes.json` (up to 40 characters; remove it for the default) and run `codexpool lane apply`, or pass
+`--display "<name>"` when you add it with `codexpool lane add`. `codexpool lane` shows the name each lane has in
+the picker. If the picker still shows the old name, start a new thread or reopen the Codex app.
 
 ### `lane apply` stops: "oauth-model-alias", "meta-api-key" or "payload" outside the lanes block
 

@@ -2,10 +2,14 @@
 import contextlib
 import io
 import itertools
+import os
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
-from _helpers import ROOT, TEST_KEY, FakePool, cp, fake_cpa, fake_seat_file, preserved, run, seat_name
+from _helpers import (CLIPBOARD, HOME, PBCOPY_STUB, ROOT, SCRIPT, TEST_KEY, FakePool, cp, fake_cpa, fake_seat_file,
+                      preserved, run, seat_name)
 
 URL = 'https://auth.example.invalid/oauth/authorize?client_id=app_test&state=s1'
 Prompter = cp.Prompter  # the real class, while tests patch cp.Prompter
@@ -35,6 +39,22 @@ def scripted(*answers):
     return lambda: Prompter(io.StringIO(''.join(a + '\n' for a in answers)))
 
 
+def copies_wanted(no_copy=False):
+    return not no_copy   # cp.clipboard_wanted without CODEXPOOL_NO_CLIPBOARD
+
+
+@contextlib.contextmanager
+def clipboard(**env):
+    """Sign-in links may go on the clipboard for the block, in this process only: the pbcopy stub's, which lands in
+    CLIPBOARD (env: FAKE_PBCOPY_EXIT=1 makes it fail). CODEXPOOL_NO_CLIPBOARD=1 stays in the environment, so a
+    subprocess keeps them off it (and would find the stub first on PATH anyway)."""
+    with preserved(CLIPBOARD), mock.patch.dict(os.environ, env), \
+            mock.patch.object(cp, 'clipboard_wanted', copies_wanted):
+        with contextlib.suppress(FileNotFoundError):
+            CLIPBOARD.unlink()
+        yield
+
+
 class LabelProblem(unittest.TestCase):
     def test_good_labels(self):
         for label in ('Work', 'Work A', 'Pro 20x', 'team-2', 'Équipe', 'a' * cp.SEAT_LABEL_MAX, 'x'):
@@ -52,7 +72,7 @@ class LabelProblem(unittest.TestCase):
 
     def test_login_refuses_a_bad_label_before_anything_runs(self):
         with mock.patch.object(cp, 'login_seat') as login:
-            code, _, err = run(cp.cmd_login, label='-x', device=False, no_open=True, priority=None)
+            code, _, err = run(cp.cmd_login, label='-x', device=False, no_open=True, no_copy=False, priority=None)
         self.assertEqual(code, 1)
         self.assertIn('codexpool login: a label cannot start with -', err)
         login.assert_not_called()
@@ -286,21 +306,118 @@ class SignInFailure(unittest.TestCase):
         self.assertEqual(cp.sign_in_errors(0), [])
 
 
+class LinkOnTheClipboard(unittest.TestCase):
+    """codexpool login (and setup, below) puts the sign-in link on the clipboard and says so right under it."""
+
+    def login(self, no_copy=False, no_open=True, **env):
+        with fake_cpa(FAKE_CPA_EMAIL='work@test', **env), FakePool(), \
+                mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY):
+            return run(cp.cmd_login, label='Work', device=False, no_open=no_open, no_copy=no_copy, priority=300)
+
+    def test_copied(self):
+        with clipboard():
+            code, out, _ = self.login()
+            self.assertEqual(CLIPBOARD.read_text(), URL)
+        self.assertEqual(code, 0)
+        self.assertIn(f'{URL}\n{cp.LINK_COPIED}\nWaiting for Codex authentication callback', out)
+        self.assertEqual(cp.LINK_COPIED, '  Link copied to the clipboard: paste it into a private window signed in '
+                                         'to that account.')
+
+    def test_the_browser_opened(self):
+        """Plain codexpool login: CLIProxyAPI opens the browser and prints no link, so nothing goes on the clipboard."""
+        with clipboard():
+            code, out, _ = self.login(no_open=False)
+            self.assertFalse(CLIPBOARD.exists())
+        self.assertEqual(code, 0)
+        self.assertIn('Opening the ChatGPT sign-in in your browser', out)
+        self.assertNotIn('https://', out)
+        self.assertNotIn('clipboard', out)
+
+    def test_the_browser_did_not_open(self):
+        """Then CLIProxyAPI prints the link after all, and it goes on the clipboard."""
+        with clipboard():
+            code, out, _ = self.login(no_open=False, FAKE_CPA_BROWSER='fail')
+            self.assertEqual(CLIPBOARD.read_text(), URL)
+        self.assertEqual(code, 0)
+        self.assertIn(f'{URL}\n{cp.LINK_COPIED}\nWaiting for Codex authentication callback', out)
+
+    def test_no_copy(self):
+        with clipboard():
+            code, out, _ = self.login(no_copy=True)
+            self.assertFalse(CLIPBOARD.exists())
+        self.assertEqual(code, 0)
+        self.assertNotIn('clipboard', out)
+        self.assertTrue(cp.build_parser().parse_args(['login', 'Work', '--no-open', '--no-copy']).no_copy)
+        self.assertFalse(cp.build_parser().parse_args(['login', 'Work']).no_copy)
+
+    def test_no_clipboard_env(self):
+        code, out, _ = self.login()   # CODEXPOOL_NO_CLIPBOARD=1, as in every other test
+        self.assertEqual(code, 0)
+        self.assertNotIn('clipboard', out)
+        self.assertFalse(CLIPBOARD.exists())
+
+    def test_a_failed_copy_is_no_failed_login(self):
+        with clipboard(FAKE_PBCOPY_EXIT='1'):
+            code, out, _ = self.login()
+        self.assertEqual(code, 0)
+        self.assertIn(f'seat {seat_name("work@test")}: work@test', out)
+        self.assertNotIn('clipboard', out)
+        with clipboard(), mock.patch.object(cp, 'PBCOPY', str(HOME / 'no-pbcopy')), \
+                mock.patch.object(cp.shutil, 'which', return_value=None):
+            self.assertFalse(cp.copy_to_clipboard(URL))
+            code, out, _ = self.login()
+        self.assertEqual(code, 0)
+        self.assertNotIn('clipboard', out)
+
+    def test_pbcopy_on_path(self):
+        """The first pbcopy on PATH, as for launchctl and security (the stub, first on the tests' PATH)."""
+        with clipboard(), mock.patch.object(cp, 'PBCOPY', str(HOME / 'no-pbcopy')):
+            self.assertEqual(cp.pbcopy_tool(), str(PBCOPY_STUB))
+            self.assertTrue(cp.copy_to_clipboard(URL))
+            self.assertEqual(CLIPBOARD.read_text(), URL)
+
+    def test_macos_pbcopy_without_one_on_path(self):
+        with clipboard(), mock.patch.object(cp.shutil, 'which', return_value=None):
+            self.assertEqual(cp.pbcopy_tool(), cp.PBCOPY)   # /usr/bin/pbcopy; the stub in these tests
+            self.assertTrue(cp.copy_to_clipboard(URL))
+            self.assertEqual(CLIPBOARD.read_text(), URL)
+
+    def test_the_command_finds_the_stub_too(self):
+        """bin/codexpool as a command (the menu bar's Re-login runs codexpool login) looks pbcopy up on PATH, so a
+        test that runs it reaches the stub, never the real clipboard."""
+        code = ('import importlib.machinery, importlib.util, sys\n'
+                'loader = importlib.machinery.SourceFileLoader("codexpool_cli", sys.argv[1])\n'
+                'module = importlib.util.module_from_spec(importlib.util.spec_from_loader("codexpool_cli", loader))\n'
+                'loader.exec_module(module)\n'
+                'print(module.pbcopy_tool())\n')
+        r = subprocess.run([sys.executable, '-B', '-c', code, str(SCRIPT)], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, str(PBCOPY_STUB)), r.stderr)
+
+    def test_clipboard_wanted(self):
+        self.assertFalse(cp.clipboard_wanted())   # CODEXPOOL_NO_CLIPBOARD=1, as for every test
+        with mock.patch.dict(os.environ, {'CODEXPOOL_NO_CLIPBOARD': '0'}):
+            self.assertTrue(cp.clipboard_wanted())
+            self.assertFalse(cp.clipboard_wanted(no_copy=True))
+
+
 class LoginCommand(unittest.TestCase):
     def test_label_and_priority(self):
         with fake_cpa(FAKE_CPA_EMAIL='work@test'), FakePool() as pool, \
                 mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY):
-            code, out, _ = run(cp.cmd_login, label='Work', device=False, no_open=True, priority=300)
+            code, out, _ = run(cp.cmd_login, label='Work', device=False, no_open=True, no_copy=False, priority=300)
             meta = cp.read_meta()
         self.assertEqual(code, 0)
         name = seat_name('work@test')
         self.assertIn(f'seat {name}: work@test plan=plus account=acct-work label=Work priority=300', out)
         self.assertEqual(meta[name]['label'], 'Work')
         self.assertEqual(pool.priorities, {name: 300})
+        self.assertTrue(out.startswith('Getting a ChatGPT sign-in link. Open it'), out)  # --no-open opens nothing
+        self.assertNotIn('in your browser', out)
 
     def test_failure_changes_nothing(self):
         with fake_cpa(FAKE_CPA_MODE='fail'):
-            code, out, err = run(cp.cmd_login, label='Work', device=False, no_open=True, priority=None)
+            code, out, err = run(cp.cmd_login, label='Work', device=False, no_open=True, no_copy=False, priority=None)
             self.assertEqual(cp.read_meta(), {})
         self.assertEqual(code, 1)
         self.assertIn('login did not complete; nothing changed (the pool said: Authentication failed. Please try '
@@ -315,7 +432,7 @@ class LoginCommand(unittest.TestCase):
             cp.update_meta(reserve.name, reserve=True)
             with fake_cpa(FAKE_CPA_EMAIL='team@test'), FakePool() as pool, \
                     mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY):
-                code, out, _ = run(cp.cmd_login, label='Team', device=False, no_open=True, priority=None)
+                code, out, _ = run(cp.cmd_login, label='Team', device=False, no_open=True, no_copy=False, priority=None)
         self.assertEqual(code, 0, out)
         name = seat_name('team@test')
         self.assertEqual(pool.priorities, {name: 300, reserve.name: 200})  # no room above the reserve: it moves
@@ -327,12 +444,29 @@ class LoginCommand(unittest.TestCase):
         with preserved(cp.SEATS_META):
             cp.update_meta(existing.name, label='One', weight=3)
             with fake_cpa(), FakePool() as pool, mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY):
-                code, out, _ = run(cp.cmd_login, label=None, device=False, no_open=True, priority=None)
+                code, out, _ = run(cp.cmd_login, label=None, device=False, no_open=True, no_copy=False, priority=None)
                 meta = cp.read_meta()
         self.assertEqual(code, 0)
         self.assertEqual(pool.priorities, {})
         self.assertEqual(meta[existing.name], {'label': 'One', 'weight': 3})
         self.assertNotIn('priority=', out)
+        self.assertIn('One was in the pool already: its login is refreshed.', out)
+
+    def test_another_name_for_a_seat_already_in_the_pool(self):
+        """The browser reused an earlier account's session: nothing is added and that seat keeps its name."""
+        existing = fake_seat_file('one@test', priority=400)
+        self.addCleanup(existing.unlink)
+        with preserved(cp.SEATS_META):
+            cp.update_meta(existing.name, label='One')
+            with fake_cpa(), FakePool() as pool, mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY):
+                code, out, _ = run(cp.cmd_login, label='Two', device=False, no_open=True, no_copy=False, priority=None)
+                meta = cp.read_meta()
+        self.assertEqual(code, 0)
+        self.assertEqual(meta[existing.name], {'label': 'One'})
+        self.assertEqual(pool.priorities, {})
+        self.assertIn(f'seat {existing.name}: one@test plan=plus account=acct-one label=One\n', out)
+        self.assertIn('That was One once more (the same ChatGPT account and workspace): its login is refreshed, '
+                      'nothing was added and it keeps its name.', out)
 
     def test_a_new_seat_leaves_old_meta_behind(self):
         """seats.json can still hold a size or reserve flag for a file name that is gone (a removed seat)."""
@@ -341,7 +475,7 @@ class LoginCommand(unittest.TestCase):
             cp.update_meta(name, label='Old', weight=3, reserve=True)
             with fake_cpa(FAKE_CPA_EMAIL='work@test'), FakePool(), \
                     mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY):
-                code, _, _ = run(cp.cmd_login, label='Work', device=False, no_open=True, priority=None)
+                code, _, _ = run(cp.cmd_login, label='Work', device=False, no_open=True, no_copy=False, priority=None)
                 meta = cp.read_meta()
         self.assertEqual(code, 0)
         self.assertEqual(meta[name], {'label': 'Work'})
@@ -383,6 +517,14 @@ class SetupCommand(unittest.TestCase):
             self.assertIn(text, out)
         self.open_url.assert_not_called()
         self.reopen.assert_not_called()
+
+    def test_the_link_goes_on_the_clipboard(self):
+        with clipboard(), fake_cpa(FAKE_CPA_EMAIL='work@test'), FakePool():
+            code, out, _ = self.setup('', 'Work', 'n', '', 'n', '')
+            self.assertEqual(CLIPBOARD.read_text(), URL)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f'  Sign-in link (it expires after about 5 minutes):\n  {URL}\n{cp.LINK_COPIED}\n\n  Open it',
+                      out)
 
     def test_labels_reserve_and_reopen(self):
         work = fake_seat_file('work@test', priority=400)

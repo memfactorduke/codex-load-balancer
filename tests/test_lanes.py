@@ -79,6 +79,15 @@ class Validation(unittest.TestCase):
          ['does not start with "zz-codexpool-test-"']),
         (lane([{'provider': [], 'model': 'm'}]), ['provider [] is not one of']),
         (lane([{'provider': {}, 'model': 'm'}]), ['provider {} is not one of']),
+        (lane([GOOD], display=''), ['"display" must be a one-line string of 1 to 40 characters']),
+        (lane([GOOD], display='   '), ['"display" must be']),
+        (lane([GOOD], display='Bulk\nlane'), ['"display" must be']),
+        (lane([GOOD], display='x' * 41), ['"display" must be']),
+        (lane([GOOD], display=7), ['"display" must be']),
+        (lane([GOOD], display=['Bulk']), ['"display" must be']),
+        (lane([GOOD], display='Bulk\u2028lane'), ['"display" must be']),   # Unicode line separator
+        (lane([GOOD], role='a\u2029b'), ['"role" must be']),              # Unicode paragraph separator
+        (lane([dict(GOOD, name='Grok\u2028Fast')]), ['"name" must be']),
     ]
 
     def test_messages(self):
@@ -193,7 +202,7 @@ class MemberAliases(unittest.TestCase):
             plan = plan_of(members=members)
             block = cp.render_lanes_block(plan, 'K')
             display = plan[0]['display']
-            self.assertEqual(display, 'Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)')
+            self.assertEqual(display, 'Bulk')
             self.assertIn(f'    - {{ name: "grok-4.7-build-fast", alias: "bulk", fork: false, display-name: '
                           f'"{display}" }}', block)
             self.assertIn(f'      - {{ name: "lane-bulk-muse", alias: "bulk", display-name: "{display}", '
@@ -202,6 +211,50 @@ class MemberAliases(unittest.TestCase):
     def test_display_names(self):
         for m in plan_of(members=True)[0]['members']:
             self.assertEqual(m['display'], f'Bulk lane: {m["name"]} only')
+
+    def test_default_display_is_the_lane_name(self):
+        """The picker shows the lane by name ("Bulk" for bulk); its members stay under the hood."""
+        (bulk,) = plan_of()
+        self.assertEqual(bulk['display'], 'Bulk')
+        members = [{'provider': 'opencode-go', 'model': f'm-{i}', 'name': f'Model {i}'} for i in range(1, 5)]
+        for n in range(1, 5):
+            (quick,) = plan_of({'lanes': {'quick': {'role': 'r', 'members': members[:n]}}})
+            self.assertEqual(quick['display'], 'Quick', n)
+        for name, want in (('code-review', 'Code-review'), ('x2', 'X2'), ('a' + 'b' * 30, 'A' + 'b' * 30)):
+            (lane,) = plan_of({'lanes': {name: {'role': 'r', 'members': members[:2]}}})
+            self.assertEqual(lane['display'], want)
+            self.assertLessEqual(len(lane['display']), cp.LANE_DISPLAY_MAX)  # the longest lane name fits too
+
+    def test_display_is_trimmed(self):
+        raw = {'lanes': {'bulk': dict(EXAMPLE_LANES['lanes']['bulk'], display='  Bulk: Grok  ')}}
+        self.assertEqual(cp.validate_lanes(raw)[0]['display'], 'Bulk: Grok')
+        self.assertIn('display-name: "Bulk: Grok" }', cp.render_lanes_block(plan_of(raw), 'K'))
+        raw = {'lanes': {'bulk': dict(EXAMPLE_LANES['lanes']['bulk'], display=' ' + 'x' * 40 + ' ')}}
+        self.assertEqual(problems(raw), [])   # 40 characters once trimmed
+
+    def test_display_from_lanes_json(self):
+        raw = {'lanes': {'bulk': dict(EXAMPLE_LANES['lanes']['bulk'], display='Bulk (Grok, Muse)')}}
+        for members in (False, True):
+            plan = plan_of(raw, members=members)
+            self.assertEqual(plan[0]['display'], 'Bulk (Grok, Muse)')
+            block = cp.render_lanes_block(plan, 'K')
+            self.assertIn('alias: "bulk", fork: false, display-name: "Bulk (Grok, Muse)" }', block)
+            self.assertIn('alias: "bulk", display-name: "Bulk (Grok, Muse)", max-context-length: 500000 }', block)
+            self.assertEqual(block.count('display-name: "Bulk (Grok, Muse)"'), 2)
+            if members:  # member aliases keep their own names
+                self.assertIn('display-name: "Bulk lane: Grok 4.7 Fast only"', block)
+        self.assertEqual(cp.validate_lanes(raw)[0]['display'], 'Bulk (Grok, Muse)')
+        self.assertIsNone(cp.validate_lanes(EXAMPLE_LANES)[0]['display'])
+        self.assertEqual(plan_of({'lanes': {'bulk': dict(EXAMPLE_LANES['lanes']['bulk'], display=None)}})[0]['display'],
+                         'Bulk')  # null: the default
+        self.assertEqual(problems({'lanes': {'bulk': dict(EXAMPLE_LANES['lanes']['bulk'], display='x' * 40)}}), [])
+
+    def test_role_file_and_agents_md_name_members_in_full(self):
+        raw = {'lanes': {'bulk': dict(EXAMPLE_LANES['lanes']['bulk'], display='Bulk: Grok, then Muse')}}
+        plain, named = plan_of()[0], plan_of(raw)[0]
+        self.assertEqual(cp.render_role(named), cp.render_role(plain))
+        self.assertEqual(cp.render_agents_block([named]), cp.render_agents_block([plain]))
+        self.assertIn('Muse Spark 1.3 contributor', cp.render_role(named))
 
     def test_config_toggles_only_the_member_aliases(self):
         base = base_config()
@@ -517,6 +570,27 @@ class WithPool(unittest.TestCase):
                      'xAI credential: missing', '/v1/models does not list bulk'):
             self.assertIn(text, texts)
 
+    def test_doctor_compares_the_display_name(self):
+        """A lane's picker name is part of the config.yaml block doctor compares with lanes.json."""
+        key = cp.BRIDGE_KEY.read_text().strip()
+        cp.CONFIG.write_text(cp.lanes_config_text(base_config(), plan_of(CHEAP), key, None))
+
+        def block_check(raw):
+            found = []
+            cp.LANES_FILE.write_text(json.dumps(raw))
+            with FakePool(models=['gpt-test', 'cheap']):
+                cp.doctor_lanes(lambda good, text, fix=None, warn=False: found.append((good, text, fix)),
+                                seats=[{'provider': 'codex', 'name': 'codex-a.json'}])
+            return next(f for f in found if f[1] == 'config.yaml lanes block matches lanes.json')
+        with preserved(cp.LANES_FILE):
+            self.assertTrue(block_check(CHEAP)[0])
+            renamed = {'lanes': {'cheap': dict(CHEAP['lanes']['cheap'], display='Drafts')}}
+            self.assertEqual(block_check(renamed), (False, 'config.yaml lanes block matches lanes.json',
+                                                    'codexpool lane apply'))
+            cp.CONFIG.write_text(cp.lanes_config_text(cp.CONFIG.read_text(), plan_of(renamed), key, None))
+            self.assertTrue(block_check(renamed)[0])
+            self.assertIn('display-name: "Drafts"', cp.CONFIG.read_text())
+
     def test_doctor_warns_about_leftover_member_aliases(self):
         found = []
         with FakePool(models=['bulk', 'bulk-grok']):
@@ -575,6 +649,27 @@ class WithPool(unittest.TestCase):
         self.assertNotIn('the pool already serves', out)
         self.assertFalse((cp.CODEX_AGENTS_DIR / 'bulk.toml').exists())
         self.assertEqual(cp.CONFIG.read_bytes(), before)
+
+
+
+class LaneNamesUpgradeNote(unittest.TestCase):
+    """install's note for lanes applied by an older codexpool, whose lanes block gives a lane another picker name."""
+
+    def test_note_only_while_the_block_has_old_names(self):
+        with preserved(cp.CONFIG, cp.LANES_FILE):
+            cp.LANES_FILE.write_text(json.dumps(EXAMPLE_LANES))
+            base = base_config()
+            self.assertIsNone(cp.lane_names_note())  # lanes.json but no lanes block yet: lane apply never ran
+            fresh = cp.lanes_config_text(base, plan_of(), 'K', None)
+            cp.CONFIG.write_text(fresh)
+            self.assertIsNone(cp.lane_names_note())
+            old = 'display-name: "Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)"'  # what 1.0.0 wrote
+            cp.CONFIG.write_text(fresh.replace('display-name: "Bulk"', old))
+            self.assertIn('Run codexpool lane apply', cp.lane_names_note())
+            cp.LANES_FILE.write_text('{"lanes": {"Bad Name": {}}}\n')
+            self.assertIsNone(cp.lane_names_note())  # a broken lanes.json: doctor reports that instead
+            cp.LANES_FILE.unlink()
+            self.assertIsNone(cp.lane_names_note())
 
 
 if __name__ == '__main__':
