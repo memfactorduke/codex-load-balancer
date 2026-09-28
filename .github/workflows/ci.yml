@@ -50,6 +50,24 @@ jobs:
       - name: install.sh dry run (downloads and changes nothing)
         run: HOME="$(mktemp -d)" /bin/bash install.sh --dry-run --no-gui
 
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      # tests/test_gate.py runs the gate's Go tests offline (GOPROXY=off) in a copy of CLIProxyAPI, and fails in CI
+      # rather than skipping: fetch the pinned source and its modules first.
+      - name: CLIProxyAPI source for the gate tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/cpa"
+          curl -fsSL https://codeload.github.com/router-for-me/CLIProxyAPI/tar.gz/refs/tags/v7.3.18 \
+            | tar -xz -C "$RUNNER_TEMP/cpa" --strip-components=1
+          (cd "$RUNNER_TEMP/cpa" && go mod download)
+          {
+            echo "CODEXPOOL_CPA_SOURCE=$RUNNER_TEMP/cpa"
+            echo "CODEXPOOL_GO=$(command -v go)"
+            echo "GOMODCACHE=$(go env GOMODCACHE)"
+          } >> "$GITHUB_ENV"
+
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 

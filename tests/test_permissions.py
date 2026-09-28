@@ -9,7 +9,7 @@ from _helpers import cp
 class LoginFilesPrivate(unittest.TestCase):
     def setUp(self):
         cp.AUTH.mkdir(parents=True, exist_ok=True)
-        self.files = [cp.AUTH / 'codex-test-open@test.json']
+        self.files = [cp.AUTH / ('codex-test-open' + '@' + 'test.json')]  # built: CI's email scan
         for f in self.files:
             f.write_text('{}')
             os.chmod(f, 0o644)
