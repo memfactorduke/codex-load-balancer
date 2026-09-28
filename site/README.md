@@ -25,18 +25,20 @@ Add `?theme=light` or `?theme=dark` to the URL to force an appearance, for examp
 
 ```sh
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars \
-  --virtual-time-budget=3000 --window-size=1440,9200 --screenshot=site-dark.png \
+  --virtual-time-budget=3000 --window-size=1440,11000 --screenshot=site-dark.png \
   "file://$PWD/site/index.html?theme=dark"
 ```
 
-The whole page is about 9,100 px tall at 1440 px wide. The diagram animates, so Chrome can keep running after
+The whole page is about 10,900 px tall at 1440 px wide. The diagram animates, so Chrome can keep running after
 it has written the screenshot; stop it with Ctrl-C once the file is there. To look at a tall screenshot in
 pieces, crop it with `sips -c 1200 1440 --cropOffset Y 0`, but start the top piece at `Y` = 1: sips ignores
 `--cropOffset 0 0` and crops from the middle of the page instead, which looks as if the page starts at a later
 section.
 
-Headless Chrome won't make a window narrower than 500 px; for phone widths use the device toolbar in Chrome's
-DevTools (390 × 844, for example) instead.
+Headless Chrome won't lay a page out narrower than 500 px (a narrower `--window-size` only crops the screenshot);
+for phone widths use the device toolbar in Chrome's DevTools (390 × 844, for example), or screenshot a local page
+that shows `index.html?theme=light` in a 390 px wide `<iframe>` (tall enough for the page, about 17,000 px) and crop
+the result to 390 px.
 
 ## Deploy
 
@@ -98,8 +100,8 @@ point the host's "not found" page at `/404.html` if it doesn't pick it up on its
 
   | File | Source |
   |---|---|
-  | `settings-overview-light.webp` (1776 × 1484) | `docs/images/settings-overview-light.png` |
-  | `settings-overview-dark.webp` (1776 × 1484) | `docs/images/settings-overview-dark.png` |
+  | `settings-overview-light.webp` (1776 × 1512) | `docs/images/settings-overview-light.png` |
+  | `settings-overview-dark.webp` (1776 × 1512) | `docs/images/settings-overview-dark.png` |
   | `setup-signin-light.webp` (1416 × 1346) | `docs/images/setup-signin-light.png` |
   | `setup-signin-dark.webp` (1416 × 1346) | the same Setup assistant step in dark, rendered below |
 

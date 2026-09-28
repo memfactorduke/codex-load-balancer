@@ -11,11 +11,15 @@
 // A request passes only if its Host is a loopback name (defeats DNS rebinding) and it does not
 // carry browser provenance (Origin, or Sec-Fetch-Site other than "none"). The Codex desktop app's
 // own renderer origin (app://-) is allowed; the Codex Rust client sends neither header.
+//
+// Profiles register at process startup. The empty profile is the Codex pool;
+// every unregistered profile refuses every request, including management.
 package main
 
 import (
 	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +27,27 @@ import (
 )
 
 const codexpoolAppOrigin = "app://-"
+
+// Profiles can only accept or reject; they must not rewrite a request.
+// Registration is init-only. Duplicate, empty or incomplete entries fail closed.
+type codexpoolGateProfile struct {
+	allowed   func(*http.Request) bool
+	rejection string
+	extra     gin.HandlerFunc
+}
+
+var codexpoolProfiles = map[string]codexpoolGateProfile{
+	"": {allowed: func(*http.Request) bool { return true }},
+}
+
+func codexpoolRegisterProfile(name string, profile codexpoolGateProfile) {
+	if _, exists := codexpoolProfiles[name]; exists || strings.TrimSpace(name) != name || name == "" || profile.allowed == nil {
+		panic("codexpool: invalid or duplicate gate profile")
+	}
+	codexpoolProfiles[name] = profile
+}
+
+var codexpoolProfile = strings.TrimSpace(os.Getenv("CODEXPOOL_GATE_PROFILE"))
 
 func codexpoolLoopbackHost(hostport string) bool {
 	host := strings.ToLower(strings.TrimSpace(hostport))
@@ -38,7 +63,7 @@ func codexpoolGate() gin.HandlerFunc {
 		r := c.Request
 		origin := r.Header.Get("Origin")
 		site := r.Header.Get("Sec-Fetch-Site")
-		fromApp := origin == codexpoolAppOrigin
+		fromApp := origin == codexpoolAppOrigin && codexpoolProfile == ""
 		browser := (origin != "" && !fromApp) || (site != "" && site != "none" && !fromApp)
 		if !codexpoolLoopbackHost(r.Host) || browser {
 			// Every field quoted: a page must not be able to forge log lines with %0A in the URL.
@@ -48,6 +73,23 @@ func codexpoolGate() gin.HandlerFunc {
 				"error": "codexpool: only local non-browser clients may use this pool",
 			})
 			return
+		}
+		profile, registered := codexpoolProfiles[codexpoolProfile]
+		if !registered || !profile.allowed(r) {
+			log.Warnf("codexpool gate: rejected client %q %q profile=%q user-agent=%q x-app=%q",
+				r.Method, r.URL.EscapedPath(), codexpoolProfile, r.Header.Get("User-Agent"), r.Header.Get("X-App"))
+			message := profile.rejection
+			if message == "" {
+				message = "codexpool: unregistered gate profile or disallowed client"
+			}
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": message})
+			return
+		}
+		if profile.extra != nil {
+			profile.extra(c)
+			if c.IsAborted() {
+				return
+			}
 		}
 		c.Next()
 	}

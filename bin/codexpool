@@ -18,12 +18,16 @@ up and is safe to re-run; `codexpool uninstall` undoes it.
 import argparse
 import base64
 import contextlib
+import copy
 import datetime as dt
 import difflib
 import fcntl
 import getpass
 import hashlib
 import http.client
+import io
+import importlib.machinery
+import importlib.util
 import json
 import math
 import os
@@ -42,13 +46,15 @@ import tarfile
 import tempfile
 import textwrap
 import time
+import types
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import weakref
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = '1.2.0'  # codexpool's own version (codexpool version); CLIProxyAPI has its own
+VERSION = '1.3.0'  # codexpool's own version (codexpool version); CLIProxyAPI has its own
 
 HOME = pathlib.Path.home()
 ROOT = HOME / '.codexpool'
@@ -58,7 +64,7 @@ STATE = ROOT / 'state'
 LOGS = ROOT / 'logs'
 BIN = ROOT / 'bin'
 VERSIONS = BIN / 'versions'
-CURRENT = BIN / 'current'
+CURRENT = BIN / 'current'  # the Codex pool's build
 BUILD = ROOT / 'build'
 GATE_SOURCE = BUILD / 'codexpool_gate.go'
 TOOLCHAIN = ROOT / 'toolchain'
@@ -69,7 +75,7 @@ HISTORY_EVERY = 10 * 60
 HISTORY_KEEP_DAYS = 8
 STATUS_FILE = STATE / 'status.json'
 GUARD_FILE = STATE / 'guard.json'
-LOCK_FILE = STATE / 'guard.lock'
+LOCK_FILE = STATE / 'guard.lock'  # the Codex pool's guard state, and the settings
 SELFTEST_JOURNAL = STATE / 'selftest.json'
 INSTALL_FILE = STATE / 'install.json'  # what `codexpool install` changed outside ROOT, for uninstall
 LANES_FILE = ROOT / 'lanes.json'  # lane definitions (never committed); examples/lanes.json shows the format
@@ -101,8 +107,207 @@ SETTINGS_DEFAULTS = {
 HEADLINES = ('all', 'regular')
 DISPLAYS = ('left', 'used')
 BALANCINGS = ('priority', 'reset')
-SETTABLE = {'display': DISPLAYS, 'headline': HEADLINES, 'balancing': BALANCINGS}  # what `codexpool set` changes
+SETTABLE = {'display': DISPLAYS, 'headline': HEADLINES, 'balancing': BALANCINGS}
 LABEL_OK = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+
+
+# Add-ons bootstrap in two phases: JSON metadata before settings; executable hooks only
+# after the complete core module exists. This is fault isolation for trusted local code,
+# not a sandbox for hostile Python. Loading must be free of external side effects.
+ADDON_DIRS = (CODE_DIR / 'addons', ROOT / 'addons')
+ADDON_REGISTRY = STATE / 'addons.json'  # durable namespace reservations, including removed code
+ADDON_ID_OK = re.compile(r'^[a-z][a-z0-9]{1,15}$')
+ADDONS, ADDON_ERRORS = [], {}
+ADDON_MANIFESTS, ADDON_PATHS, ADDON_NAMESPACES = {}, {}, {}
+ADDON_FAILED_HOOKS = set()
+ADDON_READY = False
+_LOADED_ADDONS = {}
+_ADDON_PARSERS = weakref.WeakSet()
+CORE_SETTINGS_DEFAULTS = dict(SETTINGS_DEFAULTS)
+CORE_SETTABLE = dict(SETTABLE)
+
+
+def parse_version(value):
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)', value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError('version must be major.minor.patch')
+    return tuple(int(part) for part in match.groups())
+
+
+def addon_error(aid, phase, error):
+    message = f'{phase}: {type(error).__name__}: {error}'
+    old = ADDON_ERRORS.get(aid, '')
+    if message not in old:
+        ADDON_ERRORS[aid] = old + ('; ' if old else '') + message
+
+
+def read_addon_manifest(directory):
+    """Read addon.json without importing code. Legacy prefixes are explicit metadata."""
+    data = json.loads((pathlib.Path(directory) / 'addon.json').read_text())
+    if not isinstance(data, dict) or not isinstance(data.get('id'), str) or not ADDON_ID_OK.fullmatch(data['id']):
+        raise ValueError('manifest needs a valid id')
+    for key in ('version', 'core_min'):
+        parse_version(data.get(key))
+    prefixes = data.setdefault('settings_prefixes', [data['id'] + '_'])
+    if not isinstance(prefixes, list) or not prefixes or any(
+            not isinstance(p, str) or not re.fullmatch(r'[a-z][a-z0-9]*_', p) for p in prefixes):
+        raise ValueError('settings_prefixes must be a nonempty list of namespaces ending in _')
+    defaults, settable = data.setdefault('settings', {}), data.setdefault('settable', {})
+    if not isinstance(defaults, dict) or any(not k.startswith(tuple(prefixes)) for k in defaults):
+        raise ValueError('settings keys must belong to settings_prefixes')
+    if not isinstance(settable, dict) or any(k not in defaults or not isinstance(v, list) or not v
+                                          or any(not isinstance(c, str) for c in v) or defaults[k] not in v
+                                          for k, v in settable.items()):
+        raise ValueError('settable must name settings with nonempty string choices and a valid default')
+    if not isinstance(data.get('auto_ports', []), list) or any(
+            key not in defaults or not key.endswith('_port') for key in data.get('auto_ports', [])):
+        raise ValueError('auto_ports must name declared port settings')
+    files = data.setdefault('code_files', ['addon.py'])
+    if not isinstance(files, list) or 'addon.py' not in files or any(
+            not isinstance(p, str) or not p or pathlib.PurePosixPath(p).is_absolute()
+            or any(part in ('.', '..') for part in p.split('/')) for p in files):
+        raise ValueError('code_files must include addon.py and contain only relative code paths')
+    return data
+
+
+def discover_addons():
+    """Reserve persisted namespaces, then discover JSON metadata; checkout wins, even if broken."""
+    try:
+        registry = json.loads(ADDON_REGISTRY.read_text())
+        if not isinstance(registry, dict):
+            raise ValueError('namespace registry must be an object')
+        for aid, prefixes in registry.items():
+            if not ADDON_ID_OK.fullmatch(aid) or not isinstance(prefixes, list) or not prefixes or any(
+                    not isinstance(p, str) or not re.fullmatch(r'[a-z][a-z0-9]*_', p) for p in prefixes):
+                raise ValueError('invalid namespace reservation')
+        ADDON_NAMESPACES.update(registry)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as error:
+        addon_error('registry', 'manifest', error)
+    for base in ADDON_DIRS:
+        try:
+            entries = sorted(base.iterdir()) if base.is_dir() else []
+        except OSError as error:
+            addon_error('discovery', 'manifest', error)
+            continue
+        for directory in entries:
+            aid = directory.name
+            if not ADDON_ID_OK.fullmatch(aid) or aid in ADDON_PATHS or not directory.is_dir():
+                continue
+            ADDON_PATHS[aid] = directory
+            ADDON_NAMESPACES.setdefault(aid, [aid + '_'])
+            try:
+                manifest = read_addon_manifest(directory)
+                if manifest['id'] != aid:
+                    raise ValueError('manifest id must match directory name')
+                # Reserve before compatibility or executable checks. Retain historical prefixes.
+                ADDON_NAMESPACES[aid] = sorted(set(ADDON_NAMESPACES[aid] + manifest['settings_prefixes']))
+                ADDON_MANIFESTS[aid] = manifest
+                if parse_version(manifest['core_min']) > parse_version(VERSION):
+                    raise ValueError(f'needs codexpool {manifest["core_min"]} or later')
+                if set(manifest['settings']) & set(CORE_SETTINGS_DEFAULTS):
+                    raise ValueError('add-on settings collide with core settings')
+                for other, prefixes in ADDON_NAMESPACES.items():
+                    if other != aid and set(prefixes) & set(manifest['settings_prefixes']):
+                        raise ValueError(f'settings namespace already reserved by {other}')
+                SETTINGS_DEFAULTS.update(manifest['settings'])
+                SETTABLE.update(manifest['settable'])
+            except (OSError, ValueError, TypeError) as error:
+                addon_error(aid, 'manifest', error)
+    for aid in ADDON_NAMESPACES:
+        if aid not in ADDON_PATHS:
+            addon_error(aid, 'discovery', ValueError('code absent; settings namespace retained'))
+
+
+def reserved_addon_setting(key):
+    active = {a.id for a in ADDONS} if ADDON_READY else set()
+    if any(aid in active and key.startswith(tuple(prefixes)) for aid, prefixes in ADDON_NAMESPACES.items()):
+        return False
+    return any(key.startswith(tuple(prefixes)) for prefixes in ADDON_NAMESPACES.values())
+
+
+def addon_call(addon, hook, *args, default=None, transform=None):
+    """Isolate lookup, execution AND result consumption, including SystemExit and lazy iterators.
+    A failed hook is skipped for the rest of this process; other hooks and the core continue."""
+    aid = addon.id
+    if (aid, hook) in ADDON_FAILED_HOOKS:
+        return default
+    try:
+        fn = getattr(addon, hook, None)
+        if fn is None:
+            return default
+        with contextlib.redirect_stdout(sys.stderr):
+            result = fn(*args)
+            return transform(result) if transform else result
+    except (Exception, SystemExit) as error:
+        ADDON_FAILED_HOOKS.add((aid, hook))
+        addon_error(aid, hook, error)
+        return default
+
+
+def check_addon_settings(addon, settings):
+    """Validate a private settings copy; return only the add-on's derived values."""
+    manifest = addon.manifest
+    keys = set(manifest['settings'])
+    candidate = copy.deepcopy(settings)
+    fn = getattr(addon, 'settings_problems', None)
+    with contextlib.redirect_stdout(sys.stderr):
+        problems = list(fn(candidate) or []) if fn else []
+    if {k: v for k, v in candidate.items() if k not in keys} != {
+            k: v for k, v in settings.items() if k not in keys}:
+        raise ValueError('settings hook changed settings it does not own')
+    if not keys <= candidate.keys():
+        raise ValueError('settings hook removed a setting')
+    for key in keys:
+        value = candidate[key]
+        if key.endswith('_port') and (type(value) is not int or not 0 < value < 65536):
+            problems.append(f'invalid {key}')
+        if key.endswith('_label') and (not isinstance(value, str) or not LABEL_OK.fullmatch(value)):
+            problems.append(f'invalid {key}')
+        if key in manifest['settable'] and value not in manifest['settable'][key]:
+            problems.append(f'invalid {key}')
+    for suffix in ('_port', '_label'):
+        entries = [(k, v) for k, v in candidate.items() if k.endswith(suffix) or
+                   (suffix == '_port' and k == 'port')]
+        for key in keys:
+            if key.endswith(suffix) and any(key != other and candidate[key] == v for other, v in entries):
+                problems.append(f'{key} must differ from other {suffix[1:]} settings')
+    if problems:
+        raise ValueError('; '.join(map(str, problems)))
+    return {k: candidate[k] for k in keys}
+
+
+def addon_settings(s):
+    for addon in ADDONS:
+        values = addon_operation(addon, 'settings_problems', lambda: check_addon_settings(addon, s), {})
+        s.update(values)
+    return s
+
+
+def addon_operation(addon, hook, operation, default=None):
+    """Apply the same isolation to a hook plus its core-side transaction."""
+    if (addon.id, hook) in ADDON_FAILED_HOOKS:
+        return default
+    try:
+        return operation()
+    except (Exception, SystemExit) as error:
+        ADDON_FAILED_HOOKS.add((addon.id, hook))
+        addon_error(addon.id, hook, error)
+        return default
+
+
+# A reader never creates runtime state. Once an add-on writer has made this lock,
+# hold it across both bootstrap phases to avoid observing a partial code publication.
+_ADDON_READ_LOCK = None
+try:
+    _ADDON_READ_LOCK = (STATE / 'addon-code.lock').open('r')
+    fcntl.flock(_ADDON_READ_LOCK, fcntl.LOCK_SH)
+except FileNotFoundError:
+    pass
+except OSError as error:
+    addon_error('discovery', 'lock', error)
+discover_addons()
 
 
 class SettingsError(Exception):
@@ -130,15 +335,27 @@ def parse_settings(raw, where=None):
     where = where or SETTINGS_FILE
     if not isinstance(raw, dict):
         raise SettingsError(f'{where} must hold a JSON object')
-    unknown = [k for k in raw if k not in SETTINGS_DEFAULTS and not str(k).startswith('_')]
+    unknown = [k for k in raw if k not in SETTINGS_DEFAULTS and not str(k).startswith('_')
+               and not reserved_addon_setting(str(k))]
     if unknown:
         raise SettingsError(f'unknown key(s) {", ".join(map(str, unknown))} in {where} '
                             f'(known: {", ".join(SETTINGS_DEFAULTS)}; keys starting with _ are ignored)')
     s = {**SETTINGS_DEFAULTS, **{k: v for k, v in raw.items() if k in SETTINGS_DEFAULTS}}
     if 'bridge_port' not in raw and s['port'] == SETTINGS_DEFAULTS['bridge_port']:
         s['bridge_port'] = s['port'] + 1  # a pool moved to 8320 before bridge_port existed keeps working
-    bad = [k for k in ('pool_label', 'guard_label', 'menubar_label', 'bridge_label')
-           if not isinstance(s[k], str) or not LABEL_OK.match(s[k])]
+    # Missing add-on ports take the next unused port, in manifest/default order.
+    ports = ['port', 'bridge_port']
+    for key in SETTINGS_DEFAULTS:
+        if key.endswith('_port') and key not in ports:
+            if key not in raw and any(key in m.get('auto_ports', []) for m in ADDON_MANIFESTS.values()) and \
+                    all(type(s[k]) is int for k in ports + [key]):
+                while s[key] in [s[k] for k in ports]:
+                    s[key] += 1
+            ports.append(key)
+    labels = tuple(k for k in CORE_SETTINGS_DEFAULTS if k.endswith('_label'))
+    bad = [k for k in labels if not isinstance(s[k], str) or not LABEL_OK.match(s[k])]
+    if not bad and len({s[k] for k in labels}) != len(labels):
+        bad.append('launchd labels (must all differ)')
     bad += [k for k in ('python', 'menubar_python', 'codex_bin')
             if s[k] is not None and (not isinstance(s[k], str) or not s[k].strip())]
     for k in ('port', 'bridge_port'):
@@ -146,10 +363,10 @@ def parse_settings(raw, where=None):
             bad.append(k)
     if 'port' not in bad and 'bridge_port' not in bad and s['bridge_port'] == s['port']:
         bad.append('bridge_port (must differ from port)')
-    bad += [f'{k} (one of: {", ".join(choices)})' for k, choices in SETTABLE.items() if s[k] not in choices]
+    bad += [f'{k} (one of: {", ".join(choices)})' for k, choices in CORE_SETTABLE.items() if s[k] not in choices]
     if bad:
         raise SettingsError(f'invalid {", ".join(bad)} in {where}')
-    return s
+    return addon_settings(s) if ADDON_READY else s
 
 
 SETTINGS = load_settings()
@@ -202,6 +419,8 @@ SIGN_IN_ENDED_DETAIL = 'OpenAI ended this sign-in'
 SIGN_IN_SOON_DETAIL = 'OpenAI ended this sign-in: sign in again soon'
 # CLIProxyAPI's pool-log line for a background refresh that failed while the seat's access token still works
 REFRESH_FAILED_LINE = re.compile(r'credential refresh failed for codex \(([^()]+)\): ')
+# Another provider's answer to a refresh whose sign-in is over (invalid_grant: revoked, expired or used twice)
+# matches SIGN_IN_ENDED too; an add-on pool's rows say so in its own words
 HEAL_KEYS = ('heal_failures', 'relogin_notified', 'heal_success', 'last_heal')
 
 UID = os.getuid()
@@ -253,8 +472,10 @@ def parse_time(value):
         return value
     if isinstance(value, (int, float)):
         return dt.datetime.fromtimestamp(value, dt.timezone.utc)
+    # Python 3.9's fromisoformat takes only 3 or 6 fractional digits; Go (CLIProxyAPI) writes up to 9
+    text = re.sub(r'\.(\d+)', lambda m: '.' + (m.group(1) + '000000')[:6], str(value).replace('Z', '+00:00'), count=1)
     try:
-        t = dt.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        t = dt.datetime.fromisoformat(text)
     except ValueError:
         return None
     if t.year < 2000:  # Go zero time
@@ -299,21 +520,25 @@ def write_json(path, data):
         raise
 
 
-def read_guard():
-    """guard.json, strictly: a corrupt file is set aside and reported, never silently treated as empty."""
+def read_guard(pool=None):
+    """The pool descriptor's guard file, strictly: a corrupt file is set aside
+    and reported, never silently treated as empty."""
+    path = pool.guard if pool else GUARD_FILE
     try:
-        data = json.loads(GUARD_FILE.read_text())
+        data = json.loads(path.read_text())
         if not isinstance(data, dict):
-            raise ValueError('guard.json is not an object')
+            raise ValueError(f'{path.name} is not an object')
         return data
     except FileNotFoundError:
         return {}
     except (OSError, ValueError):
-        bad = GUARD_FILE.with_name(f'guard.json.corrupt-{int(time.time())}')
+        bad = path.with_name(f'{path.name}.corrupt-{int(time.time())}')
         with contextlib.suppress(OSError):
-            os.replace(GUARD_FILE, bad)
+            os.replace(path, bad)
+        cli, noun = (pool.cli, pool.noun) if pool else ('codexpool', 'seat')
         notify('codexpool guard state was unreadable',
-               f'Saved as {bad.name}. A seat it had parked may now show as disabled: codexpool enable <seat>.')
+               f'Saved as {bad.name}. A{"n" if noun[0] in "aeiou" else ""} {noun} it had parked may now show as '
+               f'disabled: {cli} enable <{noun}>.')
         return {}
 
 
@@ -368,13 +593,125 @@ def pid_alive(pid):
         return False
 
 
-def cpa_binary():
-    return CURRENT / 'cli-proxy-api'
+class PoolInstance:
+    """One CLIProxyAPI instance and its build, configuration and gate diagnostics.
+    Callbacks and templates belong to the descriptor, never to a name-based dispatch in shared code."""
+
+    def __init__(self, name, title, link, config, port, job, template, profile, log, *,
+                 config_template=None, config_default_port=8319, probe_cases=None,
+                 rebuild_hint='codexpool upgrade <version>', next_rebuild='codexpool upgrade',
+                 build_subject='the pool', gate_title='origin gate', gate_fix=None):
+        self.name, self.title, self.link, self.config, self.port = name, title, link, config, port
+        self.job, self.template, self.profile, self.log = job, template, profile, log
+        self.config_template = config_template or CODE_DIR / 'examples' / 'config.yaml'
+        self.config_default_port = config_default_port
+        self.probe_cases = probe_cases or codex_probe_cases
+        self.rebuild_hint, self.next_rebuild = rebuild_hint, next_rebuild
+        self.build_subject, self.gate_title = build_subject, gate_title
+        self.gate_fix = gate_fix or 'run: codexpool upgrade <version> --force'
+
+    def __repr__(self):
+        return f'PoolInstance({self.name!r}, port={self.port})'
 
 
-def cpa_version():
+def codex_pool_instance():
+    return PoolInstance('codex', 'Codex pool', CURRENT, CONFIG, PORT, POOL_JOB, 'pool.plist.template', 'codex',
+                        MAIN_LOG)
+
+
+# Factories keep paths/settings current and do no I/O until a descriptor is used.
+CORE_POOL_IDS = frozenset({'codex'})  # add-ons cannot take over the core guard
+POOL_INSTANCES = {'codex': codex_pool_instance}
+
+
+def pool_instance(name='codex'):
+    """Resolve an explicit pool id; an unknown id never falls back to the core pool."""
+    if not isinstance(name, str):
+        raise ValueError(f'unknown pool {name!r}')
+    if name in POOL_INSTANCES:
+        return POOL_INSTANCES[name]()
+    for addon, pools in addon_objects('pools'):
+        for pool in pools:
+            if isinstance(pool, PoolInstance) and pool.name == name:
+                return pool
+    raise ValueError(f'unknown pool {name!r}')
+
+
+class SeatPool:
+    """A pool's seat storage, wording and behavior used by the shared seat/guard operations.
+    claims(path, name, context) reads non-secret facts; claims_context() runs once per listing.
+    enrich_row(row, claims, record) mutates the row with provider facts from both original inputs.
+    Other callbacks are documented in docs/ADDONS.md. Omitted fields retain Codex behavior."""
+
+    def __init__(self, name, provider, port, meta, guard, auth, config, link, work, log, cli, balancing, noun,
+                 lock=None, *, title='Codex pool', vendor='OpenAI', noun_title='Codex seat',
+                 sizes_text='Plus = 1, Pro = 20', moves_text='threads on it move to the next seat',
+                 reserve_tail='"headline": "regular" leaves reserve seats out of the headline %.',
+                 refresh_failed_line=None, sign_in_ended_detail=None, sign_in_soon_detail=None,
+                 history_file=None, selftest_journal=None, status_file=None, login_flow=None,
+                 claims=None, claims_context=None, default_weight=None, enrich_row=None,
+                 new_seat_fields=None, on_remove=None, enable_refusal=None, refresh_status=None,
+                 seat_state=None, history_extra=None, refresh_after_meta=False, log_tag=''):
+        self.name, self.provider, self.port, self.meta, self.guard = name, provider, port, meta, guard
+        self.auth, self.config, self.link, self.work, self.log = auth, config, link, work, log
+        self.cli, self.balancing, self.noun = cli, balancing, noun
+        self.lock = lock or LOCK_FILE
+        self.title, self.vendor, self.noun_title = title, vendor, noun_title
+        self.sizes_text, self.moves_text, self.reserve_tail = sizes_text, moves_text, reserve_tail
+        self.refresh_failed_line = refresh_failed_line or REFRESH_FAILED_LINE
+        self.sign_in_ended_detail = sign_in_ended_detail or SIGN_IN_ENDED_DETAIL
+        self.sign_in_soon_detail = sign_in_soon_detail or SIGN_IN_SOON_DETAIL
+        self.history_file = history_file or HISTORY_FILE
+        self.selftest_journal = selftest_journal or SELFTEST_JOURNAL
+        self.status_file = status_file or STATUS_FILE
+        self.login_flow = login_flow or codex_login_flow
+        self.claims = claims or (lambda path, name, context: file_claims(path) if path else {})
+        self.claims_context = claims_context or dict
+        self.default_weight = default_weight or (lambda value, claims: seat_weight(value, claims.get('plan')))
+        self.enrich_row = enrich_row
+        self.new_seat_fields = new_seat_fields or dict
+        self.on_remove = on_remove or codex_remove_seat
+        self.enable_refusal = enable_refusal
+        self.refresh_status = refresh_status or refresh_codex_status_file
+        self.seat_state = seat_state or globals()['seat_state']
+        self.history_extra = history_extra
+        self.refresh_after_meta, self.log_tag = refresh_after_meta, log_tag
+
+    def __repr__(self):
+        return f'SeatPool({self.name!r}, port={self.port})'
+
+
+def codex_seat_pool():
+    return SeatPool('codex', 'codex', PORT, SEATS_META, GUARD_FILE, AUTH, CONFIG, CURRENT, ROOT, MAIN_LOG,
+                    'codexpool', 'balancing', 'seat')
+
+
+SEAT_POOLS = {'codex': codex_seat_pool}
+
+
+def seat_pool(name='codex'):
+    """Resolve a seat pool id, or an argparse namespace (only an absent pool attribute defaults to Codex)."""
+    if isinstance(name, (argparse.Namespace, types.SimpleNamespace)):
+        name = getattr(name, 'pool', 'codex')
+    if not isinstance(name, str):
+        raise ValueError(f'unknown seat pool {name!r}')
+    if name in SEAT_POOLS:
+        return SEAT_POOLS[name]()
+    for addon, pools in addon_objects('seat_pools', mapping=True):
+        if name in pools and isinstance(pools[name], SeatPool):
+            return pools[name]
+    raise ValueError(f'unknown seat pool {name!r}')
+
+
+def cpa_binary(link=None):
+    """The CLIProxyAPI binary a build link points at: bin/current (the Codex pool) unless another is given."""
+    return (link or CURRENT) / 'cli-proxy-api'
+
+
+def cpa_version(link=None):
+    """The build a link points at, as "<version>-gate-<hash>" (bin/current unless another is given), or None."""
     try:
-        return os.readlink(CURRENT).rstrip('/').rsplit('/', 1)[-1].lstrip('v')
+        return os.readlink(link or CURRENT).rstrip('/').rsplit('/', 1)[-1].lstrip('v')
     except OSError:
         return None
 
@@ -450,10 +787,12 @@ def ensure_python(cmd):
 
 
 @contextlib.contextmanager
-def guard_lock(wait=True, timeout=240):
-    """One lock for every read-modify-write of guard.json and for selftest (held for its duration)."""
+def guard_lock(wait=True, timeout=240, pool=None):
+    """One lock per pool for every read-modify-write of its guard state and seats meta, its guard pass, and its
+    selftest (held for its duration). pool: a SeatPool; None, or the Codex pool, is the Codex lock (guard.json,
+    seats.json, settings); an add-on's pool has its own, so a selftest in one pool never holds up the other's guard."""
     STATE.mkdir(parents=True, exist_ok=True)
-    with open(LOCK_FILE, 'a') as f:
+    with open(pool.lock if pool is not None else LOCK_FILE, 'a') as f:
         deadline = time.monotonic() + timeout
         while True:
             try:
@@ -500,9 +839,11 @@ def mgmt_key():
     return _KEY
 
 
-def api(method, path, body=None, timeout=20, want_headers=False):
+def api(method, path, body=None, timeout=20, want_headers=False, port=None):
+    """A management API call to the Codex pool, or to the pool on port (an add-on's pool shares the key)."""
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(BASE + path, data=data, method=method, headers={
+    base = BASE if port is None else f'http://127.0.0.1:{port}'
+    req = urllib.request.Request(base + path, data=data, method=method, headers={
         'Authorization': 'Bearer ' + mgmt_key(), 'Content-Type': 'application/json'})
     try:
         with _LOCAL.open(req, timeout=timeout) as r:
@@ -521,18 +862,21 @@ def api(method, path, body=None, timeout=20, want_headers=False):
         raise PoolDown(str(e)) from None
 
 
-def set_disabled(name, disabled):
-    api('PATCH', '/v0/management/auth-files/status', {'name': name, 'disabled': disabled})
+def set_disabled(name, disabled, pool=None):
+    """Take a seat out of rotation or put it back (pool: a SeatPool, the Codex pool's when None)."""
+    api('PATCH', '/v0/management/auth-files/status', {'name': name, 'disabled': disabled},
+        port=pool.port if pool else None)
 
 
-def set_fields(name, **fields):
-    api('PATCH', '/v0/management/auth-files/fields', {'name': name, **fields})
+def set_fields(name, pool=None, **fields):
+    """Change a seat file's fields (priority, say) through the management API of pool (a SeatPool; None: Codex)."""
+    api('PATCH', '/v0/management/auth-files/fields', {'name': name, **fields}, port=pool.port if pool else None)
 
 
-def running_version():
-    """Version string reported by the live pool (X-CPA-VERSION), or None."""
+def running_version(port=None):
+    """Version string reported by the live pool (X-CPA-VERSION), or None. port: another instance's (an add-on's pool)."""
     with contextlib.suppress(PoolDown, ApiError, KeyUnavailable):
-        _, headers = api('GET', '/v0/management/auth-files', timeout=5, want_headers=True)
+        _, headers = api('GET', '/v0/management/auth-files', timeout=5, want_headers=True, port=port)
         return {k.lower(): v for k, v in headers.items()}.get('x-cpa-version')
     return None
 
@@ -583,12 +927,20 @@ def seat_weight(value, plan):
     return w if valid_weight(w) else float(default_weight(plan))
 
 
-def read_meta():
-    return read_json(SEATS_META, {})
+def codex_login_flow(no_open, device):
+    if device:
+        return ['-codex-device-login', '-no-browser']
+    return ['-codex-login'] + (['-no-browser'] if no_open else [])
 
 
-def update_meta(name, **fields):
-    meta = read_meta()
+def read_meta(pool=None):
+    """seats.json, or the metadata path of the supplied SeatPool."""
+    return read_json(pool.meta if pool else SEATS_META, {})
+
+
+def update_meta(name, pool=None, **fields):
+    """Set (None: drop) fields of one seat's entry in its pool's seats meta; an entry left empty goes."""
+    meta = read_meta(pool)
     entry = meta.setdefault(name, {})
     for k, v in fields.items():
         if v is None:
@@ -597,7 +949,7 @@ def update_meta(name, **fields):
             entry[k] = v
     if not entry:
         meta.pop(name, None)
-    write_json(SEATS_META, meta)
+    write_json(pool.meta if pool else SEATS_META, meta)
 
 
 def default_label(email, plan):
@@ -612,22 +964,39 @@ def _int(value):
         return 0
 
 
-def load_seats():
-    files = api('GET', '/v0/management/auth-files').get('files', [])
-    meta = read_meta()
+def load_seats(pool=None, listing=None, response_headers=None):
+    """The seats the pool has (pool: a SeatPool; None: the Codex pool), with what codexpool keeps about each, in the
+    order the pool's fill-first uses: that pool's own seats first, then any other provider's (lane credentials).
+    listing: the pool's auth-files answer when the caller has it already (None: ask the pool).
+    response_headers: optional output dict for this request's headers; cleared even if the request fails."""
+    if response_headers is not None:
+        response_headers.clear()
+    if listing is None:
+        if response_headers is None:
+            listing = api('GET', '/v0/management/auth-files', port=pool.port if pool else None)
+        else:
+            listing, headers = api('GET', '/v0/management/auth-files', port=pool.port if pool else None,
+                                   want_headers=True)
+            response_headers.update(headers)
+    files = (listing if isinstance(listing, dict) else {}).get('files') or []
+    meta = read_meta(pool)
+    descriptor = pool or seat_pool()
+    context = descriptor.claims_context()
     seats = []
     for f in files:
-        claims = file_claims(f['path']) if f.get('path') else {}
         name = f.get('name') or f.get('id')
+        claims = descriptor.claims(f.get('path') or None, name, context)
+        entry = meta.get(name) if isinstance(meta.get(name), dict) else {}
+        weight = descriptor.default_weight(entry.get('weight'), claims)
         seats.append({
             'name': name,
             'id': f.get('id') or name,
             'path': f.get('path'),
             'provider': (f.get('provider') or f.get('type') or '').lower(),
             'auth_index': f.get('auth_index'),
-            'label': meta.get(name, {}).get('label') or default_label(claims.get('email') or f.get('email'), claims.get('plan')),
-            'weight': seat_weight(meta.get(name, {}).get('weight'), claims.get('plan')),
-            'reserve': bool(meta.get(name, {}).get('reserve')),
+            'label': entry.get('label') or default_label(claims.get('email') or f.get('email'), claims.get('plan')),
+            'weight': weight,
+            'reserve': bool(entry.get('reserve')),
             'email': claims.get('email') or f.get('email'),
             'plan': claims.get('plan'),
             'account_id': claims.get('account_id'),
@@ -642,6 +1011,8 @@ def load_seats():
             'success': _int(f.get('success')),
             'failed': _int(f.get('failed')),
         })
+        if descriptor.enrich_row is not None:
+            descriptor.enrich_row(seats[-1], claims, f)
     # Labels must be unique: menu actions and commands address seats by label.
     groups = {}
     for s in seats:
@@ -653,7 +1024,8 @@ def load_seats():
                 key = s['account_id'] if s['account_id'] and ids.count(s['account_id']) == 1 else s['name']
                 s['label'] = f'{s["label"]}-{hashlib.sha256(key.encode()).hexdigest()[:4]}'
     # Same order CLIProxyAPI's fill-first uses: priority descending, then auth ID ascending.
-    seats.sort(key=lambda s: (s['provider'] != 'codex', -s['priority'], s['id']))
+    own = pool.provider if pool else 'codex'
+    seats.sort(key=lambda s: (s['provider'] != own, -s['priority'], s['id']))
     return seats
 
 
@@ -941,6 +1313,17 @@ def _reset_summary(r):
             'title': credits[0].get('title') if credits else None, 'polled_at': r.get('polled_at')}
 
 
+def _num(value):
+    """A finite float from a number or numeric string, else None (a bool is not a number here)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
 def headline_rows(codex):
     """The seats the headline can count: every Codex seat that is not off and has a weekly figure."""
     return [r for r in codex if r['state'] != 'disabled' and r['week_used'] is not None]
@@ -1116,7 +1499,8 @@ def print_status(st):
     headline = f'{pct_text(used, left)} {"left" if left else "used"} this week ({scope})' if used is not None \
         else 'usage unknown'
     balancing = pool.get('balancing') if pool.get('balancing') in BALANCINGS else SETTINGS['balancing']
-    print(f'Codex pool  {headline}'
+    print(f'Codex pool  {total_size_text(r for r in st.get("seats") or [] if r.get("provider", "codex") == "codex")}'
+          f'{headline}'
           f'{"  ·  ON RESERVE" if pool.get("reserve_in_use") else ""}  ·  '
           f'{pool.get("available", 0)} of {pool.get("seats", 0)} seats available  ·  '
           f'fill: {BALANCING_TEXT[balancing]}  ·  new threads → {st["active"] or "NONE"}')
@@ -1149,6 +1533,14 @@ def print_status(st):
     if footnote:
         print()
         print(footnote)
+
+
+def total_size_text(rows):
+    """'36× total  ·  ' for a status header: every seat's size (×) added up, seats turned off aside, as the menu bar's
+    summary line has it; '' when there are none."""
+    total = sum(min(max(_num(r.get('weight')) or 1.0, 0.0), 1e6) for r in rows
+                if isinstance(r, dict) and r.get('state') != 'disabled')
+    return f'{round(total, 2):g}× total  ·  ' if total else ''
 
 
 def headline_footnote(st, left=False, width=None):
@@ -1301,27 +1693,28 @@ def reset_fill_order(rows, manual, slack=BALANCE_SLACK):
     return [r['name'] for r in timed + untimed + idle + want_reserves]
 
 
-def set_pool_order(codex, targets):
-    """Give each Codex seat its target priority through the management API, skipping those that have it already.
-    Returns how many changed."""
+def set_pool_order(codex, targets, pool=None):
+    """Give each seat (codex: one pool's seats; pool: that SeatPool, None for Codex) its target priority through the
+    management API, skipping those that have it already. Returns how many changed."""
     changed = 0
     for s in codex:
         p = targets.get(s['name'])
         if p is not None and s['priority'] != p:
-            set_fields(s['name'], priority=p)
+            set_fields(s['name'], pool, priority=p)
             s['priority'] = p
             changed += 1
     return changed
 
 
-def write_manual_order(targets):
-    """Record {seat name: priority} as your fill order (seats.json manual_priority), in one write."""
-    meta = read_meta()
+def write_manual_order(targets, pool=None):
+    """Record {seat name: priority} as your fill order (seats.json manual_priority, or pool's seats meta), in one
+    write."""
+    meta = read_meta(pool)
     for name, p in targets.items():
         entry = meta.setdefault(name, {})
         if isinstance(entry, dict):
             entry['manual_priority'] = p
-    write_json(SEATS_META, meta)
+    write_json(pool.meta if pool else SEATS_META, meta)
 
 
 def manual_targets(codex, meta):
@@ -1334,81 +1727,95 @@ def manual_targets(codex, meta):
     return order_priorities(names), True
 
 
-def balance_pass(guard, seats, now):
+def balance_pass(guard, seats, now, pool=None, rows_of=None):
     """The guard's balancing step, after parking and healing. With "balancing": "reset", reorder the regular seats
     soonest reset first when the pool's order is not that already (the first time, record the order in effect as
     yours); with "priority", put your order back once after a time on "reset". Logs one line when it changes the
-    order and never notifies. True when it changed the pool's fill order."""
-    codex = [s for s in seats if s['provider'] == 'codex']
+    order and never notifies. True when it changed the pool's fill order. pool: a SeatPool (None: the Codex pool,
+    "balancing"; other pools use their descriptor's setting); rows_of(seats, guard): that pool's status rows, with
+    week and short windows (None: build_status's Codex rows)."""
+    own = pool.provider if pool else 'codex'
+    codex = [s for s in seats if s['provider'] == own]
+    guard_path = pool.guard if pool else GUARD_FILE
+    tag = (pool or seat_pool()).log_tag
     was = (guard.get('balancing') or {}).get('mode') if isinstance(guard.get('balancing'), dict) else None
     labels = {s['name']: s['label'] for s in codex}
     try:
-        if SETTINGS['balancing'] == 'reset':
-            meta = read_meta()
+        if SETTINGS[pool.balancing if pool else 'balancing'] == 'reset':
+            meta = read_meta(pool)
             if was != 'reset':  # your order is whatever was in effect: keep it for the way back
                 prios = [s['priority'] for s in codex]
                 if all(a > b for a, b in zip(prios, prios[1:])):
-                    write_manual_order({s['name']: s['priority'] for s in codex})
+                    write_manual_order({s['name']: s['priority'] for s in codex}, pool)
                 else:  # equal priorities: the pool's order breaks the ties now, so record that order itself
-                    write_manual_order(order_priorities([s['name'] for s in codex]))
-                meta = read_meta()
+                    write_manual_order(order_priorities([s['name'] for s in codex]), pool)
+                meta = read_meta(pool)
                 guard['balancing'] = {'mode': 'reset', 'since': now.isoformat()}
-                write_json(GUARD_FILE, guard)
+                write_json(guard_path, guard)
             if not codex:
                 return False
-            rows = [r for r in build_status(seats, guard)['seats'] if r['provider'] == 'codex']
+            rows = rows_of(seats, guard) if rows_of else \
+                [r for r in build_status(seats, guard)['seats'] if r['provider'] == 'codex']
             order = reset_fill_order(rows, manual_order(codex, meta))
             if order is None:
                 return False
-            changed = set_pool_order(codex, order_priorities(order))
+            changed = set_pool_order(codex, order_priorities(order), pool)
             guard['balancing'] = dict(guard['balancing'], order=order, at=now.isoformat())
-            write_json(GUARD_FILE, guard)
+            write_json(guard_path, guard)
             if changed:
-                log_line(f'guard: balancing: new fill order {" > ".join(labels[n] for n in order)} '
+                log_line(f'guard: {tag}balancing: new fill order {" > ".join(labels[n] for n in order)} '
                          f'(soonest reset first)')
             return bool(changed)
         if was == 'reset':
-            meta = read_meta()
+            meta = read_meta(pool)
             targets, fresh = manual_targets(codex, meta)
-            changed = set_pool_order(codex, targets)
+            changed = set_pool_order(codex, targets, pool)
             if fresh:
-                write_manual_order(targets)
+                write_manual_order(targets, pool)
             guard.pop('balancing', None)
-            write_json(GUARD_FILE, guard)
+            write_json(guard_path, guard)
             if changed:
                 order = sorted(targets, key=lambda n: -targets[n])
-                log_line(f'guard: balancing: your fill order is back: {" > ".join(labels[n] for n in order)}')
+                log_line(f'guard: {tag}balancing: your fill order is back: {" > ".join(labels[n] for n in order)}')
             return bool(changed)
     except (ApiError, PoolDown, KeyUnavailable, OSError) as e:
-        log_line(f'guard: balancing: could not set the fill order: {short(str(e), 120)}')
+        log_line(f'guard: {tag}balancing: could not set the fill order: {short(str(e), 120)}')
     return False
 
 
 # ---------------------------------------------------------------- guard (launchd, every 60s)
 
-def recover_selftest(guard):
-    """A selftest that died (even SIGKILL) left seats disabled; restore exactly what it toggled."""
-    j = read_json(SELFTEST_JOURNAL, None)
+def selftest_journal(pool=None):
+    """Where a selftest records the seats it took out of rotation (pool: a SeatPool; an add-on's pool has its own)."""
+    return (pool or seat_pool()).selftest_journal
+
+
+def recover_selftest(guard, pool=None):
+    """A selftest that died (even SIGKILL) left seats disabled; restore exactly what it toggled. pool: a SeatPool
+    (each additional pool keeps its own journal)."""
+    journal = selftest_journal(pool)
+    j = read_json(journal, None)
     if not j or pid_alive(j.get('pid')):
         return
     ok = True
     for name, was_disabled in (j.get('toggled') or {}).items():
         try:
-            set_disabled(name, was_disabled)
+            set_disabled(name, was_disabled, pool)
         except (ApiError, PoolDown):
             ok = False
     if ok:
         with contextlib.suppress(OSError):
-            SELFTEST_JOURNAL.unlink()
-        notify('codexpool restored seats', 'A selftest was interrupted; its temporary seat changes were undone.')
+            journal.unlink()
+        notify(f'codexpool restored {(pool or seat_pool()).noun}s',
+               'A selftest was interrupted; its temporary seat changes were undone.')
 
 
-def seat_tokens():
-    """{seat file name: when its tokens were issued} for the ChatGPT seat files: the file's last_refresh, which a
-    sign-in and every refresh that works rewrite (else its modification time), or None. Only that one field is read;
-    no token leaves a file."""
+def seat_tokens(pool=None):
+    """{seat file name: when its tokens were issued} for the ChatGPT seat files (pool: a SeatPool, an add-on pool's
+    account files): the file's last_refresh, which a sign-in and every refresh that works rewrite (else its
+    modification time), or None. Only that one field is read; no token leaves a file."""
     out = {}
-    for path in AUTH.glob('codex-*.json'):
+    for path in (pool.auth if pool else AUTH).glob(f'{pool.provider if pool else "codex"}-*.json'):
         data = read_json(path, {})
         t = parse_time(data.get('last_refresh')) if isinstance(data, dict) else None
         if t is None:
@@ -1418,17 +1825,18 @@ def seat_tokens():
     return out
 
 
-def sign_ins_ended_in_log(guard):
+def sign_ins_ended_in_log(guard, log=None, pattern=None):
     """({seat id: (log generation, byte offset) of its last such line}, (generation, size) of the log now, or None
     when the log can't be read) for the background
     refreshes that CLIProxyAPI logged to main.log since the last guard pass and OpenAI refused because the sign-in
     ended (SIGN_IN_ENDED). guard['pool_log'] remembers where the pass stopped reading, and a rotated log is read from
     its start; the first pass reads nothing back. The generation goes up whenever the log starts over (rotated to
     a new file, or cut short in place). Positions, not times: the pool logs naive local times, which stop ordering
-    events once the Mac changes time zone, while the order of lines in the file never lies."""
+    events once the Mac changes time zone, while the order of lines in the file never lies. log and pattern: another
+    pool's log and its refresh-failed line (an add-on's pool names its own)."""
     rec = guard.get('pool_log') if isinstance(guard.get('pool_log'), dict) else {}
     try:
-        with MAIN_LOG.open('rb') as f:
+        with (log or MAIN_LOG).open('rb') as f:
             st = os.fstat(f.fileno())
             gen = rec.get('gen') if isinstance(rec.get('gen'), int) else 0
             if rec.get('inode') == st.st_ino and isinstance(rec.get('offset'), int) and rec['offset'] <= st.st_size:
@@ -1454,7 +1862,7 @@ def sign_ins_ended_in_log(guard):
         m = LOG_LINE.match(line)
         if not m or m.group(2) == 'gin_logger.go':  # access-log lines echo request paths, which any client controls
             continue
-        r = REFRESH_FAILED_LINE.match(m.group(3))
+        r = (pattern or REFRESH_FAILED_LINE).match(m.group(3))
         if r and SIGN_IN_ENDED.search(m.group(3)):
             found[r.group(1)] = (gen, at)
     return found, (gen, st.st_size)
@@ -1608,74 +2016,7 @@ def guard_pass():
     #    seat's current tokens (a seat still served on its access token) or in a heal refresh's answer (a seat the
     #    pool blocked), blocks the seat and asks for a new sign-in, until a new sign-in gives it new tokens. The
     #    pool's seat list is no evidence: it says only "unauthorized", and its state can outlast a new sign-in.
-    logged, log_now = sign_ins_ended_in_log(guard)
-
-    def sign_in_ended(s, g, issued, seen):
-        for k in HEAL_KEYS:
-            g.pop(k, None)
-        g['sign_in_ended'] = {'at': now.isoformat(), 'tokens': issued, 'seen': seen}
-        save()
-        log_line(f'guard: OpenAI ended the sign-in of {s["label"]} (seen in {seen}); it needs a new sign-in')
-        notify('Codex seat needs a re-login', f'{s["label"]}: OpenAI ended this sign-in. Sign in again: '
-               f'codexpool login {shlex.quote(s["label"])} --priority {s["priority"]} (or click it in the menu bar).')
-
-    for s in codex:
-        g = guard['seats'].setdefault(s['name'], {})
-        issued_at = tokens.get(s['name'])
-        issued = issued_at.isoformat() if issued_at else None
-        if g.get('sign_in_ended') and g['sign_in_ended'].get('tokens') != issued:
-            del g['sign_in_ended']  # signed in again (or a refresh worked after all): new tokens, a fresh start
-            save()
-            log_line(f'guard: {s["label"]} has new tokens; its ended sign-in no longer blocks it')
-        said = logged.get(s['id']) or logged.get(s['name'])
-        # A line counts only if it comes after the seat's token mark: the end of the log one pass after the guard
-        # first saw these tokens. Anything before it may be about older tokens (a backlog, a refresh still in flight
-        # during a new sign-in), and no clock is involved, so a time-zone change can't misplace a line.
-        if issued is None or g.get('tokens_seen') != issued:
-            g['tokens_seen'] = issued
-            g.pop('tokens_from', None)
-        elif not isinstance(g.get('tokens_from'), dict) or not isinstance(g['tokens_from'].get('gen'), int):
-            if log_now is not None:  # an unreadable log can't be marked: try again next pass
-                g['tokens_from'] = {'gen': log_now[0], 'offset': log_now[1]}
-        elif said and not g.get('sign_in_ended') and after_mark(said, g['tokens_from']):
-            sign_in_ended(s, g, issued, 'the pool log')  # a line about these tokens, not older ones
-        state, detail, _ = seat_state(s, guard, now)
-        if state != 'blocked':
-            if g.get('heal_failures'):
-                base = g.get('heal_success', 0)
-                last = parse_time(g.get('last_heal'))
-                if s['success'] < base:          # pool restarted: its in-memory counter reset
-                    g['heal_success'] = s['success']
-                elif s['success'] > base or (last and (now - last).total_seconds() > 8 * HEAL_EVERY):
-                    for k in ('heal_failures', 'relogin_notified', 'heal_success'):
-                        g.pop(k, None)
-            continue
-        if g.get('sign_in_ended'):
-            continue  # no refresh can help: it waits for a new sign-in
-        last = parse_time(g.get('last_heal'))
-        every = HEAL_EVERY * (4 if g.get('relogin_notified') else 1)
-        if last and (now - last).total_seconds() < every:
-            continue
-        g['last_heal'] = now.isoformat()
-        g['heal_failures'] = g.get('heal_failures', 0) + 1
-        g['heal_success'] = s['success']        # a real request must succeed after this to clear it
-        save()
-        refused = ''
-        try:
-            api('POST', '/v0/management/auth-files/refresh', {'name': s['name']}, timeout=60)
-        except ApiError as e:  # only a failed refresh is read: one that works answers with the seat's tokens
-            refused = str(e.body)
-        except PoolDown:
-            pass
-        if SIGN_IN_ENDED.search(refused):
-            sign_in_ended(s, g, issued, 'a heal refresh')
-            continue
-        log_line(f'heal: refreshed {s["label"]} (attempt {g["heal_failures"]}): {detail}')
-        if g['heal_failures'] >= 3 and not g.get('relogin_notified'):
-            g['relogin_notified'] = True
-            save()
-            notify('Codex seat needs a re-login', f'{s["label"]}: {short(detail, 70)}. Run: codexpool login '
-                   f'{shlex.quote(s["label"])} --priority {s["priority"]}')
+    heal_pass(guard, codex, now, tokens, save)
 
     # 4b. Balancing: with "balancing": "reset", the regular seats fill soonest reset first; back to your order after.
     #     A fill order you changed yourself since the last pass (order, priority, reserve) counts the same way.
@@ -1729,25 +2070,111 @@ def guard_pass():
     record_history(st, guard, now)
 
 
-def record_history(st, guard, now):
-    """Append one headline sample every HISTORY_EVERY; keep HISTORY_KEEP_DAYS (bounded file)."""
+def heal_pass(guard, seats, now, tokens, save, pool=None):
+    """The guard's heal step for one pool's seats (pool: a SeatPool; None: the Codex pool): seats blocked by auth
+    errors (e.g. the no-expiry 401 block) get a refresh, then a request to sign in again. A sign-in the provider ended
+    (SIGN_IN_ENDED) is past healing: the first pass that sees it, in a pool-log line about the seat's current tokens
+    (a seat still served on its access token) or in a heal refresh's answer (a seat the pool blocked), marks the
+    seat and asks for a new sign-in, until a new sign-in gives it new tokens. tokens: seat_tokens(pool), taken before
+    any evidence. save: writes the guard state."""
+    descriptor = pool or seat_pool()
+    logged, log_now = sign_ins_ended_in_log(guard, descriptor.log, descriptor.refresh_failed_line)
+    who, noun = descriptor.vendor, descriptor.noun_title
+    login = f'{descriptor.cli} login'
+
+    def sign_in_ended(s, g, issued, seen):
+        for k in HEAL_KEYS:
+            g.pop(k, None)
+        g['sign_in_ended'] = {'at': now.isoformat(), 'tokens': issued, 'seen': seen}
+        save()
+        log_line(f'guard: {who} ended the sign-in of {s["label"]} (seen in {seen}); it needs a new sign-in')
+        notify(f'{noun} needs a re-login', f'{s["label"]}: {who} ended this sign-in. Sign in again: '
+               f'{login} {shlex.quote(s["label"])} --priority {s["priority"]} (or click it in the menu bar).')
+
+    for s in seats:
+        g = guard['seats'].setdefault(s['name'], {})
+        issued_at = tokens.get(s['name'])
+        issued = issued_at.isoformat() if issued_at else None
+        if g.get('sign_in_ended') and g['sign_in_ended'].get('tokens') != issued:
+            del g['sign_in_ended']  # signed in again (or a refresh worked after all): new tokens, a fresh start
+            save()
+            log_line(f'guard: {s["label"]} has new tokens; its ended sign-in no longer blocks it')
+        said = logged.get(s['id']) or logged.get(s['name'])
+        # A line counts only if it comes after the seat's token mark: the end of the log one pass after the guard
+        # first saw these tokens. Anything before it may be about older tokens (a backlog, a refresh still in flight
+        # during a new sign-in), and no clock is involved, so a time-zone change can't misplace a line.
+        if issued is None or g.get('tokens_seen') != issued:
+            g['tokens_seen'] = issued
+            g.pop('tokens_from', None)
+        elif not isinstance(g.get('tokens_from'), dict) or not isinstance(g['tokens_from'].get('gen'), int):
+            if log_now is not None:  # an unreadable log can't be marked: try again next pass
+                g['tokens_from'] = {'gen': log_now[0], 'offset': log_now[1]}
+        elif said and not g.get('sign_in_ended') and after_mark(said, g['tokens_from']):
+            sign_in_ended(s, g, issued, 'the pool log')  # a line about these tokens, not older ones
+        state, detail, _ = descriptor.seat_state(s, guard, now)
+        if state != 'blocked':
+            if g.get('heal_failures'):
+                base = g.get('heal_success', 0)
+                last = parse_time(g.get('last_heal'))
+                if s['success'] < base:          # pool restarted: its in-memory counter reset
+                    g['heal_success'] = s['success']
+                elif s['success'] > base or (last and (now - last).total_seconds() > 8 * HEAL_EVERY):
+                    for k in ('heal_failures', 'relogin_notified', 'heal_success'):
+                        g.pop(k, None)
+            continue
+        if g.get('sign_in_ended'):
+            continue  # no refresh can help: it waits for a new sign-in
+        last = parse_time(g.get('last_heal'))
+        every = HEAL_EVERY * (4 if g.get('relogin_notified') else 1)
+        if last and (now - last).total_seconds() < every:
+            continue
+        g['last_heal'] = now.isoformat()
+        g['heal_failures'] = g.get('heal_failures', 0) + 1
+        g['heal_success'] = s['success']        # a real request must succeed after this to clear it
+        save()
+        refused = ''
+        try:
+            api('POST', '/v0/management/auth-files/refresh', {'name': s['name']}, timeout=60,
+                port=pool.port if pool else None)
+        except ApiError as e:  # only a failed refresh is read: one that works answers with the seat's tokens
+            refused = str(e.body)
+        except PoolDown:
+            pass
+        if SIGN_IN_ENDED.search(refused):
+            sign_in_ended(s, g, issued, 'a heal refresh')
+            continue
+        log_line(f'heal: refreshed {s["label"]} (attempt {g["heal_failures"]}): {detail}')
+        if g['heal_failures'] >= 3 and not g.get('relogin_notified'):
+            g['relogin_notified'] = True
+            save()
+            notify(f'{noun} needs a re-login', f'{s["label"]}: {short(detail, 70)}. Run: {login} '
+                   f'{shlex.quote(s["label"])} --priority {s["priority"]}')
+
+
+def record_history(st, guard, now, pool=None):
+    """Append one headline sample every HISTORY_EVERY; keep HISTORY_KEEP_DAYS (bounded file). pool: a SeatPool (the
+    descriptor supplies that pool's history path and clock)."""
+    descriptor = pool or seat_pool()
+    path, own = descriptor.history_file, descriptor.provider
     last = parse_time(guard.get('history_at'))
     if last and (now - last).total_seconds() < HISTORY_EVERY:
         return
     # 'used' is the regular seats and 'all' every seat, whatever `headline` selects, so old samples keep their meaning.
     sample = {'t': now.isoformat(), 'used': st['pool'].get('used_pct_regular'), 'all': st['pool'].get('used_pct_all'),
               'reserve': st['pool'].get('reserve_in_use'),
-              'seats': {r['label']: r['week_used'] for r in st['seats'] if r['provider'] == 'codex'}}
+              'seats': {r['label']: r['week_used'] for r in st['seats'] if r['provider'] == own}}
+    if descriptor.history_extra is not None:
+        sample.update(descriptor.history_extra(st))
     with contextlib.suppress(OSError):
-        with HISTORY_FILE.open('a') as f:
+        with path.open('a') as f:
             f.write(json.dumps(sample) + '\n')
         cutoff = (now - dt.timedelta(days=HISTORY_KEEP_DAYS)).isoformat()
-        lines = HISTORY_FILE.read_text().splitlines()
+        lines = path.read_text().splitlines()
         if len(lines) > HISTORY_KEEP_DAYS * 24 * 6 + 50:
             keep = [l for l in lines if l[7:39] >= cutoff[:32]]
-            write_text_atomic(HISTORY_FILE, '\n'.join(keep) + '\n')
+            write_text_atomic(path, '\n'.join(keep) + '\n')
     guard['history_at'] = now.isoformat()
-    write_json(GUARD_FILE, guard)
+    write_json(pool.guard if pool else GUARD_FILE, guard)
 
 
 def write_text_atomic(path, text):
@@ -1758,14 +2185,24 @@ def write_text_atomic(path, text):
 
 
 def cmd_guard(args):
-    with guard_lock(wait=False) as got:
-        if not got:
-            return  # a selftest or another pass holds the lock
-        try:
-            guard_pass()
-        except Exception as e:  # keep a record; launchd simply runs the next pass in 60s
-            log_line(f'guard error: {type(e).__name__}: {e}')
-            raise
+    """One guard pass (launchd runs it every 60 s): the Codex pool, then each add-on's pool while it is installed, each
+    under its own pool's lock. A pool whose lock is held (its selftest, or a pass still running) is skipped this time;
+    the other still runs. A failure in one pass is logged and never keeps the other from running."""
+    failed = None
+    with contextlib.suppress(Exception):
+        lock_down_logins()
+    for name, run, pool in (('guard', guard_pass, seat_pool('codex')),):
+        with guard_lock(wait=False, pool=pool) as got:
+            if not got:
+                continue  # that pool's selftest or another pass holds its lock
+            try:
+                run()
+            except Exception as e:  # keep a record; launchd simply runs the next pass in 60s
+                log_line(f'{name} error: {type(e).__name__}: {e}')
+                failed = failed or e
+    addon_guard_passes()
+    if failed is not None:
+        raise failed
 
 
 # ---------------------------------------------------------------- read-only commands
@@ -1778,8 +2215,9 @@ def cmd_status(args):
         st = read_json(STATUS_FILE, {})
         age = (now_utc() - (parse_time(st.get('generated_at')) or dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc))).total_seconds()
         st = status_now() if age > 180 else refresh_headline(st)
+    extras = addon_status(args.live, st)
     if args.json:
-        print(json.dumps(st, indent=2))
+        print(json.dumps(dict(st, **{key: data for _, key, data, _ in extras}), indent=2))
     else:
         print_status(st)
         pool = st.get('pool') or {}
@@ -1790,6 +2228,12 @@ def cmd_status(args):
             if lines:
                 print()
                 print('\n'.join(lines))
+        for addon, _, _, printer in extras:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                ok = addon_operation(addon, 'status.print', lambda: (printer(), True)[1], False)
+            if ok:
+                print(output.getvalue(), end='')
 
 
 def cmd_menubar(args):
@@ -1851,10 +2295,16 @@ def cmd_menubar(args):
 
 # ---------------------------------------------------------------- seat commands
 
-def refresh_status_file():
+def refresh_status_file(pool=None):
     """Rewrite status.json now, the way a guard pass ends (build_status over the pool's seats and guard.json), so
     codexpool status and the menu bar show a change at once instead of at the next pass. The caller holds the guard
-    lock. Best effort: the next guard pass writes it anyway. True when it wrote the file."""
+    lock. Best effort: the next guard pass writes it anyway. True when it wrote the file. pool: a SeatPool; the
+    Other pools supply their own refresh callback."""
+    return (pool or seat_pool()).refresh_status()
+
+
+def refresh_codex_status_file():
+    """Refresh the core pool's complete status view."""
     with contextlib.suppress(PoolDown, ApiError, KeyUnavailable, OSError):
         write_json(STATUS_FILE, build_status(load_seats(), read_guard()))
         return True
@@ -1882,60 +2332,75 @@ def restamp_status_file():
 
 
 def cmd_enable(args):
-    with guard_lock():
-        s = match_seat(load_seats(), args.seat)
-        set_disabled(s['name'], False)  # first: if this fails the park record stays and the guard unparks at reset
-        guard = read_guard()
+    pool = seat_pool(args)
+    with guard_lock(pool=pool):
+        s = match_seat(load_seats(pool), args.seat)
+        guard = read_guard(pool)
         g = guard.setdefault('seats', {}).setdefault(s['name'], {})
+        refusal = pool.enable_refusal(pool, s, g) if pool.enable_refusal is not None else None
+        if refusal:
+            sys.exit(refusal)
+        set_disabled(s['name'], False, pool)  # if this fails the park record stays
         if g.get('parked_until'):
             g['override_until'] = g.pop('parked_until')
             g.pop('parked_reason', None)
-            write_json(GUARD_FILE, guard)
+            g.pop('parked_not_before', None)
+            write_json(pool.guard, guard)
             print(f'Credit guard overridden for {s["label"]} until {when(g["override_until"])}; it may spend credits.')
-        refresh_status_file()
+        refresh_status_file(pool)
     print(f'{s["label"]} enabled')
 
 
 def cmd_disable(args):
-    with guard_lock():
-        s = match_seat(load_seats(), args.seat)
-        guard = read_guard()
+    pool = seat_pool(args)
+    with guard_lock(pool=pool):
+        s = match_seat(load_seats(pool), args.seat)
+        guard = read_guard(pool)
         g = guard.setdefault('seats', {}).setdefault(s['name'], {})
         g.pop('parked_until', None)
         g.pop('parked_reason', None)
-        write_json(GUARD_FILE, guard)
-        set_disabled(s['name'], True)
-        refresh_status_file()
-    print(f'{s["label"]} disabled (threads on it move to the next seat)')
+        write_json(pool.guard, guard)
+        set_disabled(s['name'], True, pool)
+        refresh_status_file(pool)
+    moves = pool.moves_text
+    print(f'{s["label"]} disabled ({moves})')
 
 
 RESET_ORDER_NOTE = ('Balancing is "reset": the pool keeps filling soonest reset first, so this order is kept as yours '
                     'and takes effect with: codexpool set balancing priority')
 
 
-def you_reordered():
+def reset_order_note(pool):
+    """RESET_ORDER_NOTE for pool (a SeatPool): the setting it names is that pool's."""
+    return RESET_ORDER_NOTE.replace('set balancing', f'set {pool.balancing}')
+
+
+def you_reordered(pool=None):
     """Tell the next guard pass that you changed the fill order (order, priority, reserve), so it doesn't announce
-    the new first seat as if the old one had run out. Call with guard_lock held."""
-    guard = read_guard()
+    the new first seat as if the old one had run out. Call with guard_lock held. pool: a SeatPool (its guard file)."""
+    guard = read_guard(pool)
     guard['you_reordered'] = True
-    write_json(GUARD_FILE, guard)
+    write_json(pool.guard if pool else GUARD_FILE, guard)
 
 
 def cmd_priority(args):
-    with guard_lock():
-        s = match_seat(load_seats(), args.seat)
-        if s['provider'] == 'codex' and SETTINGS['balancing'] == 'reset':
+    pool = seat_pool(args)
+    with guard_lock(pool=pool):
+        s = match_seat(load_seats(pool), args.seat)
+        if s['provider'] == pool.provider and SETTINGS[pool.balancing] == 'reset':
             # the guard owns the live order while balancing is "reset": this only changes your order, for later
-            was = manual_priority(read_meta(), s['name'])
-            update_meta(s['name'], manual_priority=args.priority)
+            was = manual_priority(read_meta(pool), s['name'])
+            update_meta(s['name'], pool, manual_priority=args.priority)
             print(f'{s["label"]}: priority in your order {s["priority"] if was is None else was} → {args.priority} '
                   '(higher is used first)')
-            print(RESET_ORDER_NOTE)
+            print(reset_order_note(pool))
             return
-        set_fields(s['name'], priority=args.priority)
-        if s['provider'] == 'codex':
-            update_meta(s['name'], manual_priority=args.priority)  # your order, which "balancing": "reset" keeps
-            you_reordered()
+        set_fields(s['name'], pool, priority=args.priority)
+        if s['provider'] == pool.provider:
+            update_meta(s['name'], pool, manual_priority=args.priority)  # your order, which "balancing": "reset" keeps
+            you_reordered(pool)
+        if pool.refresh_after_meta:  # this pool refreshes metadata changes immediately
+            refresh_status_file(pool)
     print(f'{s["label"]} priority {s["priority"]} → {args.priority} (higher is used first)')
 
 
@@ -1954,64 +2419,77 @@ def cmd_order(args):
     """Set the fill order in one go: the seats named first, in that order, then the other regular seats in the order
     they had, then the reserve seats. Priorities go down from ORDER_TOP in steps of ORDER_STEP; seats.json keeps the
     order as yours (manual_priority)."""
-    with guard_lock():
-        seats = load_seats()
-        codex = [s for s in seats if s['provider'] == 'codex']
+    pool = seat_pool(args)
+    noun = pool.noun
+    with guard_lock(pool=pool):
+        seats = load_seats(pool)
+        codex = [s for s in seats if s['provider'] == pool.provider]
         if not codex:
-            sys.exit('codexpool order: there are no Codex seats in the pool yet (codexpool login)')
+            sys.exit(f'{pool.cli} order: there are no {pool.noun_title}s '
+                     f'in the pool yet ({pool.cli} login)')
         named = []
         for q in args.seats:
             s = match_seat(codex, q)
             if s in named:
-                sys.exit(f'codexpool order: {s["label"]} is named twice')
+                sys.exit(f'{pool.cli} order: {s["label"]} is named twice')
             named.append(s)
-        reset = SETTINGS['balancing'] == 'reset'
-        base = manual_order(codex, read_meta()) if reset else [s['name'] for s in codex]
+        reset = SETTINGS[pool.balancing] == 'reset'
+        base = manual_order(codex, read_meta(pool)) if reset else [s['name'] for s in codex]
         order = order_plan(codex, named, base)
         targets = order_priorities(order)
         if not reset:  # on "reset" the guard owns the live order: this is your order, for later
-            if set_pool_order(codex, targets):
-                you_reordered()
-        write_manual_order(targets)
-        refresh_status_file()
+            if set_pool_order(codex, targets, pool):
+                you_reordered(pool)
+        write_manual_order(targets, pool)
+        refresh_status_file(pool)
     labels = {s['name']: s['label'] for s in codex}
     reserve = {s['name'] for s in codex if s['reserve']}
     print('Fill order: ' + ' > '.join(labels[n] + (' (reserve)' if n in reserve else '') for n in order))
     kept = [s['label'] for s in named if s['reserve']]
     if kept:
-        print(f'{", ".join(kept)} {"is a reserve seat" if len(kept) == 1 else "are reserve seats"}: a reserve seat always '
-              'fills after every regular seat (codexpool reserve <seat> --off makes it a regular one).')
-    if SETTINGS['balancing'] == 'reset':
-        print(RESET_ORDER_NOTE)
+        print(f'{", ".join(kept)} {f"is a reserve {noun}" if len(kept) == 1 else f"are reserve {noun}s"}: a reserve '
+              f'{noun} always fills after every regular {noun} ({pool.cli} reserve <{noun}> --off makes it a regular '
+              'one).')
+    if reset:
+        print(reset_order_note(pool))
 
 
 def cmd_label(args):
+    pool = seat_pool(args)
     problem = label_problem(args.label)
     if problem:
-        sys.exit(f'codexpool label: {problem}')
-    s = match_seat(load_seats(), args.seat)
-    update_meta(s['name'], label=args.label)
+        sys.exit(f'{pool.cli} label: {problem}')
+    s = match_seat(load_seats(pool), args.seat)
+    update_meta(s['name'], pool, label=args.label)
+    if pool.refresh_after_meta:
+        with guard_lock(pool=pool):
+            refresh_status_file(pool)
     print(f'{s["name"]} is now labelled {args.label}')
 
 
 def cmd_reserve(args):
     """Mark a seat as reserve (or not, with --off), and move it in the fill order when it is out of place: a reserve
     fills after every regular seat, a regular seat before every reserve."""
-    with guard_lock():
-        seats = load_seats()
+    pool = seat_pool(args)
+    noun = pool.noun
+    with guard_lock(pool=pool):
+        seats = load_seats(pool)
         s = match_seat(seats, args.seat)
-        update_meta(s['name'], reserve=None if args.off else True)
+        update_meta(s['name'], pool, reserve=None if args.off else True)
         moved = ''
-        if s['provider'] == 'codex':
-            p, moves = fill_order(seats, reserve=not args.off, name=s['name'])
+        if s['provider'] == pool.provider:
+            p, moves = fill_order(seats, reserve=not args.off, name=s['name'], provider=pool.provider)
             if p != s['priority'] or moves:
-                apply_fill_order(s['name'], p, moves)
-                you_reordered()
+                apply_fill_order(s['name'], p, moves, pool)
+                you_reordered(pool)
             if p != s['priority']:
-                moved = (f' It now fills {"before the reserve seats" if args.off else "after every regular seat"} '
+                moved = (f' It now fills {f"before the reserve {noun}s" if args.off else f"after every regular {noun}"} '
                          f'(priority {s["priority"]} → {p}).')
-    print(f'{s["label"]} is {"no longer " if args.off else ""}a reserve seat.{moved} The menu bar turns red while a '
-          f'reserve seat serves; "headline": "regular" leaves reserve seats out of the headline %.')
+        if pool.refresh_after_meta:
+            refresh_status_file(pool)
+    tail = pool.reserve_tail
+    print(f'{s["label"]} is {"no longer " if args.off else ""}a reserve {noun}.{moved} The menu bar turns red while a '
+          f'reserve {noun} serves; {tail}')
 
 
 def cmd_reset(args):
@@ -2073,11 +2551,17 @@ def cmd_reset(args):
 
 
 def cmd_weight(args):
+    pool = seat_pool(args)
+    sizes = pool.sizes_text
     if not valid_weight(args.weight):
-        sys.exit(f'weight must be a positive number (Plus = 1, Pro = 20), not {args.weight:g}')
-    s = match_seat(load_seats(), args.seat)
-    update_meta(s['name'], weight=args.weight)
-    print(f'{s["label"]} weight {s["weight"]:g} → {args.weight:g} (its share of the pool total; Plus = 1)')
+        sys.exit(f'weight must be a positive number ({sizes}), not {args.weight:g}')
+    s = match_seat(load_seats(pool), args.seat)
+    update_meta(s['name'], pool, weight=args.weight)
+    if pool.refresh_after_meta:
+        with guard_lock(pool=pool):
+            refresh_status_file(pool)
+    print(f'{s["label"]} weight {s["weight"]:g} → {args.weight:g} (its share of the pool total; '
+          f'{sizes.split(",")[0]})')
 
 
 def cmd_refresh(args):
@@ -2128,10 +2612,11 @@ def first_url(text):
     return m.group(0).rstrip('.,;:') if m else None
 
 
-LOGIN_SOURCE = re.compile(r'openai_(device_)?login\.go')  # where CLIProxyAPI logs a failed Codex sign-in
+LOGIN_SOURCE = re.compile(r'\w+login\.go')  # where CLIProxyAPI logs a failed sign-in
 # CLIProxyAPI's sign-in instructions: the link's heading, the wait, and the SSH-tunnel block it prints with -no-browser
-SIGN_IN_NOISE = re.compile(r'(Visit the following URL to continue authentication:|Waiting for Codex authentication '
-                           r'callback|Opening browser for Codex authentication|To authenticate from a remote machine|'
+SIGN_IN_NOISE = re.compile(r'(Visit the following URL to continue authentication:|Waiting for \w+ '
+                           r'authentication callback|Opening browser for \w+ authentication|'
+                           r'To authenticate from a remote machine|'
                            r'=+$|Run one of the following commands|# Standard SSH command|# If using an SSH key|'
                            r'ssh (-i \S+ )?-L |NOTE: If your server)')
 
@@ -2167,7 +2652,7 @@ def sign_in_failure(lines, since):
     when neither says anything."""
     said = []
     for line in lines:
-        text = line.replace(CPA_PASTE_PROMPT, '').strip()
+        text = CPA_PASTE_PROMPTS.sub('', line).strip()
         m = LOG_LINE.match(text)
         if m:  # logging-to-file off: CLIProxyAPI's log lines come on its output
             text = m.group(3) if LOGIN_SOURCE.fullmatch(m.group(2)) else ''
@@ -2213,17 +2698,37 @@ def link_copier(no_copy=False):
     return copy
 
 
-def login_seat(device=False, no_open=False, echo=True, on_url=None, stdin=None):
-    """One sign-in through CLIProxyAPI's own flow (codexpool login and codexpool setup). echo streams its output;
-    on_url(url) runs once, with the first https:// URL in it (the sign-in link). Returns (seat file, output lines);
-    the file is None when the sign-in did not complete. CLIProxyAPI's output never holds token material."""
-    if device:
-        flow = ['-codex-device-login', '-no-browser']
-    else:
-        flow = ['-codex-login'] + (['-no-browser'] if no_open else [])
+def make_private(path):
+    """chmod 600 a login file: CLIProxyAPI writes new ones readable by other users (0644). True when it changed."""
+    with contextlib.suppress(OSError):
+        if path.stat().st_mode & 0o077:
+            os.chmod(path, 0o600)
+            return True
+    return False
+
+
+def lock_down_logins():
+    """The guard's safety net: every registered pool's login files is readable by you only."""
+    folders = [AUTH]
+    for addon, pools in addon_objects('seat_pools', mapping=True):
+        folders.extend(p.auth for p in pools.values() if isinstance(p, SeatPool))
+    for folder in folders:
+        for f in (folder.glob('*.json') if folder.is_dir() else ()):
+            if make_private(f):
+                log_line(f'guard: {f.name} was readable by other users; made it private (mode 600)')
+
+
+def login_seat(device=False, no_open=False, echo=True, on_url=None, stdin=None, pool=None):
+    """One sign-in through CLIProxyAPI's own flow, selected by the pool descriptor.
+    echo streams its output; on_url(url) runs once, with the first https:// URL in it (the sign-in link). pool: a
+    SeatPool; another pool uses its descriptor's flags, build and configuration, in its working
+    directory (so a failure lands in its log). Returns (seat file, output lines); the file is None when the sign-in
+    did not complete. CLIProxyAPI's output never holds token material."""
+    pool = pool or seat_pool('codex')
+    flow = pool.login_flow(no_open, device)
     saved, url, lines = None, None, []
-    with subprocess.Popen([str(cpa_binary()), '-config', str(CONFIG)] + flow, cwd=ROOT, stdin=stdin,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as p:
+    with subprocess.Popen([str(cpa_binary(pool.link)), '-config', str(pool.config)] + flow, cwd=pool.work,
+                          stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as p:
         try:
             for line in p.stdout:
                 lines.append(line.rstrip('\n'))
@@ -2239,7 +2744,7 @@ def login_seat(device=False, no_open=False, echo=True, on_url=None, stdin=None):
                 m = SAVED_LINE.search(line)
                 if m:
                     saved = pathlib.Path(m.group(1))
-                    saved = saved if saved.is_absolute() else ROOT / saved
+                    saved = saved if saved.is_absolute() else pool.work / saved
         finally:
             if p.poll() is None:  # Ctrl-C, or on_url stopped: don't leave CLIProxyAPI's callback listener running
                 p.terminate()
@@ -2249,20 +2754,22 @@ def login_seat(device=False, no_open=False, echo=True, on_url=None, stdin=None):
                     p.kill()
     if not saved or not saved.exists():  # CLIProxyAPI exits 0 on failure; only this line proves success
         return None, lines
+    make_private(saved)  # it holds refresh tokens: CLIProxyAPI writes it readable by others
     return saved, lines
 
 
 FILL_STEP = 100  # fill_order: how far below the last regular seat a new one goes, room for later seats
 
 
-def fill_order(seats, reserve=False, name=None):
+def fill_order(seats, reserve=False, name=None, provider='codex'):
     """Where a seat goes in the fill order (priority, higher first), as (its priority, moves): moves is
     [(seat, new priority)] for reserve seats that have to move down to stay last. Regular seats fill in the order
     they were added and every reserve seat comes after all of them, so a regular seat goes below every other
     regular seat and above every reserve; a reserve goes below every seat. name: a seat already in the pool to place
     again (left out of the others; it keeps its priority when that is already in its place); without it the seat is
-    a new one, not in seats. Priorities come out unique, so doctor has nothing to say about them."""
-    codex = [s for s in seats if s['provider'] == 'codex' and s['name'] != name]
+    a new one, not in seats. Priorities come out unique, so doctor has nothing to say about them. provider: whose
+    seats count (the descriptor names each additional pool's provider)."""
+    codex = [s for s in seats if s['provider'] == provider and s['name'] != name]
     me = next((s for s in seats if name is not None and s['name'] == name), None)
     regular = [s['priority'] for s in codex if not s['reserve']]
     reserves = [s for s in codex if s['reserve']]
@@ -2288,14 +2795,14 @@ def fill_order(seats, reserve=False, name=None):
     return p, [(s, q) for s, q in moves if s['priority'] != q]
 
 
-def apply_fill_order(name, priority, moves):
-    """Set a seat's priority, and first move the reserve seats fill_order said to move."""
+def apply_fill_order(name, priority, moves, pool=None):
+    """Set a seat's priority, and first move the reserve seats fill_order said to move (pool: a SeatPool)."""
     for s, q in moves:
-        set_fields(s['name'], priority=q)
-    set_fields(name, priority=priority)
+        set_fields(s['name'], pool, priority=q)
+    set_fields(name, pool, priority=priority)
 
 
-def set_priority_when_loaded(name, priority, label=None):
+def set_priority_when_loaded(name, priority, label=None, pool=None):
     """Set a new seat's priority once the pool's watcher has loaded its file (up to 20 s). priority is a number, or
     a function of the pool's seats that returns (priority, moves) the way fill_order does. Returns the priority
     set, or None, after saying how to set it later, when the seat did not load in time."""
@@ -2303,15 +2810,15 @@ def set_priority_when_loaded(name, priority, label=None):
     seats = []
     while time.time() < deadline:
         with contextlib.suppress(PoolDown, ApiError):
-            seats = load_seats()
+            seats = load_seats(pool)
             if any(s['name'] == name for s in seats):
                 p, moves = priority(seats) if callable(priority) else (priority, [])
-                apply_fill_order(name, p, moves)
+                apply_fill_order(name, p, moves, pool)
                 return p
         time.sleep(1)
     p = priority(seats)[0] if callable(priority) else priority
     print(f'warning: pool did not load {name} in time; set priority later with: '
-          f'codexpool priority {shlex.quote(label or name)} {p}')
+          f'{pool.cli if pool else "codexpool"} priority {shlex.quote(label or name)} {p}')
     return None
 
 
@@ -2326,15 +2833,17 @@ def duplicate_seat_warnings():
             for (email, acct), names in ids.items() if len(names) > 1]
 
 
-def new_seat_place(name, reserve=False):
+def new_seat_place(name, reserve=False, provider='codex'):
     """For set_priority_when_loaded: a new seat's place in the fill order, from the pool's seats with it loaded."""
-    return lambda seats: fill_order([s for s in seats if s['name'] != name], reserve)
+    return lambda seats: fill_order([s for s in seats if s['name'] != name], reserve, provider=provider)
 
 
-def fresh_seat_meta(name, label=None):
+def fresh_seat_meta(name, label=None, pool=None):
     """seats.json for a seat file that was not in the pool before: label, and no size, reserve flag or place in your
     fill order left over from an earlier seat with that file name (the same account removed and signed in again)."""
-    update_meta(name, label=label or None, weight=None, reserve=None, manual_priority=None)
+    fields = dict(label=label or None, weight=None, reserve=None, manual_priority=None)
+    fields.update((pool or seat_pool()).new_seat_fields())
+    update_meta(name, pool, **fields)
 
 
 def cmd_login(args):
@@ -2386,13 +2895,18 @@ def cmd_login(args):
 
 
 def cmd_remove(args):
-    s = match_seat(load_seats(), args.seat)
+    pool = seat_pool(args)
+    s = match_seat(load_seats(pool), args.seat)
     if not args.yes:
         sys.exit(f'This deletes {s["name"]} from the pool (the login is not revoked). Re-run with --yes.')
-    api('DELETE', '/v0/management/auth-files?name=' + urllib.parse.quote(s['name']))
-    update_meta(s['name'], label=None, weight=None, reserve=None)
+    api('DELETE', '/v0/management/auth-files?name=' + urllib.parse.quote(s['name']), port=pool.port)
+    pool.on_remove(pool, s)
+
+
+def codex_remove_seat(pool, s):
+    update_meta(s['name'], pool, label=None, weight=None, reserve=None)
     print(f'removed {s["name"]}')
-    if s['provider'] == 'codex' and not [p for p in codex_seat_files() if p.name != s['name']]:
+    if s['provider'] == pool.provider and not [p for p in codex_seat_files() if p.name != s['name']]:
         note = codex_after_last_seat()
         if note:
             print(note)
@@ -2637,19 +3151,55 @@ def unquote(v):
     return v.split('#', 1)[0].strip()
 
 
-def gate_probe(port=PORT):
-    """(plain_status, browser_status): a Codex-like request must pass, a browser one must get 403."""
-    def get(headers):
-        req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/models', headers=headers)
-        try:
-            with _LOCAL.open(req, timeout=5) as r:
-                return r.status
-        except urllib.error.HTTPError as e:
-            e.close()
-            return e.code
-        except (urllib.error.URLError, OSError):
-            return None
-    return get({}), get({'Origin': PROBE_ORIGIN, 'Sec-Fetch-Site': 'cross-site'})
+def _probe_status(port, headers):
+    """The HTTP status a GET /v1/models with these headers gets from the pool on port, or None (nothing answers)."""
+    req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/models', headers=headers)
+    try:
+        with _LOCAL.open(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        e.close()
+        return e.code
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def gate_probe(port=None):
+    """(plain_status, browser_status) of the Codex pool (or the pool on port): a Codex-like request must pass, a
+    browser one must get 403."""
+    port = PORT if port is None else port
+    return _probe_status(port, {}), _probe_status(port, {'Origin': PROBE_ORIGIN, 'Sec-Fetch-Site': 'cross-site'})
+
+
+def gate_probe_cases(pool):
+    """[(what, got, want)] for the live gate of a pool instance: what its profile must let through and keep out."""
+    return pool.probe_cases(pool)
+
+
+def codex_probe_cases(pool):
+    plain, blocked = gate_probe(pool.port)
+    return [('Codex-like request', plain, 200), ('browser request', blocked, 403)]
+
+
+def gate_hash_of(version):
+    """The gate hash in a build's version ("7.3.18+gate.<hash>" as the pool reports it, or "7.3.18-gate-<hash>" as
+    the build directory is named), or None."""
+    m = re.search(r'[+-]gate[.-]([0-9a-f]{6,})$', version or '')
+    return m.group(1) if m else None
+
+
+def gate_source_note(live, pool):
+    """A few words for doctor when the running build's gate is older than the gate source codexpool installed:
+    nothing forces a rebuild (the pool keeps its build), the next upgrade of that pool picks the new gate up."""
+    running = gate_hash_of(live)
+    try:
+        source = gate_id(profile=pool.profile)
+    except (OSError, RuntimeError):
+        return ''
+    if not running or running == source:
+        return ''
+    how = f'the next {pool.next_rebuild}'
+    return f'; the gate source is now {source}: {how} picks it up'
 
 
 class DoctorReport:
@@ -2685,6 +3235,8 @@ class DoctorReport:
 
 
 def cmd_doctor(args):
+    for addon in ADDONS:
+        addon_call(addon, 'before_doctor', args)
     rep = DoctorReport(echo=not args.json)
     if not args.json:
         require_installed('doctor')
@@ -2697,10 +3249,28 @@ def cmd_doctor(args):
             rep.section('Install')
             rep.check(False, f'codexpool is not installed yet ({", ".join(missing)} missing)',
                       'run the installer, or ./bin/codexpool install from a checkout')
+            doctor_addons(rep)
         else:
             doctor_checks(rep)
     print(json.dumps(rep.as_json(), indent=2))
     sys.exit(1 if rep.problems else 0)
+
+
+def doctor_build_checks(rep, pool, key_error):
+    """The running build and the live gate of one pool instance: each pool is checked against its own build link
+    and its own gate profile, and a gate source newer than a running build is a note, not a problem."""
+    live = None if key_error else running_version(pool.port)
+    if not key_error:
+        fix = f'{pool.build_subject} must run a +gate build: {pool.rebuild_hint}'
+        rep.check(bool(live) and '+gate' in live, f'running build: {live or "unknown"} (installed '
+                  f'{cpa_version(pool.link)}{gate_source_note(live, pool)})', fix)
+    cases = gate_probe_cases(pool)
+    ok = all(got == want for _, got, want in cases)
+    wants = [str(want) for _, _, want in cases]
+    wants = ', '.join(wants[:-1]) + ' and ' + wants[-1]
+    text = pool.gate_title + ': ' + ', '.join(f'{what} {got}' for what, got, _ in cases)
+    fix = f'expected {wants}; {pool.gate_fix}'
+    rep.check(ok, text, fix)
 
 
 def doctor_checks(rep):
@@ -2717,13 +3287,7 @@ def doctor_checks(rep):
     except KeyUnavailable as e:
         key_error = e
         check(False, f'management key: {e}', e.fix)
-    live = None if key_error else running_version()
-    if not key_error:
-        check(bool(live) and '+gate' in live, f'running build: {live or "unknown"} (installed {cpa_version()})',
-              'the pool must run a +gate build: codexpool upgrade <version>')
-    plain, browser = gate_probe()
-    check(plain == 200 and browser == 403, f'origin gate: Codex-like request {plain}, browser request {browser}',
-          'expected 200 and 403; run: codexpool upgrade <version> --force')
+    doctor_build_checks(rep, pool_instance('codex'), key_error)
     cfg = CONFIG.read_text() if CONFIG.exists() else ''
     check('host: "127.0.0.1"' in cfg, 'bound to loopback only')
     check(re.search(r'^api-keys:\s*\[\]', cfg, re.M) is not None, 'client auth open on loopback (api-keys: [])',
@@ -2844,6 +3408,17 @@ def doctor_checks(rep):
               'something local tried to use the pool from a web context; see: grep "codexpool gate" ~/.codexpool/logs/main.log',
               warn=True)
 
+    doctor_addons(rep)
+
+
+def launchd_getenv(name):
+    """The value launchd's user session gives name (every app started from Finder or the Dock inherits it), or None."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        r = subprocess.run(['launchctl', 'getenv', name], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return None
+
 
 # ---------------------------------------------------------------- build / upgrade
 
@@ -2860,8 +3435,37 @@ def _github_json(path):
         return json.loads(r.read())
 
 
-def gate_selftest(binary):
-    """Run a built binary on a scratch port with an empty auth dir and check the gate end to end."""
+CORE_GATE_PROFILES = GATE_PROFILES = ('codex',)
+
+
+def gate_env(profile):
+    """Set the gate environment only for non-default profiles; never inherit another pool's profile."""
+    env = {k: v for k, v in os.environ.items() if k != 'CODEXPOOL_GATE_PROFILE'}
+    if profile != 'codex':
+        env['CODEXPOOL_GATE_PROFILE'] = profile
+    return env
+
+
+def gate_selftest(binary, profile=None):
+    """Check the default profile plus the selected build contributions end to end."""
+    details = []
+    try:
+        contributions = gate_contributions(profile)
+    except RuntimeError as exc:
+        return False, str(exc)
+    if profile != 'codex' and any(hook.startswith('gate') for _, hook in ADDON_FAILED_HOOKS):
+        return False, 'add-on gate failed; refusing an incomplete self-test'
+    profiles = ('codex',) + tuple(p for _, _, own, _, _ in contributions for p in own)
+    for profile in profiles:
+        ok, detail = _gate_selftest_profile(binary, profile)
+        if not ok:
+            return False, f'{profile} profile: {detail}'
+        details.append(detail)
+    return True, ' + '.join(details)
+
+
+def _gate_selftest_profile(binary, profile):
+    """Run a built binary on a scratch port with an empty auth dir and the given gate profile, and check it."""
     work = pathlib.Path(tempfile.mkdtemp(prefix='codexpool-gate-'))
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
@@ -2871,7 +3475,7 @@ def gate_selftest(binary):
     (work / 'config.yaml').write_text(
         f'host: "127.0.0.1"\nport: {port}\nauth-dir: "{work / "auth"}"\napi-keys: []\nlogging-to-file: false\n'
         f'remote-management: {{allow-remote: false, secret-key: "{key}", disable-control-panel: true}}\n')
-    proc = subprocess.Popen([str(binary), '-config', str(work / 'config.yaml')], cwd=work,
+    proc = subprocess.Popen([str(binary), '-config', str(work / 'config.yaml')], cwd=work, env=gate_env(profile),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         deadline = time.time() + 20
@@ -2886,23 +3490,11 @@ def gate_selftest(binary):
                 with _LOCAL.open(req, timeout=5) as r:
                     return r.status
             except urllib.error.HTTPError as e:
+                e.close()
                 return e.code
             except (urllib.error.URLError, OSError):
                 return None
-        evil = {'Origin': 'https://example.com'}
-        cases = [
-            ('Codex-like GET /v1/models', code('/v1/models'), 200),
-            ('browser Origin', code('/v1/models', evil), 403),
-            ('CORS preflight', code('/v1/responses', {**evil, 'Access-Control-Request-Method': 'POST'}, 'OPTIONS'), 403),
-            ('no-cors cross-site', code('/v1/models', {'Sec-Fetch-Site': 'cross-site'}), 403),
-            ('DNS rebinding Host', code('/v1/models', {'Host': f'attacker.example:{port}'}), 403),
-            ('Codex renderer app://-', code('/v1/models', {'Origin': 'app://-', 'Sec-Fetch-Site': 'cross-site'}), 200),
-            ('management with key', code('/v0/management/auth-files', {'Authorization': f'Bearer {key}'}), 200),
-        ]
-        for _ in range(6):  # browser-originated keyless management calls must not get loopback banned
-            code('/v0/management/auth-files', evil)
-        cases.append(('management after 6 browser attempts', code('/v0/management/auth-files',
-                                                                 {'Authorization': f'Bearer {key}'}), 200))
+
         def ws_code(headers=None, host=None):
             extra = ''.join(f'{k}: {v}\r\n' for k, v in (headers or {}).items())
             try:
@@ -2914,13 +3506,40 @@ def gate_selftest(binary):
                     return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
             except OSError:
                 return None
+        evil = {'Origin': 'https://example.com'}
+        auth = {'Authorization': f'Bearer {key}'}
+        rebind = {'Host': f'attacker.example:{port}'}
+        extension = next(((a, profiles[profile]) for a, _, profiles, _, _ in gate_contributions(profile)
+                          if profile in profiles), None)
+        if extension:
+            addon, cases_fn = extension
+            cases = addon_operation(addon, 'gate.cases',
+                                    lambda: list(cases_fn(code, ws_code, auth, evil, rebind)))
+            if cases is None:
+                return False, 'add-on gate cases failed'
+            failed = [f'{n}: got {got}, want {want}' for n, got, want in cases if got != want]
+            return not failed, '; '.join(failed) or f'{len(cases)} {profile} gate checks passed'
+        if profile != 'codex':
+            return False, 'add-on gate profile unavailable'
+        cases = [
+            ('Codex-like GET /v1/models', code('/v1/models'), 200),
+            ('browser Origin', code('/v1/models', evil), 403),
+            ('CORS preflight', code('/v1/responses', {**evil, 'Access-Control-Request-Method': 'POST'}, 'OPTIONS'), 403),
+            ('no-cors cross-site', code('/v1/models', {'Sec-Fetch-Site': 'cross-site'}), 403),
+            ('DNS rebinding Host', code('/v1/models', rebind), 403),
+            ('Codex renderer app://-', code('/v1/models', {'Origin': 'app://-', 'Sec-Fetch-Site': 'cross-site'}), 200),
+            ('management with key', code('/v0/management/auth-files', auth), 200),
+        ]
+        for _ in range(6):  # browser-originated keyless management calls must not get loopback banned
+            code('/v0/management/auth-files', evil)
+        cases.append(('management after 6 browser attempts', code('/v0/management/auth-files', auth), 200))
         cases += [
             ('WebSocket upgrade (Codex-like)', ws_code(), 101),
             ('WebSocket upgrade from a browser page', ws_code(evil), 403),
             ('WebSocket upgrade via DNS rebinding', ws_code(host=f'attacker.example:{port}'), 403),
         ]
         failed = [f'{n}: got {got}, want {want}' for n, got, want in cases if got != want]
-        return not failed, '; '.join(failed) or f'{len(cases)} gate checks passed'
+        return not failed, '; '.join(failed) or f'{len(cases)} {profile} gate checks passed'
     finally:
         proc.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
@@ -2930,23 +3549,49 @@ def gate_selftest(binary):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def gate_id(gate_src=None):
-    """Short hash of everything codexpool changes in upstream; part of the build dir and version."""
+def gate_contributions(profile=None):
+    """None builds all available profiles; the default pool never depends on add-on files."""
+    if profile == 'codex':
+        return []
+    contributions = addon_gate_contributions()
+    if profile is None:
+        return contributions
+    selected = [c for c in contributions if profile in c[2]]
+    if not selected:
+        raise RuntimeError('add-on gate failed: profile unavailable: ' + str(profile))
+    return selected
+
+
+def gate_id(gate_src=None, profile=None):
+    """Hash the core hook and selected contribution files. Codex uses only the core hash."""
     gate_src = GATE_SOURCE.read_bytes() if gate_src is None else gate_src
-    return hashlib.sha256(gate_src + b'\0' + GATE_ANCHOR.encode() + b'\0' +
-                          GATE_REPLACEMENT.encode()).hexdigest()[:10]
+    h = hashlib.sha256(gate_src + b'\0' + GATE_ANCHOR.encode() + b'\0' + GATE_REPLACEMENT.encode())
+    for addon, _, _, sources, inputs in gate_contributions(profile):
+        def fingerprint(a=addon, paths=sources + inputs):
+            return b''.join(b'\0' + (a.id + '/' + path.relative_to(a.path).as_posix()).encode() +
+                            b'\0' + path.read_bytes() for path in sorted(set(paths)))
+        h.update(addon_operation(addon, 'gate.hash', fingerprint, b''))
+    return h.hexdigest()[:10]
 
 
-def gate_version(version):
-    return f'{version}+gate.{gate_id()}'
+def gate_version(version, profile='codex'):
+    return f'{version}+gate.{gate_id(profile=profile)}'
 
 
-def build(version):
+def build(version, profile=None):
     """Build CLIProxyAPI <version> from its release tag plus codexpool_gate.go; return the version dir."""
     gate_src = GATE_SOURCE.read_bytes()
-    gid = gate_id(gate_src)
+    gid = gate_id(gate_src, profile=profile)
+    if profile != 'codex' and any(hook.startswith('gate') for _, hook in ADDON_FAILED_HOOKS):
+        raise RuntimeError('add-on gate failed; refusing to use an incomplete build')
     dest = VERSIONS / f'v{version}-gate-{gid}'
-    if (dest / 'cli-proxy-api').exists():
+    contributions = gate_contributions(profile)
+    cache_valid = (dest / 'cli-proxy-api').exists() and all(
+            addon_operation(a, 'gate.cache_valid', lambda g=g: g.cache_valid(dest), False)
+            for a, g, _, _, _ in contributions if getattr(g, 'cache_valid', None))
+    if profile != 'codex' and any(hook.startswith('gate') for _, hook in ADDON_FAILED_HOOKS):
+        raise RuntimeError('add-on gate failed; refusing to use an incomplete build')
+    if cache_valid:
         return dest
     go = TOOLCHAIN / 'current' / 'bin' / 'go'
     if not go.exists():
@@ -2974,6 +3619,15 @@ def build(version):
         env = {**os.environ, 'GOROOT': str(TOOLCHAIN / 'current'), 'GOPATH': str(TOOLCHAIN / 'gopath'),
                'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0', 'GOFLAGS': '-mod=mod',
                'PATH': f'{TOOLCHAIN / "current" / "bin"}:{os.environ.get("PATH", "")}'}
+        build_results = {}
+        for addon, gate, _, sources, _ in contributions:
+            for asset in sources:
+                shutil.copy2(asset, tree / 'cmd/server' / asset.name)
+            pre_build = getattr(gate, 'pre_build', None)
+            if pre_build:
+                build_results[addon.id] = addon_operation(addon, 'gate.pre_build', lambda: pre_build(tree, go, env))
+        if profile != 'codex' and any(hook.startswith('gate') for _, hook in ADDON_FAILED_HOOKS):
+            raise RuntimeError('add-on gate failed; refusing to publish an incomplete build')
         stamp = now_utc().strftime('%Y-%m-%dT%H:%M:%SZ')
         out = src / 'cli-proxy-api'
         print('building (CGO off; plugins unsupported, not used)')
@@ -2982,7 +3636,7 @@ def build(version):
                             '-o', str(out), './cmd/server'], cwd=tree, env=env, capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f'build failed:\n{r.stderr[-2000:]}')
-        ok, detail = gate_selftest(out)
+        ok, detail = gate_selftest(out, profile=profile)
         if not ok:
             sys.exit(f'built binary failed the gate self-test: {detail}. Nothing was changed.')
         print(f'gate self-test: {detail}')
@@ -2994,18 +3648,47 @@ def build(version):
         shutil.copy2(tree / 'LICENSE', staging / 'LICENSE')
         (staging / 'BUILD-INFO').write_text(f'upstream v{version} commit {commit}\n+ build/codexpool_gate.go gate {gid}\n'
                                             f'built {stamp} with {subprocess.run([str(go), "version"], capture_output=True, text=True, env=env).stdout.strip()}\n')
-        os.replace(staging, dest)
+        with (staging / 'BUILD-INFO').open('a') as info:
+            for addon, _, _, sources, inputs in gate_contributions(profile):
+                for asset in sorted(set(sources + inputs)):
+                    info.write(f'add-on {addon.id}/{asset.relative_to(addon.path)} sha256 '
+                               f'{hashlib.sha256(asset.read_bytes()).hexdigest()}\n')
+        # A legacy cached binary can predate the record; preserve it until this build passes the gate.
+        if dest.exists():
+            for asset in staging.iterdir():
+                os.replace(asset, dest / asset.name)
+            staging.rmdir()
+        else:
+            os.replace(staging, dest)
+        for addon, gate, _, _, _ in contributions:
+            post_build = getattr(gate, 'post_build', None)
+            if post_build:
+                addon_operation(addon, 'gate.post_build',
+                                lambda: post_build(dest, version, stamp, build_results.get(addon.id)))
+        if profile != 'codex' and any(hook.startswith('gate') for _, hook in ADDON_FAILED_HOOKS):
+            raise RuntimeError('add-on gate failed; refusing to select an incomplete build')
         return dest
     finally:
         shutil.rmtree(src, ignore_errors=True)
 
 
-def _point_current(target):
-    link = BIN / '.current.tmp'
+def _point_current(target, link=None):
+    """Point a build link (bin/current, the Codex pool's, unless another is given) at a build, atomically."""
+    link = link or CURRENT
+    tmp = link.parent / f'.{link.name}.tmp'
     with contextlib.suppress(FileNotFoundError):
-        link.unlink()
-    link.symlink_to(target)
-    os.replace(link, CURRENT)
+        tmp.unlink()
+    tmp.symlink_to(target)
+    os.replace(tmp, link)
+
+
+def build_for(pool, version):
+    """Build (or reuse) CLIProxyAPI <version> with the gate and point this pool's own link at it: bin/current for
+    the Codex pool, or the descriptor's link for another pool. Other pools' links are never touched; the two share a
+    build directory only when they run the same version and gate."""
+    dest = build(version, profile=pool.profile)
+    _point_current(dest, pool.link)
+    return dest
 
 
 def cmd_build(args):
@@ -3023,7 +3706,7 @@ def cmd_upgrade(args):
     if running_version() == target_version and not args.force:
         print(f'already running {target_version}')
         return
-    dest = build(version)
+    dest = build(version, profile='codex')
     try:
         seats_before = len(load_seats())
     except (PoolDown, ApiError, KeyUnavailable):
@@ -3097,7 +3780,8 @@ CONFIG_WARNINGS = {'model_provider': 'a custom provider hides every existing Cod
                    'model_catalog_json': 'a static catalog freezes the model picker'}
 WRAPPER = HOME / '.local' / 'bin' / 'codexpool'
 WRAPPER_MARK = '# codexpool wrapper, written by `codexpool install`'
-CODE_FILES = ('bin/codexpool', 'build/codexpool_gate.go', 'menubar/codexpool_menubar.py',
+CODE_FILES = ('bin/codexpool', 'build/codexpool_gate.go',
+              'menubar/codexpool_menubar.py',
               'menubar/codexpool_settings.py', 'menubar/SPEC.md', 'lanes/bridge.py', 'launchd', 'examples', 'docs',
               'README.md', 'AGENTS.md', 'LICENSE', 'NOTICE')
 MENUBAR_PACKAGES = ('pyobjc-core', 'pyobjc-framework-Cocoa')
@@ -3235,10 +3919,15 @@ def code_files():
         else:
             files = []
         out += [(f, ROOT / f.relative_to(CODE_DIR)) for f in files]
+    for addon in ADDONS:
+        pairs = addon_operation(addon, 'code_files', lambda: addon_code_files(addon.path, addon.manifest), [])
+        out += [(src, ROOT / rel) for src, rel in pairs]
     return out
 
 
 def copy_code():
+    if ADDONS:
+        return copy_code_with_addons()
     for src, dest in code_files():
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists() or dest.read_bytes() != src.read_bytes():
@@ -3436,10 +4125,10 @@ def install_build(st):
         if not st.dry:
             raise RuntimeError(f'cannot ask GitHub for the latest CLIProxyAPI release: {e}') from None
         version = 'latest'
-    gid = gate_id((CODE_DIR / 'build' / 'codexpool_gate.go').read_bytes())
+    gid = gate_id((CODE_DIR / 'build' / 'codexpool_gate.go').read_bytes(), profile='codex')
     st.change(f'build CLIProxyAPI v{version} from its release source + build/codexpool_gate.go (gate {gid}), '
               'run the gate self-test on a scratch port, and point bin/current at it',
-              lambda: _point_current(build(version)))
+              lambda: _point_current(build(version, profile='codex')))
 
 
 def keychain_has_key():
@@ -3467,11 +4156,16 @@ def store_key(key):
 SECRET_LINE = re.compile(r'(?m)^(\s*secret-key:).*$')
 
 
-def render_config(key):
-    text = (CODE_DIR / 'examples' / 'config.yaml').read_text()
+def render_config(key, pool=None):
+    """A pool configuration from the descriptor's template: this Mac's port and the
+    management key, which both pools share."""
+    pool = pool or pool_instance()
+    template = pathlib.Path(pool.config_template)
+    name, port, default = template.name, pool.port, pool.config_default_port
+    text = template.read_text()
     if not re.search(r'(?m)^port:', text) or not SECRET_LINE.search(text):
-        raise RuntimeError('examples/config.yaml has no port: or secret-key: line')
-    text = re.sub(r'(?m)^port:.*$', f'port: {PORT}', text, count=1).replace('127.0.0.1:8319', f'127.0.0.1:{PORT}')
+        raise RuntimeError(f'examples/{name} has no port: or secret-key: line')
+    text = re.sub(r'(?m)^port:.*$', f'port: {port}', text, count=1).replace(f'127.0.0.1:{default}', f'127.0.0.1:{port}')
     return SECRET_LINE.sub(lambda m: f'{m.group(1)} "{key}"  # hashed by CLIProxyAPI on first start; '
                                      f'plaintext in the Keychain ({KEYCHAIN_SERVICE})', text, count=1)
 
@@ -3930,7 +4624,8 @@ def cmd_install(args):
         install_command(st)
     except RuntimeError as e:
         sys.exit(f'\ninstall stopped: {e}\nFix that and re-run codexpool install; every step is safe to repeat.')
-    note = '\n\n'.join(n for n in (note, lane_names_note()) if n) or None
+    hints = [addon_operation(a, 'install_hint', lambda: getattr(a, 'install_hint', None)) for a in ADDONS]
+    note = '\n\n'.join(n for n in (note, lane_names_note(), *hints) if n) or None
     if st.dry:
         print('\nDry run: nothing was changed.'
               + (f' The {len(st.problems)} problem(s) marked ✗ would stop a real install.' if st.problems else '')
@@ -3994,6 +4689,9 @@ def uninstall(args):
     agents = sorted(set(rec.get('agents') or []) | {POOL_JOB, GUARD_JOB, MENUBAR_JOB} | bridge,
                     key=lambda j: (j == POOL_JOB, j))  # the pool last: the guard must not see it vanish
     plan = [f'stop the launchd agents {", ".join(agents)} and delete their plists from {tilde(LAUNCH_AGENTS)}']
+    addon_steps = addon_uninstall_steps()
+    plan = [f'{getattr(a, "uninstall_title", "add-on " + a.id)}: {text}'
+            for a, text, _ in addon_steps] + plan
     roles = lane_leftovers()
     roles_step = f'delete the generated lane role files {", ".join(tilde(p) for p in roles)}'
     if roles:
@@ -4009,12 +4707,18 @@ def uninstall(args):
         plan.append(f'leave {tilde(cfg)} as it is (nothing of codexpool\'s left in it)')
     if wrapper_is_ours():
         plan.append(f'remove {tilde(WRAPPER)}')
-    plan.append(f'keep {tilde(ROOT)}: seat logins, config.yaml, lanes.json, lanes/ and lane keys, history and builds '
-                '(codexpool install brings it all back)')
+    keep = f'keep {tilde(ROOT)}: seat logins, config.yaml, lanes.json, lanes/ and lane keys, history and builds '
+    notes = [addon_call(addon, 'keep_note') for addon in ADDONS]
+    notes = [str(note) for note in notes if note]
+    plan.append(keep + (' '.join(notes) if notes else '(codexpool install brings it all back)'))
     if not args.yes:
         print('Uninstall would:\n' + '\n'.join(f'  {i + 1}. {p}' for i, p in enumerate(plan))
               + '\nthen you quit and reopen the Codex app.\nRe-run with --yes.')
         return
+    failed = {}  # plan step -> why it did not happen
+    for addon, text, fn in addon_steps:
+        if not addon_operation(addon, 'uninstall.' + text, lambda: (fn(), True)[1], False):
+            failed[f'{getattr(addon, "uninstall_title", "add-on " + addon.id)}: {text}'] = ADDON_ERRORS[addon.id]
     for job in agents:
         subprocess.run(['launchctl', 'bootout', f'gui/{UID}/{job}'], capture_output=True)
         with contextlib.suppress(FileNotFoundError):
@@ -4026,7 +4730,6 @@ def uninstall(args):
             cfg.unlink()
     if wrapper_is_ours():
         WRAPPER.unlink()
-    failed = {}  # plan step -> why it did not happen
     stuck = []
     for path in roles:
         try:
@@ -4048,6 +4751,41 @@ def uninstall(args):
     print(f'\nUninstalled. Quit and reopen the Codex app; it now talks to OpenAI directly.\n'
           f'To remove everything: rm -rf {tilde(ROOT)} && security delete-generic-password -s {KEYCHAIN_SERVICE}\n'
           '(this does not sign the seats out; do that at chatgpt.com if you want to).')
+
+
+def script_is_ours(path, mark):
+    """True when path is a file one of codexpool's launchers wrote (it carries that script's mark)."""
+    try:
+        return path.is_file() and not path.is_symlink() and mark in path.read_text(errors='replace')[:400]
+    except OSError:
+        return False
+
+
+def write_script(path, text):
+    """Atomic write of an executable script (0755)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def wait_port_healthy(port, timeout=30, want_version=None):
+    """True once the pool on port answers the management API with a version (want_version, if given: a restarted
+    pool's old process may still answer for a moment)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        v = running_version(port) if port_open(port) else None
+        if v and (want_version is None or v == want_version):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 # ---------------------------------------------------------------- lanes
@@ -4079,6 +4817,45 @@ LANE_PROVIDERS = {
                      'session_header': 'x-opencode-session', 'key': 'opencode-zen'},
     'responses': {'kind': 'bridge', 'base_url': None, 'session_header': None, 'key': None},
 }
+class LaneProvider(dict):
+    """Provider metadata and optional callbacks. Failures belong to this provider, never a seat pool."""
+    def __init__(self, provider, addon=None):
+        super().__init__(provider if isinstance(provider, dict) else
+                         {k: getattr(provider, k) for k in ('kind', 'title', 'needs', 'member_keys', 'lane_keys')
+                          if hasattr(provider, k)})
+        self.provider, self.addon = provider, addon
+
+    def hook(self, name):
+        fn = self.provider.get(name) if isinstance(self.provider, dict) else getattr(self.provider, name, None)
+        if not callable(fn):
+            return None
+        def invoke(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except LaneError:
+                raise
+            except (Exception, SystemExit) as error:
+                if self.addon:
+                    ADDON_ERRORS[self.addon.id] = f'lane {name}: {type(error).__name__}: {error}'
+                raise LaneError(f'lane provider {self.get("title", self.get("kind"))}: {name} failed: {error}') from error
+        return invoke
+
+
+def provider_hook(provider, name):
+    p = LANE_PROVIDERS.get(provider, {})
+    return p.hook(name) if isinstance(p, LaneProvider) else p.get(name)
+
+
+def lane_hooks(lane, name):
+    return [fn for pid in dict.fromkeys(m['provider'] for m in lane['members'])
+            for fn in [provider_hook(pid, name)] if fn]
+
+
+def plan_hooks(plan, name):
+    return [fn for pid in dict.fromkeys(m['provider'] for lane in plan for m in lane['members'])
+            for fn in [provider_hook(pid, name)] if fn]
+
+
 CATALOG_KEYS = {p['key'] for p in LANE_PROVIDERS.values() if p.get('key')}  # a responses member's key must differ
 LANES_BEGIN = ('# >>> codexpool lanes (generated by `codexpool lane apply` from lanes.json; edit lanes.json, not this '
                'block) >>>')
@@ -4144,8 +4921,11 @@ def sentence(text):
     return text if text[-1:] in '.!?' else text + '.'
 
 
-def default_member_id(model, taken):
+def default_member_id(model, taken, provider=None):
     """The first -/.-separated token of the model id, lowercased; a digit is added when another member has it."""
+    hook = provider_hook(provider, 'member_id') if isinstance(provider, str) else None
+    if hook:
+        model = hook(model)
     base = re.sub(r'[^a-z0-9]', '', re.split(r'[-.]', model)[0].lower())[:16] or 'm'
     mid, n = base, 1
     while mid in taken:
@@ -4178,8 +4958,9 @@ def validate_lanes(raw):
         if not isinstance(spec, dict):
             errors.append(f'{where} must be an object with "role", "effort" and "members"')
             continue
-        errors += [f'{where}: unknown key "{k}" (known: {", ".join(LANE_KEYS)})' for k in spec
-                   if k not in LANE_KEYS and not str(k).startswith('_')]
+        lane_keys = LANE_KEYS + tuple(k for p in LANE_PROVIDERS.values() for k in p.get('lane_keys', ()))
+        errors += [f'{where}: unknown key "{k}" (known: {", ".join(lane_keys)})' for k in spec
+                   if k not in lane_keys and not str(k).startswith('_')]
         role, effort, members = spec.get('role'), spec.get('effort', 'xhigh'), spec.get('members')
         display = spec.get('display')
         display = display.strip() if isinstance(display, str) else display
@@ -4207,11 +4988,12 @@ def validate_lanes(raw):
                 elif mid in taken:
                     errors.append(f'{where} member {i}: id "{mid}" is used twice in this lane')
             else:
-                mid = default_member_id(model if isinstance(model, str) else '', taken | explicit)
+                mid = default_member_id(model if isinstance(model, str) else '', taken | explicit, provider)
             taken.add(mid if isinstance(mid, str) else '')
             at = f'{where} member {i} ({mid})'
-            errors += [f'{at}: unknown key "{k}" (known: {", ".join(MEMBER_KEYS)})' for k in m
-                       if k not in MEMBER_KEYS and not str(k).startswith('_')]
+            member_keys = MEMBER_KEYS + tuple(k for p in LANE_PROVIDERS.values() for k in p.get('member_keys', ()))
+            errors += [f'{at}: unknown key "{k}" (known: {", ".join(member_keys)})' for k in m
+                       if k not in member_keys and not str(k).startswith('_')]
             if not isinstance(provider, str) or provider not in LANE_PROVIDERS:
                 errors.append(f'{at}: provider {json.dumps(provider)} is not one of: {", ".join(LANE_PROVIDERS)}')
                 provider = None
@@ -4236,6 +5018,14 @@ def validate_lanes(raw):
             p = LANE_PROVIDERS.get(provider) or {}
             entry = {'id': mid, 'provider': provider, 'kind': p.get('kind'), 'model': model,
                      'name': m.get('name') or model, 'context': context}
+            hook = provider_hook(provider, 'validate_member')
+            if hook:
+                fields, problems = hook(m, spec, at)
+                entry.update(fields)
+                errors += problems
+            for pid, other in LANE_PROVIDERS.items():
+                if pid != provider:
+                    errors += [f'{at}: "{k}" is only for {pid} members' for k in other.get('member_keys', ()) if k in m]
             if p.get('kind') == 'bridge':
                 own = provider == 'responses'
                 entry.update(upstream_url=m.get('base_url') if own else p['base_url'],
@@ -4248,6 +5038,10 @@ def validate_lanes(raw):
             out.append(entry)
         if xai > 1:
             errors.append(f'{where}: at most one xai member per lane (the pool has one xAI credential to fall back from)')
+        for pid, p in LANE_PROVIDERS.items():
+            hook = provider_hook(pid, 'validate_lane')
+            if hook and (any(m['provider'] == pid for m in out) or any(k in spec for k in p.get('lane_keys', ()))):
+                errors += hook(spec, out, where)
         lanes.append({'name': name, 'role': role, 'effort': effort, 'display': display, 'members': out})
     owners = {}  # every model name the lanes give the pool: each lane name and each <lane>-<id>
     for lane in lanes:
@@ -4319,7 +5113,8 @@ def lane_plan(lanes, xai_contexts=None, with_members=False):
         x = next((i for i, m in enumerate(members) if m['kind'] == 'xai'), None)
         out = []
         for i, m in enumerate(members):
-            e = dict(m, alias=f'{name}-{m["id"]}', display=f'{cap} lane: {m["name"]} only')
+            hook = provider_hook(m['provider'], 'member_display')
+            e = dict(m, alias=f'{name}-{m["id"]}', display=hook(m) if hook else f'{cap} lane: {m["name"]} only')
             if m['kind'] == 'xai':
                 known = m['context'] or (xai_contexts or {}).get(m['model'])
                 e['context'], e['context_known'] = known or LANE_CONTEXT, bool(known)
@@ -4338,7 +5133,8 @@ def lane_display(lane):
     """A lane's entry in the Codex model picker: its "display" from lanes.json, else its name with a capital first
     letter ("Bulk" for bulk), which always fits LANE_DISPLAY_MAX. The members stay under the hood: the role file and
     the ~/.codex/AGENTS.md block name them."""
-    return lane.get('display') or lane['name'][:1].upper() + lane['name'][1:]
+    return lane.get('display') or next((fn(lane) for fn in lane_hooks(lane, 'lane_display')), None) or \
+        lane['name'][:1].upper() + lane['name'][1:]
 
 
 def member_aliases(lane):
@@ -4380,13 +5176,19 @@ def render_lanes_block(plan, bridge_key, xai_hidden=None):
             if lane['member_aliases']:
                 out.append(f'    - {{ name: {yq(m["model"])}, alias: {yq(m["alias"])}, fork: false, display-name: '
                            f'{yq(m["display"])} }}')
-    bridged = [(lane, m) for lane in plan for m in lane['members'] if m['kind'] == 'bridge']
+    bridged = [(lane, m) for lane in plan for m in lane['members'] if m['kind'] != 'xai']
     if bridged:
         out += ['meta-api-key:',
                 '  # The local lane bridge (lanes/bridge.py) holds the provider keys; this key only admits the pool.']
         for lane, m in bridged:
-            out += [f'  - api-key: {yq(bridge_key)}', f'    priority: {m["priority"]}', f'    base-url: {yq(m["base_url"])}',
-                    '    models:',
+            out += [f'  - api-key: {yq(bridge_key)}', f'    priority: {m["priority"]}', f'    base-url: {yq(m["base_url"])}']
+            hook = provider_hook(m['provider'], 'cpa_headers')
+            headers = hook(m) if hook else {}
+            if headers:
+                if any(not HEADER_OK.fullmatch(k) or not plain_text(v) for k, v in headers.items()):
+                    raise LaneError('invalid provider CPA headers')
+                out.append('    headers: { ' + ', '.join(f'{k}: {yq(v)}' for k, v in headers.items()) + ' }')
+            out += ['    models:',
                     f'      - {{ name: {yq(m["bridge_model"])}, alias: {yq(lane["name"])}, display-name: '
                     f'{yq(lane["display"])}, max-context-length: {lane["context"]} }}']
             if lane['member_aliases']:
@@ -4396,12 +5198,12 @@ def render_lanes_block(plan, bridge_key, xai_hidden=None):
     codex = []
     for lane in plan:
         effort = f'      params: {{ "reasoning.effort": {yq(lane["effort"])} }}'
-        for kind, protocol in (('xai', 'codex'), ('bridge', 'meta')):
-            if any(m['kind'] == kind for m in lane['members']):
+        for kinds, protocol in (({'xai'}, 'codex'), ({m['kind'] for m in lane['members']} - {'xai'}, 'meta')):
+            if any(m['kind'] in kinds for m in lane['members']):
                 names = [lane['name']] + [m['alias'] for m in lane['members']
-                                          if m['kind'] == kind and lane['member_aliases']]
+                                          if m['kind'] in kinds and lane['member_aliases']]
                 out += [f'    - models: {_yaml_models(names, protocol)}', effort]
-                if kind == 'xai':
+                if protocol == 'codex':
                     codex += names
     if codex:
         out += ['    # xAI writes 30000.0 for "type":"number" fields, and Codex rejects floats for these integer arguments.',
@@ -4597,9 +5399,10 @@ def masked(text):
     return ''.join(out)
 
 
-def render_bridge_config(plan):
+def render_bridge_config(plan, previous=None, login_path=None):
     """lanes/bridge.json for a lane plan (pure), or None when no member goes through the bridge."""
     upstreams, models = {}, {}
+    previous = previous if isinstance(previous, dict) else {}
     for lane in plan:
         for m in lane['members']:
             if m['kind'] != 'bridge':
@@ -4608,11 +5411,16 @@ def render_bridge_config(plan):
             upstreams[up] = {'base_url': m['upstream_url'], 'key_file': f'lanes/secrets/{m["key_name"]}.key',
                              'session_header': m['session_header']}
             models[m['bridge_model']] = {'upstream': up, 'upstream_model': m['model']}
+    config = {'port': BRIDGE_PORT, 'key_file': 'lanes/secrets/bridge.key',
+              'seal_key_file': 'lanes/secrets/seal.key', 'upstreams': upstreams, 'models': models}
+    for hook in plan_hooks(plan, 'bridge_config'):
+        top, routes = hook(plan, previous, login_path)
+        config.update(top)
+        models.update(routes)
     if not models:
         return None
-    return json.dumps({'port': BRIDGE_PORT, 'key_file': 'lanes/secrets/bridge.key',
-                       'seal_key_file': 'lanes/secrets/seal.key', 'upstreams': upstreams, 'models': models},
-                      indent=2) + '\n'
+    addon_bridge_extension(plan, config)
+    return json.dumps(config, indent=2) + '\n'
 
 
 def toml_str(value):
@@ -4644,7 +5452,7 @@ def render_role(lane, role_name=None, model=None, members=None):
         f'model = {toml_str(model or lane["name"])}',
         f'model_reasoning_effort = {toml_str(lane["effort"])}',
         'developer_instructions = """',
-        ROLE_INSTRUCTIONS.rstrip('\n'),
+        next((fn(lane) for fn in lane_hooks(dict(lane, members=members or lane['members']), 'role_instructions')), ROLE_INSTRUCTIONS).rstrip('\n'),
         '"""',
         '',
         '# Connector (apps) tool schemas cost ~130k tokens per request on third-party models (they get no deferred tool',
@@ -4679,6 +5487,7 @@ def render_agents_block(plan):
                      f'{", then ".join(m["name"] for m in ms[1:])} at {e} instead.')
         else:
             text += '.'
+        text += ''.join(fn(lane) for fn in lane_hooks(lane, 'agents_sentence'))
         text += (f' {sentence(lane["role"])} Use the default model when a task needs top capability. Spawn it with '
                  f'spawn_agent, agent_type "{lane["name"]}", fork_turns "none", and a self-contained task. Check what '
                  'it returns before relying on it. If a spawn fails, do the work yourself rather than retrying in a '
@@ -4828,6 +5637,19 @@ def lane_key_path(name):
     return LANE_SECRETS / f'{KEY_STANDINS.get(name, name)}.key'
 
 
+def bridge_payload_changed(plan):
+    """A lane apply publishes an extension's complete code payload before restarting its bridge."""
+    used = {m['provider'] for lane in plan for m in lane['members']}
+    owners = {p.addon.id for key, p in LANE_PROVIDERS.items()
+              if key in used and isinstance(p, LaneProvider) and p.addon is not None}
+    for source, dest in code_files():
+        rel = dest.relative_to(ROOT)
+        if rel == pathlib.Path('lanes/bridge.py') or (len(rel.parts) > 1 and rel.parts[0] == 'addons' and rel.parts[1] in owners):
+            if not dest.is_file() or source.read_bytes() != dest.read_bytes():
+                return True
+    return False
+
+
 def bridge_fingerprint(config_text=None, code=None):
     """What a running bridge was started with: its code, bridge.json and the key files it read (their size and
     mtime, never their contents). A change means the bridge must restart to see it."""
@@ -4841,6 +5663,11 @@ def bridge_fingerprint(config_text=None, code=None):
     except ValueError:
         cfg = {}
     cfg = cfg if isinstance(cfg, dict) else {}
+    for name, path in sorted((cfg.get('extensions') or {}).items()):
+        try:
+            h.update(name.encode() + pathlib.Path(path).read_bytes())
+        except OSError:
+            h.update((name + ':unavailable').encode())
     files = [cfg.get('key_file') or 'lanes/secrets/bridge.key'] + \
             [u.get('key_file') for u in (cfg.get('upstreams') or {}).values() if isinstance(u, dict)]
     for rel in files:
@@ -4894,7 +5721,7 @@ def record_bridge_agent(on):
     record_install(agents=sorted(agents), bridge_fingerprint=bridge_fingerprint() if on else None)
 
 
-def lane_prepare(lanes, facts, members=False):
+def lane_prepare(lanes, facts, members=False, capture_path=True):
     """Everything lane apply would write, computed without writing anything. Raises LaneError where lane apply must
     stop before changing anything; provider keys that are missing are listed in 'missing_keys'. members: offer the
     member aliases too (lane test)."""
@@ -4920,7 +5747,12 @@ def lane_prepare(lanes, facts, members=False):
     warnings += [f'{lane["name"]}/{m["id"]}: the pool did not give the context window of {m["model"]}; using '
                  f'{LANE_CONTEXT} until lane apply runs with the pool up (or set "context" in lanes.json)'
                  for lane in plan for m in lane['members'] if not m['context_known']]
-    bridged = [m for lane in plan for m in lane['members'] if m['kind'] == 'bridge']
+    bridged = [m for lane in plan for m in lane['members'] if m['kind'] != 'xai']
+    provider_prep = {}
+    for hook in plan_hooks(plan, 'prepare'):
+        provider_prep.update(hook(plan, capture_path))
+    bridge_old = read_text(BRIDGE_CONFIG)
+    bridge_new = render_bridge_config(plan, read_json(BRIDGE_CONFIG, {}), provider_prep)
     key = (BRIDGE_KEY.read_text().strip() if BRIDGE_KEY.is_file() else '<new bridge key>') if bridged else ''
     config_new = lanes_config_text(config_old, plan, key, hidden)
     errors, roles = [], []
@@ -4949,8 +5781,9 @@ def lane_prepare(lanes, facts, members=False):
         raise LaneError(errors)
     return {'lanes': lanes, 'plan': plan, 'facts': facts, 'warnings': warnings, 'hidden': hidden,
             'config_old': config_old, 'config_new': config_new,
-            'bridge_old': read_text(BRIDGE_CONFIG), 'bridge_new': render_bridge_config(plan),
-            'missing_keys': sorted({m['key_name'] for m in bridged if not lane_key_path(m['key_name']).is_file()}),
+            'bridge_old': bridge_old, 'bridge_new': bridge_new, 'provider_prep': provider_prep,
+            'missing_keys': sorted({m['key_name'] for m in bridged if m['kind'] == 'bridge'
+                                    and not lane_key_path(m['key_name']).is_file()}),
             'roles': roles, 'stale_roles': stale, 'agents_old': agents_old, 'agents_new': agents_new}
 
 
@@ -4983,7 +5816,7 @@ def wait_for(fn, timeout):
         time.sleep(1)
 
 
-def lane_apply(lanes, dry, lanes_change=None):
+def lane_apply(lanes, dry, lanes_change=None, before_apply=None):
     """Write everything lanes.json implies, or with dry print each change and a diff. lanes_change: (old, new)
     lanes.json text from lane add/remove, written only once nothing stands in the way."""
     require_installed('lane apply')
@@ -5002,6 +5835,8 @@ def lane_apply(lanes, dry, lanes_change=None):
     print(f'codexpool lane apply{" --dry-run: nothing is changed; each step says what it would do" if dry else ""}'
           f'\n  lanes: {lane_summary(lanes)} · pool 127.0.0.1:{PORT} · bridge 127.0.0.1:{BRIDGE_PORT}')
     try:
+        if before_apply:
+            before_apply(prep, dry)
         lane_apply_steps(st, prep, dry, lanes_change)
     except RuntimeError as e:
         sys.exit(f'\nlane apply stopped: {e}\nFix that and re-run codexpool lane apply; every step is safe to repeat.')
@@ -5029,7 +5864,7 @@ def lane_apply_steps(st, prep, dry, lanes_change):
     st.step('Pool config (config.yaml)')
     for w in prep['warnings']:
         st.warn(w)
-    bridged = [m for lane in plan for m in lane['members'] if m['kind'] == 'bridge']
+    bridged = [m for lane in plan for m in lane['members'] if m['kind'] != 'xai']
     if bridged and not BRIDGE_KEY.is_file():
         st.change(f'create {tilde(BRIDGE_KEY)} (mode 600): the key that admits the pool to the bridge', ensure_bridge_key)
         if not dry:
@@ -5060,14 +5895,15 @@ def lane_apply_steps(st, prep, dry, lanes_change):
 
     st.step('Lane bridge')
     if prep['bridge_new']:
+        for hook in plan_hooks(plan, 'apply'):
+            hook(st, prep, dry)
         src, dest = CODE_DIR / 'lanes' / 'bridge.py', ROOT / 'lanes' / 'bridge.py'
         code = src.read_bytes() if src.exists() else (dest.read_bytes() if dest.exists() else b'')
-        if CODE_DIR != ROOT.resolve() and src.exists() and (not dest.exists() or dest.read_bytes() != code):
-            st.change(f'copy lanes/bridge.py to {tilde(dest)}', lambda: (dest.parent.mkdir(parents=True, exist_ok=True),
-                                                                           shutil.copy2(src, dest)))
+        if CODE_DIR != ROOT.resolve() and bridge_payload_changed(plan):
+            st.change('install bridge code and extension configuration together', copy_code)
         if LANE_SECRETS.is_dir() and LANE_SECRETS.stat().st_mode & 0o777 != 0o700:
             st.change(f'chmod 700 {tilde(LANE_SECRETS)}', os.chmod, LANE_SECRETS, 0o700)
-        for name in sorted({m['key_name'] for m in bridged}):
+        for name in sorted({m['key_name'] for m in bridged if m['kind'] == 'bridge'}):
             path = lane_key_path(name)
             if not path.is_file():
                 st.fail(f'no API key for {name} ({tilde(path)})', f'codexpool lane key {name} <file>')
@@ -5165,6 +6001,12 @@ def lane_state_cell(member, lane, seats, health):
             return '?', 'unknown'
         state = xai_credential_state(seats)[0]
         return {'ready': '●', 'cooldown': '◌', 'exhausted': '◌', 'disabled': '–'}.get(state, '✕'), state
+    hook = provider_hook(member['provider'], 'state')
+    if hook:
+        try:
+            return hook(lane, member, health)[:2]
+        except LaneError:
+            return '✕', 'provider unavailable'
     if not lane_key_path(member['key_name']).is_file():
         return '✕', 'no key'
     if health is None:
@@ -5192,7 +6034,7 @@ def lane_list_facts(lanes):
     """What lane list shows next to lanes.json: (pool facts, bridge health, lane-tests.json). Quick checks only."""
     has_xai = any(m['kind'] == 'xai' for lane in lanes for m in lane['members'])
     facts = pool_facts(False) if has_xai else {'seats': [], 'error': None}
-    health = bridge_health(2) if any(m['kind'] == 'bridge' for lane in lanes for m in lane['members']) else None
+    health = bridge_health(2) if any(m['kind'] != 'xai' for lane in lanes for m in lane['members']) else None
     tests = read_json(LANE_TESTS, {})
     return facts, health, tests if isinstance(tests, dict) else {}
 
@@ -5255,6 +6097,10 @@ def cmd_lane_list(args):
                 hints.append(f'no key for {m["key_name"]}: codexpool lane key {m["key_name"]} <file>')
             elif state in ('bridge down', 'not in bridge'):
                 hints.append('the bridge does not serve every lane model: codexpool lane apply ; codexpool doctor')
+            elif provider_hook(m['provider'], 'state'):
+                hint = provider_hook(m['provider'], 'state')(lane, m, health)[2]
+                if hint:
+                    hints.append(hint)
     for h in dict.fromkeys(hints):
         print(f'\n  → {h}' if h == hints[0] else f'  → {h}')
 
@@ -5263,7 +6109,7 @@ def cmd_lane_apply(args):
     lanes = load_lanes()
     if not LANES_FILE.exists():
         print(f'({tilde(LANES_FILE)} does not exist: applying no lanes, which removes anything lane apply generated)')
-    lane_apply(lanes, args.dry_run)
+    lane_apply(lanes, args.dry_run, before_apply=getattr(args, 'before_apply', None))
 
 
 def member_from_spec(spec, base_url=None, session_header=None, flag='--member'):
@@ -5374,7 +6220,7 @@ def lane_edit_raw(raw, name, ops, base_url=None, session_header=None):
             spec.pop('display', None)
         elif kind == 'add_member':
             m = member_from_spec(value, base_url, session_header, '--add-member')
-            mid = default_member_id(m['model'], {x['id'] for x in members})
+            mid = default_member_id(m['model'], {x['id'] for x in members}, m['provider'])
             members.append(dict({'id': mid}, **m))
         else:
             ids = [x['id'] for x in members]
@@ -5468,8 +6314,9 @@ def lane_providers_data():
     facts = None
     out = []
     for pid, p in LANE_PROVIDERS.items():
-        entry = {'id': pid, 'title': LANE_PROVIDER_TITLES.get(pid, pid), 'kind': 'native' if p['kind'] == 'xai' else
-                 'bridge', 'needs': 'login' if p['kind'] == 'xai' else 'key', 'key_name': p.get('key')}
+        entry = {'id': pid, 'title': p.get('title', LANE_PROVIDER_TITLES.get(pid, pid)), 'kind': 'native' if p['kind'] == 'xai' else
+                 p['kind'], 'needs': 'login' if p['kind'] == 'xai' else p.get('needs', 'key'),
+                 'key_name': p.get('key')}
         if p['kind'] == 'xai':
             facts = facts or pool_facts(False)
             if facts['seats'] is None:
@@ -5482,6 +6329,11 @@ def lane_providers_data():
                           'blocked': 'the xAI sign-in stopped working: sign in again (codexpool lane login xai)',
                           'disabled': f'the xAI credential is turned off: codexpool enable {(cred or {}).get("name")}',
                           'missing': 'not signed in: codexpool lane login xai'}.get(state, state)
+        elif provider_hook(pid, 'ready'):
+            try:
+                ready, detail = provider_hook(pid, 'ready')()
+            except LaneError as error:
+                ready, detail = False, str(error)
         elif p.get('key'):
             ready = lane_key_path(p['key']).is_file()
             detail = 'key saved' if ready else f'no key yet: codexpool lane key {p["key"]} -'
@@ -5498,7 +6350,9 @@ def cmd_lane_providers(args):
         return
     print(f'  {"provider":<13} {"reached":<8} {"signs in with":<17} state')
     for d in data['providers']:
-        how = 'a sign-in' if d['needs'] == 'login' else (f'key {d["key_name"]}' if d['key_name'] else 'a key each')
+        how = ('a sign-in' if d['needs'] == 'login' else
+               d['needs'] if d['needs'] != 'key' else
+               f'key {d["key_name"]}' if d['key_name'] else 'a key each')
         print(f'  {d["id"]:<13} {"the pool" if d["kind"] == "native" else "bridge":<8} {how:<17} '
               f'{"● " if d["ready"] else "✕ "}{d["detail"]}')
 
@@ -5575,6 +6429,9 @@ def lane_models_data(provider, base_url=None, key_name=None):
         raise LaneError(f'"{provider}" is not a lane provider (providers: {", ".join(LANE_PROVIDERS)})')
     if provider != 'responses' and (base_url or key_name):
         raise LaneError(f'--base-url and --key-name are for the responses provider; {provider} has its own')
+    hook = provider_hook(provider, 'models')
+    if hook:
+        return hook(base_url, key_name)
     if p['kind'] == 'xai':
         if not port_open(PORT):
             raise LaneError(f'the pool is not answering on 127.0.0.1:{PORT}, and the xAI model list comes from it')
@@ -5675,6 +6532,7 @@ def cmd_lane_login(args):
     p.wait()
     if not saved or not saved.exists():  # CLIProxyAPI exits 0 on failure; only this line proves success
         sys.exit('\nxAI login did not complete; nothing changed')
+    make_private(saved)
     print(f'\nxAI credential {saved.name} is in the pool. It serves only lane models: lane apply hides every other '
           'xAI model and gives the lane models their lane names.\nNext: codexpool lane apply (or codexpool lane add '
           '...), then codexpool lane test.')
@@ -5728,7 +6586,7 @@ def _lane_test_run(codex, role, want_model, compaction, seed):
     try:
         markers = None
         if compaction:
-            rng, markers = random.Random(seed), []
+            rng, markers = (random.Random(seed), [])
             for i in range(1, 9):
                 lines = ['%04d ' % n + 'lorem ipsum dolor sit amet consectetur adipiscing elit sed do' for n in range(450)]
                 lines[225] = f'MARKER-{i}-{rng.randrange(10 ** 6):06d}'
@@ -5736,39 +6594,37 @@ def _lane_test_run(codex, role, want_model, compaction, seed):
                 (work / f'big{i}.txt').write_text('\n'.join(lines) + '\n')
         else:
             (work / 'a.txt').write_text('alpha\n')
-        argv = [codex, 'exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '-C', str(work),
-                '-c', 'notify=[]'] + (['-c', 'model_auto_compact_token_limit=70000'] if compaction else []) + \
-               [lane_test_prompt(role, LANE_COMPACTION_TASK if compaction else LANE_TEST_TASK)]
+        task = LANE_COMPACTION_TASK if compaction else LANE_TEST_TASK
+        argv = [codex, 'exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '-C', str(work), '-c', 'notify=[]'] + (['-c', 'model_auto_compact_token_limit=70000'] if compaction else []) + [lane_test_prompt(role, task)]
         start = time.time()
         try:
             r = _run_codex(argv, timeout=1500 if compaction else 600)
         except subprocess.TimeoutExpired:
-            return False, 'codex exec timed out', time.time() - start
+            return (False, 'codex exec timed out', time.time() - start)
         seconds = time.time() - start
 
         def content(name):
             p = work / name
             return p.read_text(errors='replace').strip() if p.exists() else None
         if r['code'] != 0:
-            return False, f'codex exec exit {r["code"]}: {short(" ".join(r["errors"]), 100)}', seconds
+            return (False, f"codex exec exit {r['code']}: {short(' '.join(r['errors']), 100)}", seconds)
         if markers is None and content('a.txt') != 'beta':
-            return False, 'a.txt was not changed to beta', seconds
+            return (False, 'a.txt was not changed to beta', seconds)
         if markers is None and content('c.txt') != 'lane-ok':
-            return False, 'c.txt does not hold lane-ok', seconds
+            return (False, 'c.txt does not hold lane-ok', seconds)
         if markers is not None and [x.strip() for x in (content('notes.txt') or '').splitlines() if x.strip()] != markers:
-            return False, 'notes.txt does not list the 8 markers in order', seconds
+            return (False, 'notes.txt does not list the 8 markers in order', seconds)
         child = _child_rollout(r['thread_id'], start - 1) if r['thread_id'] else None
         if not child:
-            return False, 'no subagent rollout found (did the spawn fail?)', seconds
+            return (False, 'no subagent rollout found (did the spawn fail?)', seconds)
         facts = _child_facts(child)
         if facts['models'] != {want_model}:
-            return False, f'the subagent ran on {", ".join(sorted(facts["models"])) or "no model"}, not {want_model}', seconds
+            return (False, f"the subagent ran on {', '.join(sorted(facts['models'])) or 'no model'}, not {want_model}", seconds)
         if facts['parse_failures']:
-            return False, f'{facts["parse_failures"]} tool call(s) failed to parse (run codexpool lane apply)', seconds
-        if compaction and not facts['compactions']:
-            return False, 'the subagent never compacted', seconds
-        return True, (f'compacted {facts["compactions"]}x, all 8 markers kept' if compaction else
-                      'edited both files with apply_patch'), seconds
+            return (False, f"{facts['parse_failures']} tool call(s) failed to parse (run codexpool lane apply)", seconds)
+        if compaction and (not facts['compactions']):
+            return (False, 'the subagent never compacted', seconds)
+        return (True, f"compacted {facts['compactions']}x, all 8 markers kept" if compaction else 'edited both files with apply_patch', seconds)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -5868,8 +6724,9 @@ def cmd_lane_test(args):
             else:
                 role = lane['name']
             print(f'  {label} ...', end='', flush=True)
-            ok, reason, seconds = _lane_test_run(codex, role, alias, compaction,
-                                                 f'{lane["name"]}/{m["id"] if m else "*"}')
+            test_args = (codex, role, alias, compaction, f'{lane["name"]}/{m["id"] if m else "*"}')
+            runners = lane_hooks(dict(lane, members=[m] if m else lane['members']), 'test')
+            ok, reason, seconds = (runners[0] if runners else _lane_test_run)(*test_args)
             print(f' {"PASS" if ok else "FAIL"}')
             results.append((lane['name'], m['id'] if m else '*', compaction, label, ok, reason, seconds))
     finally:
@@ -5914,7 +6771,7 @@ def lane_status_lines(st):
     xai_state = min((r.get('state') for r in st.get('seats', []) if r.get('provider') == 'xai'),
                     key=lambda s: order.index(s) if s in order else 9, default='missing')
     xai_state = 'disabled' if xai_state == 'parked' else xai_state
-    health = bridge_health(1) if any(m['kind'] == 'bridge' for lane in lanes for m in lane['members']) else None
+    health = bridge_health(1) if any(m['kind'] != 'xai' for lane in lanes for m in lane['members']) else None
     lines = []
     for lane in lanes:
         cells = []
@@ -5969,7 +6826,7 @@ def doctor_lanes(check, seats):
     facts = pool_facts(has_xai, seats=seats or None)
     plan = lane_plan(lanes, facts['defs'])
     try:
-        prep = lane_prepare(lanes, facts)
+        prep = lane_prepare(lanes, facts, capture_path=False)
     except LaneError as e:  # the generated files cannot be compared; the live checks below still run
         prep = None
         for p in e.problems:
@@ -6001,13 +6858,20 @@ def doctor_lanes(check, seats):
                 check(False, text, 'codexpool lane login xai (sign in again)')
             else:
                 check(state == 'ready', text, 'the pool serves the next lane member meanwhile', warn=True)
-    bridged = [m for lane in plan for m in lane['members'] if m['kind'] == 'bridge']
+    for lane in plan:
+        for hook in lane_hooks(lane, 'doctor'):
+            try:
+                hook(check, lane, prep)
+            except LaneError as error:
+                check(False, str(error), 'repair the lane add-on')
+    bridged = [m for lane in plan for m in lane['members'] if m['kind'] != 'xai']
     if bridged:
         loaded, pid = launchd_loaded(BRIDGE_JOB)
         check(loaded and pid, f'launchd job {BRIDGE_JOB} ' + (f'running (pid {pid})' if pid else
                                                               'loaded, not running' if loaded else 'not loaded'),
               f'codexpool lane apply (log: {tilde(LOGS / "bridge.log")})')
-        check(read_text(BRIDGE_CONFIG) == render_bridge_config(plan), 'lanes/bridge.json matches lanes.json',
+        check(prep['bridge_old'] == prep['bridge_new'] if prep else
+              read_text(BRIDGE_CONFIG) == render_bridge_config(plan), 'lanes/bridge.json matches lanes.json',
               'codexpool lane apply')
         want = sorted(m['bridge_model'] for m in bridged)
         health = bridge_health(3)
@@ -6015,7 +6879,7 @@ def doctor_lanes(check, seats):
         check(health is not None and not missing, f'bridge on 127.0.0.1:{BRIDGE_PORT}: ' +
               ('not answering' if health is None else f'does not serve {", ".join(missing)}' if missing else
                f'serves {", ".join(want)}'), f'codexpool lane apply ; tail {tilde(LOGS / "bridge.log")}')
-        for name in ['bridge'] + sorted({m['key_name'] for m in bridged}):
+        for name in ['bridge'] + sorted({m['key_name'] for m in bridged if m['kind'] == 'bridge'}):
             path = lane_key_path(name)
             if not path.is_file():
                 check(False, f'key {name}: {tilde(path)} missing',
@@ -6041,6 +6905,8 @@ def doctor_lanes(check, seats):
 
 def cmd_version(args):
     print(f'codexpool {VERSION}')
+    for addon in ADDONS:
+        print(f'+ {addon.id} {addon.version}')
 
 
 @contextlib.contextmanager
@@ -6100,10 +6966,12 @@ def show_settings_now(timeout=90):
 
 
 def cmd_set(args):
-    """Change one of the settings `set` knows (display, headline, balancing) in settings.json and show it at once."""
+    """Change one of the settings registered in SETTABLE in settings.json and
+    show it at once."""
     if args.key is None:
+        width = max(map(len, SETTABLE))
         for key, choices in SETTABLE.items():
-            print(f'{key:<9} {SETTINGS[key]:<8} ({" or ".join(choices)})')
+            print(f'{key:<{width}} {SETTINGS[key]:<8} ({" or ".join(choices)})')
         return
     choices = SETTABLE.get(args.key)
     if choices is None:
@@ -6120,8 +6988,13 @@ def cmd_set(args):
     except OSError as e:
         sys.exit(f'codexpool set: cannot write {SETTINGS_FILE}: {e}')
     SETTINGS.update(new)
-    shown = show_settings_now()
     said = f'{args.key}: {old} → {args.value}.' if old != args.value else f'{args.key} is already {args.value}.'
+    for addon in ADDONS:
+        if args.key in ADDON_MANIFESTS[addon.id]['settable']:
+            note = addon_call(addon, 'on_set', args.key, old, args.value, default='')
+            print(said + (' ' + str(note) if note else ''))
+            return
+    shown = show_settings_now()
     if args.key == 'balancing':
         print(said + (' ' + BALANCING_NOTE[args.value] if old != args.value else ''))
         return
@@ -6130,6 +7003,7 @@ def cmd_set(args):
 
 
 GUI_PANES = ('overview', 'seats', 'balancing', 'lanes', 'general', 'health', 'about', 'setup-welcome')
+CORE_GUI_POOLS = GUI_POOLS = ('codex',)  # the Settings window's pool switcher; add-ons add their ui_pool_ids
 
 
 def settings_app():
@@ -6137,16 +7011,19 @@ def settings_app():
     return ROOT / 'menubar' / 'codexpool_settings.py'
 
 
-def gui_argv(pane='overview'):
+def gui_argv(pane='overview', pool=None):
     """How codexpool gui starts the Settings window: the menu bar app's interpreter (the one with PyObjC) running
-    the installed codexpool_settings.py, opened on pane."""
+    the installed codexpool_settings.py, opened on pane, and on pool's side (codex, or an add-on pool's id) of the panes that
+    have both (None: the side it remembers)."""
     if pane not in GUI_PANES:
         raise ValueError(f'unknown pane {pane!r} (one of: {", ".join(GUI_PANES)})')
-    return [str(menubar_python_bin()), str(settings_app()), '--pane', pane]
+    if pool not in (None,) + GUI_POOLS:
+        raise ValueError(f'unknown pool {pool!r} (one of: {", ".join(GUI_POOLS)})')
+    return [str(menubar_python_bin()), str(settings_app()), '--pane', pane] + (['--pool', pool] if pool else [])
 
 
 def cmd_gui(args):
-    argv = gui_argv(args.pane)
+    argv = gui_argv(args.pane, getattr(args, 'pool', None))
     python, script = argv[0], pathlib.Path(argv[1])
     if not script.is_file():
         sys.exit(f'codexpool gui: the Settings window is not installed ({tilde(script)} is missing). Install codexpool '
@@ -6162,6 +7039,7 @@ def cmd_gui(args):
 
 
 CPA_PASTE_PROMPT = 'Paste the Codex callback URL (or press Enter to keep waiting): '  # CLIProxyAPI, after 15 s
+CPA_PASTE_PROMPTS = re.compile(r'Paste the \w+ callback URL \(or press Enter to keep waiting\): ')
 PRIVATE_WINDOW_NOTE = (
     '  codexpool now gets a sign-in link from the pool. Open it, sign in to the ChatGPT account for this seat and\n'
     '  pick its workspace. Your browser is probably signed in to one account already: for any other account, open\n'
@@ -6414,7 +7292,7 @@ def cmd_setup(args):
 
 # ---------------------------------------------------------------- main
 
-def build_parser():
+def build_parser(*, _track=True):
     p = argparse.ArgumentParser(prog='codexpool', description=__doc__.split('\n\n')[0],
                                 epilog='New here? codexpool setup walks you through adding your ChatGPT accounts.')
     p.add_argument('--version', action='version', version=f'codexpool {VERSION}')
@@ -6424,6 +7302,8 @@ def build_parser():
     s.add_argument('--json', action='store_true', help='print what the menu bar reads (status.json) as JSON')
     s.set_defaults(fn=cmd_status)
     s = sub.add_parser('doctor', help='check the whole setup and say how to fix problems')
+    for addon in ADDONS:
+        addon_call(addon, 'add_doctor_parser', s)
     s.add_argument('--json', action='store_true',
                    help='print the checks as JSON, and nothing else, on stdout (the Settings window reads it); the '
                         'exit status is the same')
@@ -6439,19 +7319,15 @@ def build_parser():
                                    'opens the Setup assistant.')
     s.add_argument('pane', nargs='?', default='overview', choices=GUI_PANES, metavar='PANE',
                    help=f'the pane to show: {", ".join(GUI_PANES)} (default: %(default)s)')
+    s.add_argument('--pool', choices=GUI_POOLS, help='the pool Overview, Seats, Balancing or the Setup assistant show '
+                                                     '(default: the one the window shows last)')
     s.set_defaults(fn=cmd_gui)
-    s = sub.add_parser('set', help='change a setting: display (left|used), headline (all|regular) or balancing '
-                                   '(priority|reset)',
-                       description='Change one of these settings in settings.json (the other keys stay as they are) '
-                                   'and rewrite status.json, so the menu bar shows it within seconds. Without KEY: '
-                                   'print all three.')
-    s.add_argument('key', nargs='?', metavar='KEY',
-                   help='display: what numbers count, left (down from 100%%) or used (up from 0%%); headline: what the '
-                        'headline %% covers, all seats or the regular ones (reserve seats left out); balancing: which '
-                        'seat new threads get, priority (your fill order: codexpool order) or reset (the regular seat '
-                        'whose weekly quota resets soonest; the guard keeps the order up to date)')
-    s.add_argument('value', nargs='?', metavar='VALUE',
-                   help='left or used for display; all or regular for headline; priority or reset for balancing')
+    choices_text = '; '.join(f'{key} ({"|".join(values)})' for key, values in SETTABLE.items())
+    s = sub.add_parser('set', help='change a setting: ' + choices_text,
+                       description='Change a setting in settings.json, leaving the other keys as they are. '
+                                   'Without KEY, print the settings and their choices.')
+    s.add_argument('key', nargs='?', metavar='KEY', help=choices_text)
+    s.add_argument('value', nargs='?', metavar='VALUE', help='one of the choices listed for KEY')
     s.set_defaults(fn=cmd_set)
     sub.add_parser('version', help='print the codexpool version').set_defaults(fn=cmd_version)
     s = sub.add_parser('login', help='add or re-login a seat (browser sign-in; --device for a device code)')
@@ -6521,7 +7397,13 @@ def build_parser():
     s = sub.add_parser('build', help='build a CLIProxyAPI release with the origin gate (no install)')
     s.add_argument('version', help='e.g. 7.3.18 or latest')
     s.set_defaults(fn=cmd_build)
-    s = sub.add_parser('upgrade', help='build, switch, health-check, and switch back on failure')
+    s = sub.add_parser('upgrade', help='build, switch, health-check, and switch back on failure',
+                       description='Upgrade the Codex pool (bin/current) to a CLIProxyAPI release built with the '
+                                   'origin gate: build it, switch, health-check, and switch back on failure. A build '
+                                   'is keyed by the gate\'s hash, so after build/codexpool_gate.go changes (1.3.0 '
+                                   'added the profile registry) the Codex pool keeps running its build '
+                                   'until its next upgrade, which picks the new gate up; nothing forces one. The '
+                                   'Another pool instance keeps its own build link.')
     s.add_argument('version', help='e.g. 7.3.18 or latest')
     s.add_argument('--force', action='store_true')
     s.set_defaults(fn=cmd_upgrade)
@@ -6546,6 +7428,13 @@ def build_parser():
     x = lane.add_parser('apply', help='write the pool config block, the bridge, the Codex role files and the AGENTS.md '
                                       'block from lanes.json')
     x.add_argument('--dry-run', action='store_true', help='print each change and a diff; write nothing')
+    for provider in LANE_PROVIDERS:
+        hook = provider_hook(provider, 'add_apply_parser')
+        if hook:
+            try:
+                hook(x)
+            except LaneError:
+                pass  # an unavailable provider must not prevent the core parser from loading
     x.set_defaults(lane_fn=cmd_lane_apply)
     x = lane.add_parser('add', help='add a lane to lanes.json, then apply')
     x.add_argument('name', metavar='NAME', help='the lane name, which is also the agent_type (e.g. bulk)')
@@ -6621,24 +7510,576 @@ def build_parser():
     x.set_defaults(lane_fn=cmd_lane_test)
     sub.add_parser('guard', help='one guard pass (run by launchd every minute)').set_defaults(fn=cmd_guard)
     sub.add_parser('menubar', help='SwiftBar output').set_defaults(fn=cmd_menubar)
+    addon_parsers(sub)
+    add_addon_parser(sub)
+    if _track:
+        _ADDON_PARSERS.add(p)
     return p
 
 
 def main():
-    args = build_parser().parse_args(sys.argv[1:] or ['status'])
-    ensure_python(args.cmd)
-    for sig in (signal.SIGHUP, signal.SIGTERM):
-        signal.signal(sig, _raise_exit)  # closing the terminal or launchd stopping us still runs cleanup
     try:
-        args.fn(args)
-    except PoolDown as e:
-        sys.exit(f'codexpool: pool not reachable on :{PORT} ({e}). Try: codexpool restart ; codexpool doctor')
-    except ApiError as e:
-        sys.exit(f'codexpool: management API error: {short(str(e), 200)}')
-    except KeyUnavailable as e:
-        sys.exit(f'codexpool: {e}\n  fix: {e.fix}')
-    except LaneError as e:
-        sys.exit('\n'.join(f'codexpool: {p}' for p in e.problems))
+        args = build_parser().parse_args(sys.argv[1:] or ['status'])
+        ensure_python(args.cmd)
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            signal.signal(sig, _raise_exit)  # closing the terminal or launchd stopping us still runs cleanup
+        try:
+            args.fn(args)
+        except PoolDown as e:
+            sys.exit(f'codexpool: pool not reachable on :{PORT} ({e}). Try: codexpool restart ; codexpool doctor')
+        except ApiError as e:
+            sys.exit(f'codexpool: management API error: {short(str(e), 200)}')
+        except KeyUnavailable as e:
+            sys.exit(f'codexpool: {e}\n  fix: {e.fix}')
+        except LaneError as e:
+            sys.exit('\n'.join(f'codexpool: {p}' for p in e.problems))
+    finally:
+        addon_warnings(lambda message: print(message, file=sys.stderr))
+
+
+# ---------------------------------------------------------------- optional local add-ons
+
+class LoadedAddon:
+    """Stable metadata from JSON, with optional executable hooks delegated to load(cp)'s result."""
+    def __init__(self, manifest, path, implementation, fingerprint=None):
+        self.id, self.version, self.core_min = (manifest[k] for k in ('id', 'version', 'core_min'))
+        self.manifest, self.path, self.implementation = copy.deepcopy(manifest), path, implementation
+        self.fingerprint = fingerprint
+
+    def __getattr__(self, name):
+        return getattr(self.implementation, name, self.manifest.get(name))
+
+
+class AddonSourceLoader(importlib.machinery.SourceFileLoader):
+    """A content-checked reload must not execute timestamp-cached bytecode."""
+    def get_code(self, fullname):
+        return compile(self.get_data(self.path), self.path, 'exec', dont_inherit=True)
+
+
+class AddonSourceFinder:
+    def __init__(self, name):
+        self.prefix = name + '.'
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith(self.prefix):
+            spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+            if spec and isinstance(spec.loader, importlib.machinery.SourceFileLoader):
+                spec.loader = AddonSourceLoader(fullname, spec.origin)
+            return spec
+        return None
+
+
+def load_addon(path, manifest, *, reload=False, _prepare=False):
+    """Reuse unchanged packages; publish replacements to every core-owned registry.
+
+    Install/remove validation uses a separate package namespace, so even a failed
+    installation cannot disturb active callbacks or their lazy relative imports.
+    """
+    path = pathlib.Path(path).absolute()
+    files = addon_code_files(path, manifest)  # validate the entire payload before executing Python
+    fingerprint = (str(path.resolve()), json.dumps(manifest, sort_keys=True),
+                   tuple((str(rel), hashlib.sha256(src.read_bytes()).hexdigest()) for src, rel in files))
+    aid = manifest['id']
+    existing = _LOADED_ADDONS.get(aid)
+    if not _prepare and not reload and existing is not None and existing.fingerprint == fingerprint:
+        return existing
+    name = ('codexpool_prepared_addon_' if _prepare else 'codexpool_addon_') + aid
+    spec = importlib.util.spec_from_file_location(name, path / 'addon.py',
+        loader=AddonSourceLoader(name, str(path / 'addon.py')), submodule_search_locations=[str(path)])
+    module = importlib.util.module_from_spec(spec)
+    prior = {k: v for k, v in sys.modules.items() if k == name or k.startswith(name + '.')}
+    for key in prior:
+        del sys.modules[key]
+    sys.modules[name] = module
+    finder = AddonSourceFinder(name)
+    sys.meta_path.insert(0, finder)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            spec.loader.exec_module(module)
+            implementation = module.load(sys.modules[__name__])
+        for key in ('id', 'version', 'core_min'):
+            if getattr(implementation, key, None) != manifest[key]:
+                raise ValueError(f'load(cp).{key} differs from manifest')
+        for key in ('settings', 'settable', 'code_files'):
+            value = getattr(implementation, key, None)
+            if value is not None and (list(value) if key == 'code_files' else value) != manifest[key]:
+                raise ValueError(f'{key} must be declared in addon.json')
+        addon = LoadedAddon(manifest, path, implementation, fingerprint)
+    except (Exception, SystemExit):
+        for key in list(sys.modules):
+            if key == name or key.startswith(name + '.'):
+                del sys.modules[key]
+        sys.modules.update(prior)
+        raise
+    finally:
+        sys.meta_path.remove(finder)
+    if not _prepare:
+        _LOADED_ADDONS[aid] = addon
+        if any(a.id == aid for a in ADDONS):
+            ADDONS[:] = [addon if a.id == aid else a for a in ADDONS]
+            ADDON_MANIFESTS[aid], ADDON_PATHS[aid] = addon.manifest, path
+            ADDON_ERRORS.pop(aid, None)
+            ADDON_FAILED_HOOKS.difference_update({entry for entry in ADDON_FAILED_HOOKS if entry[0] == aid})
+            register_addon_extensions()
+            # Callers may retain a root parser; replace its tree in place so its
+            # command and provider callbacks all refer to the same generation.
+            for parser in list(_ADDON_PARSERS):
+                fresh = build_parser(_track=False)
+                parser.__dict__.clear()
+                parser.__dict__.update(fresh.__dict__)
+    return addon
+
+
+def prepare_addon(path, manifest):
+    """Validate install/remove code with its declared settings, without changing the current registry."""
+    global SETTINGS
+    original = SETTINGS
+    try:
+        SETTINGS = {**manifest['settings'], **original}
+        addon = load_addon(path, manifest, reload=True, _prepare=True)
+        check_addon_settings(addon, SETTINGS)
+        return addon
+    finally:
+        SETTINGS = original
+
+
+def initialize_addons():
+    global ADDON_READY
+    for aid, manifest in sorted(ADDON_MANIFESTS.items()):
+        if aid in ADDON_ERRORS:
+            continue
+        try:
+            addon = load_addon(ADDON_PATHS[aid], manifest)
+            if not any(a.id == aid for a in ADDONS):
+                ADDONS.append(addon)
+        except (Exception, SystemExit) as error:
+            addon_error(aid, 'load', error)
+    ADDON_READY = True
+    prune_addon_settings()
+    with contextlib.redirect_stdout(sys.stderr):
+        SETTINGS.update(load_settings())
+    # A broken settings validator disables the add-on, not the core settings/guard.
+    ADDONS[:] = [a for a in ADDONS if (a.id, 'settings_problems') not in ADDON_FAILED_HOOKS]
+    prune_addon_settings()
+
+
+def prune_addon_settings():
+    active = {a.id for a in ADDONS}
+    owned = {key for aid in active for key in ADDON_MANIFESTS[aid]['settings']}
+    for aid, manifest in ADDON_MANIFESTS.items():
+        if aid not in active:
+            for key in manifest['settings']:
+                if key not in CORE_SETTINGS_DEFAULTS and key not in owned:
+                    SETTINGS.pop(key, None)
+                    SETTINGS_DEFAULTS.pop(key, None)
+                    SETTABLE.pop(key, None)
+
+
+def addon_warnings(sink):
+    for aid, error in sorted(ADDON_ERRORS.items()):
+        sink(f'codexpool add-on {aid}: {error}')
+
+
+def doctor_addons(rep):
+    for addon in ADDONS:
+        # Buffer each report so a half-written section cannot corrupt the core report.
+        def report(a=addon):
+            extra = DoctorReport(echo=False)
+            fn = getattr(a, 'doctor', None)
+            if fn:
+                with contextlib.redirect_stdout(sys.stderr):
+                    fn(extra)
+            for section in extra.sections:
+                rep.section(section['title'])
+                for check in section['checks']:
+                    rep.check(check['status'] == 'ok', check['text'], check['fix'], warn=check['status'] == 'warn')
+        addon_operation(addon, 'doctor', report)
+    if ADDONS or ADDON_ERRORS:
+        rep.section('Add-ons')
+        for addon in ADDONS:
+            rep.check(True, f'{addon.id} {addon.version}')
+        for aid, error in sorted(ADDON_ERRORS.items()):
+            rep.check(False, f'{aid}: {error}', 'repair or reinstall the add-on; Codex core remains available', warn=True)
+
+
+def addon_parsers(sub):
+    for addon in ADDONS:
+        def register(a=addon):
+            # A private parser tree prevents a partial/failed hook from reserving a command,
+            # mutating a core parser, or replacing an alias. Publish only after success.
+            parser = argparse.ArgumentParser(prog='codexpool')
+            stage = parser.add_subparsers(dest='cmd', required=True)
+            fn = getattr(a, 'add_parser', None)
+            if fn:
+                with contextlib.redirect_stdout(sys.stderr):
+                    fn(stage, sys.modules[__name__])
+            if set(stage.choices) & (set(sub.choices) | {'addon'}):
+                raise ValueError('command or alias collides with a core/registered command')
+            sub.choices.update(stage.choices)
+            sub._choices_actions.extend(stage._choices_actions)
+        addon_operation(addon, 'add_parser', register)
+
+
+def addon_guard_passes():
+    # This runs only AFTER the existing core passes, never while constructing their list.
+    for addon in ADDONS:
+        def run(a=addon):
+            fn = getattr(a, 'guard_passes', None)
+            passes = list(fn() or []) if fn else []
+            for name, callback, pool in passes:
+                if not isinstance(pool, SeatPool) or pool.name in CORE_POOL_IDS or pool.lock == LOCK_FILE:
+                    raise ValueError('add-on guard requires its own SeatPool and lock')
+                with guard_lock(wait=False, pool=pool) as got:
+                    if got:
+                        callback()
+        addon_operation(addon, 'guard_passes', run)
+    addon_warnings(log_line)
+
+
+def addon_status(live, existing):
+    entries = []
+    for addon in ADDONS:
+        def status(a=addon):
+            fn = getattr(a, 'status', None)
+            with contextlib.redirect_stdout(sys.stderr):
+                result = fn(live) if fn else None
+            if result is None:
+                return
+            key, data, printer = result
+            if not isinstance(key, str) or key in existing or key in {r[1] for r in entries}:
+                raise ValueError('status key collides with an existing field')
+            json.dumps(data)  # malformed data must not break the core JSON output
+            if not callable(printer):
+                raise ValueError('status print_fn must be callable (no arguments)')
+            entries.append((a, key, data, printer))
+        addon_operation(addon, 'status', status)
+    return entries
+
+
+def addon_objects(hook, mapping=False):
+    """Materialize hook collections inside the failure boundary, including generators."""
+    for addon in ADDONS:
+        values = addon_call(addon, hook, default={} if mapping else [], transform=dict if mapping else list)
+        yield addon, values
+
+
+def addon_code_files(path, manifest):
+    """Only declared code; no escaping paths, symlinks, bytecode, or runtime state."""
+    files = {path / 'addon.json'}
+    for relative in manifest['code_files']:
+        src = path / relative
+        if not src.exists():
+            raise ValueError(f'missing code file {relative}')
+        files.update([src] if src.is_file() else src.rglob('*'))
+    result = []
+    for src in sorted(files):
+        if src.is_symlink() or path.resolve() not in src.resolve().parents:
+            raise ValueError('code_files may not contain symlinks or escape the add-on')
+        if '__pycache__' in src.parts or src.suffix == '.pyc':
+            continue
+        if src.is_file():
+            result.append((src, pathlib.Path('addons') / manifest['id'] / src.relative_to(path)))
+    return result
+
+
+def reserve_addon_namespaces(manifest):
+    try:
+        registry = json.loads(ADDON_REGISTRY.read_text())
+    except FileNotFoundError:
+        registry = {}
+    if not isinstance(registry, dict):
+        raise ValueError('namespace registry must be an object')
+    aid = manifest['id']
+    prefixes = set(manifest['settings_prefixes'])
+    for other, claimed in {**ADDON_NAMESPACES, **registry}.items():
+        if other != aid and prefixes & set(claimed):
+            raise ValueError(f'settings namespace already reserved by {other}')
+    if set(manifest['settings']) & set(CORE_SETTINGS_DEFAULTS):
+        raise ValueError('add-on settings collide with core settings')
+    registry[aid] = sorted(prefixes | set(registry.get(aid, [])))
+    write_json(ADDON_REGISTRY, registry)
+
+
+@contextlib.contextmanager
+def addon_code_lock():
+    """Writers publish complete staged code under one lock; discovery readers hold a shared lock."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / 'addon-code.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def copy_code_with_addons():
+    """Stage all code before publishing. Add-on directories precede the CLI; rollback on failure.
+    State, config, auth, build links and running processes never participate in this transaction.
+    Readers that discover add-ons wait until the directory/CLI rename batch is complete."""
+    with addon_code_lock():
+        stage = pathlib.Path(tempfile.mkdtemp(prefix='.addon-code-', dir=ROOT))
+        committed, cleanup = [], True
+        try:
+            pairs = code_files()
+            if any((a.id, 'code_files') in ADDON_FAILED_HOOKS for a in ADDONS):
+                raise RuntimeError('add-on code is incomplete; no code was installed')
+            payload, backups = stage / 'payload', stage / 'backups'
+            for src, dest in pairs:
+                target = payload / dest.relative_to(ROOT)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+            bridge_dest = None
+            if BRIDGE_CONFIG.is_file():
+                old = read_text(BRIDGE_CONFIG)
+                config = json.loads(old)
+                changed = False
+                for addon in ADDONS:
+                    fn = getattr(addon, 'install_bridge_config', None)
+                    if fn:
+                        changed = bool(fn(config)) or changed
+                if changed:
+                    bridge_dest = BRIDGE_CONFIG
+                    target = payload / bridge_dest.relative_to(ROOT)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(json.dumps(config, indent=2) + '\n')
+                    os.chmod(target, BRIDGE_CONFIG.stat().st_mode & 0o777)
+            # Reservations are written first so even a killed writer cannot orphan settings.
+            for addon in ADDONS:
+                reserve_addon_namespaces(addon.manifest)
+            destinations = [dest for _, dest in pairs if 'addons' != dest.relative_to(ROOT).parts[0]]
+            destinations += [ROOT / 'addons' / a.id for a in ADDONS]
+            if bridge_dest is not None:
+                destinations.append(bridge_dest)
+            destinations = sorted(set(destinations), key=lambda p: (p == ROOT / 'bin/codexpool', str(p)))
+            for dest in destinations:
+                rel = dest.relative_to(ROOT)
+                source, backup = payload / rel, backups / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                existed = dest.exists() or dest.is_symlink()
+                if existed:
+                    if source.is_file() and not dest.is_symlink() and source.read_bytes() == dest.read_bytes():
+                        continue
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    if dest.is_dir() or dest.is_symlink():
+                        os.replace(dest, backup)
+                    else:
+                        shutil.copy2(dest, backup)
+                committed.append((dest, backup, existed))
+                os.replace(source, dest)
+        except BaseException:
+            try:
+                for dest, backup, existed in reversed(committed):
+                    if dest.is_dir() and not dest.is_symlink():
+                        shutil.rmtree(dest)
+                    elif dest.exists() or dest.is_symlink():
+                        dest.unlink()
+                    if existed:
+                        os.replace(backup, dest)
+            except BaseException as error:
+                cleanup = False
+                raise RuntimeError(f'code rollback failed; recovery files retained at {stage}: {error}') from error
+            raise
+        finally:
+            if cleanup:
+                shutil.rmtree(stage)
+
+
+def cmd_addon(args):
+    if args.addon_cmd == 'list':
+        active = {a.id: a for a in ADDONS}
+        for aid in sorted(set(ADDON_NAMESPACES) | set(ADDON_ERRORS)):
+            version = active[aid].version if aid in active else ADDON_MANIFESTS.get(aid, {}).get('version', '-')
+            print(f'{aid} {version}: ' + (ADDON_ERRORS[aid] if aid in ADDON_ERRORS else 'loaded'))
+        if not ADDON_NAMESPACES and not ADDON_ERRORS:
+            print('No add-ons installed.')
+        return
+    try:
+        with settings_lock(), addon_code_lock():
+            if args.addon_cmd == 'install':
+                source = pathlib.Path(args.path).expanduser().resolve()
+                manifest = read_addon_manifest(source)
+                if parse_version(manifest['core_min']) > parse_version(VERSION):
+                    raise ValueError(f'needs codexpool {manifest["core_min"]} or later')
+                files = addon_code_files(source, manifest)
+                # Validate executable code only after metadata and the complete core are available.
+                addon = prepare_addon(source, manifest)
+                parent = ROOT / 'addons'
+                parent.mkdir(parents=True, exist_ok=True)
+                stage = pathlib.Path(tempfile.mkdtemp(prefix='.addon-stage-', dir=parent))
+                dest = parent / manifest['id']
+                backup = stage / 'previous'
+                cleanup = True
+                try:
+                    payload = stage / 'payload'
+                    payload.mkdir()
+                    for src, rel in files:
+                        target = payload / rel.relative_to(pathlib.Path('addons') / manifest['id'])
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, target)
+                    # Reservation survives incomplete installs and missing code. Never stores settings values.
+                    reserve_addon_namespaces(manifest)
+                    if dest.exists() or dest.is_symlink():
+                        os.replace(dest, backup)
+                    try:
+                        os.replace(payload, dest)
+                    except BaseException:
+                        if backup.exists() or backup.is_symlink():
+                            try:
+                                os.replace(backup, dest)
+                            except BaseException as error:
+                                cleanup = False
+                                raise RuntimeError(f'rollback failed; previous code retained at {backup}: {error}') from error
+                        raise
+                finally:
+                    if cleanup:
+                        shutil.rmtree(stage)
+                print(f'Installed add-on {addon.id} {addon.version}.')
+                hint = getattr(addon, 'install_hint', None)
+                if hint:
+                    print(hint)
+            else:
+                aid = args.id
+                if not ADDON_ID_OK.fullmatch(aid):
+                    raise ValueError('invalid add-on id')
+                dest = ROOT / 'addons' / aid
+                if not dest.exists():
+                    raise ValueError(f'{aid} has no installed code')
+                manifest = read_addon_manifest(dest)
+                if manifest['id'] != aid or parse_version(manifest['core_min']) > parse_version(VERSION):
+                    raise ValueError('installed add-on is incompatible; repair it before removal')
+                addon = prepare_addon(dest, manifest)
+                fn = getattr(addon, 'uninstall_plan', None)
+                if fn and list(fn() or []):
+                    raise ValueError(f'{aid} still has installed components; run its uninstall command first')
+                # Keep the namespaces and every runtime file; only the code directory goes away.
+                reserve_addon_namespaces(addon.manifest)
+                if dest.is_symlink():
+                    dest.unlink()
+                else:
+                    shutil.rmtree(dest)
+                print(f'Removed add-on {aid} code; settings namespaces and runtime state retained.')
+    except (Exception, SystemExit) as error:
+        sys.exit(f'codexpool addon: {error}')
+
+
+def add_addon_parser(sub):
+    # Step 1 keeps the existing root --help byte-for-byte. Management is available through
+    # `codexpool addon --help`; expose it in root help when the extraction lands.
+    sub.metavar = '{' + ','.join(sub.choices) + '}'
+    parser = sub.add_parser('addon')
+    actions = parser.add_subparsers(dest='addon_cmd', required=True)
+    actions.add_parser('list', help='list loaded and unavailable add-ons').set_defaults(fn=cmd_addon)
+    install = actions.add_parser('install', help='install a local add-on code tree')
+    install.add_argument('path', metavar='PATH')
+    install.set_defaults(fn=cmd_addon)
+    remove = actions.add_parser('remove', help='remove inactive add-on code, keeping state')
+    remove.add_argument('id', metavar='ID')
+    remove.set_defaults(fn=cmd_addon)
+
+
+def addon_bridge_extension(plan, config):
+    """Declare installed extension paths only for providers contributing routes to this plan."""
+    used = {m['provider'] for lane in plan for m in lane['members']}
+    for addon in ADDONS:
+        def contribute(a=addon):
+            extension = getattr(a, 'bridge_extension', None)
+            if extension is None:
+                return
+            fn = getattr(a, 'lane_providers', None)
+            providers = dict(fn() or {}) if fn else {}
+            if not used.intersection(providers):
+                return
+            path = pathlib.Path(extension)
+            if not path.is_absolute() or not path.is_file() or a.path.resolve() not in path.resolve().parents:
+                raise ValueError('bridge extension must be an absolute file path inside the add-on')
+            installed = ROOT / 'addons' / a.id / path.relative_to(a.path)
+            config.setdefault('extensions', {})[a.id] = str(installed)
+        addon_operation(addon, 'bridge_extension', contribute)
+
+
+def addon_gate_contributions():
+    contributions, profiles, names = [], set(('', 'codex')), {'codexpool_gate.go'}
+    for addon in ADDONS:
+        def collect(a=addon):
+            fn = getattr(a, 'gate', None)
+            gate = fn() if fn else None
+            if gate is None:
+                return
+            own_profiles = dict(getattr(gate, 'profiles', {}))
+            sources = [pathlib.Path(p) for p in getattr(gate, 'sources', ())]
+            inputs = [pathlib.Path(p) for p in getattr(gate, 'hash_inputs', ())]
+            if any(not isinstance(k, str) or not k or k.strip() != k or not callable(v) for k, v in own_profiles.items()):
+                raise ValueError('gate profiles must map names to case functions')
+            if profiles & own_profiles.keys() or names & {p.name for p in sources}:
+                raise ValueError('gate profile or source collides with another contribution')
+            if len({p.name for p in sources}) != len(sources):
+                raise ValueError('duplicate gate source filename')
+            for path in sources + inputs:
+                if not path.is_file() or a.path.resolve() not in path.resolve().parents:
+                    raise ValueError('gate files must exist inside the add-on')
+            contributions.append((a, gate, own_profiles, sources, inputs))
+            profiles.update(own_profiles)
+            names.update(p.name for p in sources)
+        addon_operation(addon, 'gate', collect)
+    return contributions
+
+
+def addon_uninstall_steps():
+    steps = []
+    for addon in ADDONS:
+        def collect(a=addon):
+            fn = getattr(a, 'uninstall_plan', None)
+            plan = list(fn() or []) if fn else []
+            if any(not isinstance(text, str) or not callable(action) for text, action in plan):
+                raise ValueError('uninstall_plan must return (text, callable) pairs')
+            steps.extend((a, text, action) for text, action in plan)
+        addon_operation(addon, 'uninstall_plan', collect)
+    return steps
+
+
+def register_addon_extensions():
+    global GUI_POOLS, GATE_PROFILES
+    # Rebuild derived registries rather than retaining callbacks from an older
+    # package or reporting our own earlier registrations as collisions.
+    for key, provider in list(LANE_PROVIDERS.items()):
+        if isinstance(provider, LaneProvider) and provider.addon is not None:
+            del LANE_PROVIDERS[key]
+    GUI_POOLS, GATE_PROFILES = CORE_GUI_POOLS, CORE_GATE_PROFILES
+    for addon in ADDONS:
+        def register(a=addon):
+            fn = getattr(a, 'lane_providers', None)
+            providers = dict(fn() or {}) if fn else {}
+            if providers.keys() & LANE_PROVIDERS.keys():
+                raise ValueError('lane provider collides with an existing provider')
+            entries = {}
+            for key, provider in providers.items():
+                # Preserve provider methods behind the isolated callback adapter.
+                entry = LaneProvider(provider, a)
+                if not isinstance(key, str) or not isinstance(entry.get('kind'), str):
+                    raise ValueError('lane provider needs a string id and kind')
+                entries[key] = entry
+            LANE_PROVIDERS.update(entries)
+        addon_operation(addon, 'lane_providers', register)
+        def ui(a=addon):
+            global GUI_POOLS
+            if getattr(a, 'menubar_extension', None):
+                ids = tuple(getattr(a, 'ui_pool_ids', None) or (a.id,))
+                if any(not isinstance(i, str) or not i for i in ids):
+                    raise ValueError('ui_pool_ids must be non-empty strings')
+                if set(ids) & set(GUI_POOLS):
+                    raise ValueError('UI pool id collides with a core pool')
+                GUI_POOLS += ids
+        addon_operation(addon, 'menubar_extension', ui)
+    GATE_PROFILES += tuple(profile for _, _, profiles, _, _ in addon_gate_contributions() for profile in profiles)
+
+
+try:
+    with contextlib.redirect_stdout(sys.stderr):
+        initialize_addons()
+        register_addon_extensions()
+finally:
+    if _ADDON_READ_LOCK is not None:
+        _ADDON_READ_LOCK.close()
 
 
 if __name__ == '__main__':

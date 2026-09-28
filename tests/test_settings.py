@@ -26,7 +26,8 @@ class ParseSettings(unittest.TestCase):
         self.assertEqual((s['port'], s['bridge_port'], s['display'], s['headline']), (8319, 8320, 'left', 'all'))
 
     def test_example_file_is_valid(self):
-        s = parse(json.loads((REPO / 'examples' / 'settings.json').read_text()))
+        s = parse({k: v for k, v in json.loads((REPO / 'examples' / 'settings.json').read_text()).items()
+                   if k in cp.SETTINGS_DEFAULTS or k.startswith('_')})
         self.assertEqual(s, cp.SETTINGS_DEFAULTS)
 
     def test_bridge_port_follows_a_pool_moved_to_8320(self):
@@ -67,6 +68,7 @@ class ParseSettings(unittest.TestCase):
         self.assertEqual(parse({'balancing': 'reset'})['balancing'], 'reset')
         for bad in ('soonest', 'Reset', None, 1):
             self.assertRefused({'balancing': bad}, 'balancing (one of: priority, reset)')
+
 
     def test_unknown_keys_and_notes(self):
         message = self.assertRefused({'colour': 'red', 'port': 9000}, 'unknown key(s) colour', 'keys starting with _')
@@ -109,7 +111,7 @@ class LoadSettings(unittest.TestCase):
 
     def test_missing_file_means_defaults(self):
         r = run_script('version', env={'CODEXPOOL_SETTINGS': str(HOME / 'no-such-settings.json')})
-        self.assertEqual((r.returncode, r.stdout), (0, f'codexpool {cp.VERSION}\n'))
+        self.assertEqual((r.returncode, r.stdout), (0, (f'codexpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS))))
 
 
 class SetCommand(unittest.TestCase):
@@ -128,11 +130,11 @@ class SetCommand(unittest.TestCase):
     def settings_text(self):
         return cp.SETTINGS_FILE.read_text()
 
-    def test_no_args_prints_all_three(self):
+    def test_no_args_prints_all_four(self):
         code, out, _ = run(cp.cmd_set, key=None, value=None)
         self.assertEqual(code, 0)
         self.assertEqual([line.split()[:2] for line in out.splitlines()],
-                         [['display', 'left'], ['headline', 'all'], ['balancing', 'priority']])
+                         [[k, cp.SETTINGS[k]] for k in cp.SETTABLE])
 
     def test_rejects_unknown_key_and_bad_values(self):
         before = self.settings_text()

@@ -9,7 +9,8 @@ Settings window and Setup assistant are a second file, `menubar/codexpool_settin
 
 ## Hard rules
 - **Reads only** `~/.codexpool/state/status.json` (written every 60 s by `codexpool guard`),
-  `~/.codexpool/state/history.jsonl`, and `settings.json` (only to find the Python that runs codexpool).
+  `~/.codexpool/state/history.jsonl`, and an add-on pool's own status and history files
+  (same shapes, below), and `settings.json` (only to find the Python that runs codexpool).
   **No Keychain access, no network, no management API.** A locked Keychain would pop password dialogs. The one
   file it writes is the marker `state/setup-shown` (first run, below).
 - A missing, stale (> 3 min) or partial status file renders a clear "pool not reporting" state, never a crash.
@@ -42,9 +43,10 @@ Settings window and Setup assistant are a second file, `menubar/codexpool_settin
   seat's week, by threshold. Both drain in `left` mode and fill in `used` mode.
 - Title: the headline percentage as left (or used), e.g. `54%`, menu bar font size, regular weight, monospaced
   digits:
-  - **green** while a regular seat serves,
-  - **red** while a reserve seat serves (`pool.reserve_in_use`): the regular seats are spent,
-  - grey, with a warning triangle in place of the meter, when the pool is down, not reporting, or every seat is out.
+  - **Codex blue** while a regular seat serves,
+  - **red** while a reserve seat serves (`pool.reserve_in_use`): the regular seats are spent; and while every seat
+    is out,
+  - grey, with a warning triangle in place of the meter, when the pool is down, not reporting, or has no seats.
 - The headline is the weight-averaged weekly use of every seat that is not off, reserve seats included
   (`headline: all`), or of the regular seats only (`headline: regular`); weights from `seats.json`, Plus = 1,
   Pro = 20. The colour rule does not depend on it.
@@ -77,13 +79,14 @@ again at once. Closes for any other reason (outside click, Escape, resigning act
 next click on the item opens the popover straight away.
 
 1. **Header**: "Codex Pool" (15 pt semibold); subtitle (11 pt, secondary) "Updated 1m ago · Serving Team".
-   Right: a pill `Regular` (green) / `Reserve` (red) / `All out` / `Down` / `Stale` / `No seats` / `No data` (grey).
+   Right: a pill `Regular` (Codex blue) / `Reserve` / `All out` (red) / `Down` / `Stale` / `No seats` / `No data`
+   (grey). With an add-on's pool installed, its switcher takes the header's place (the add-on's own spec).
    After an action the subtitle shows its feedback for 8 s ("Resetting Work B…").
 2. **Problem banner** when the pool is down (Restart Pool), not reporting (Run Doctor) or empty (Add Account…,
    which opens the Setup assistant's Add accounts step).
 3. **Hero**: big `54%` (28 pt semibold, coloured like the menu bar title) + "left this week · all seats" ("used
-   this week", "· regular seats" in the other modes), a 6 pt bar (red while a reserve seat serves, like the
-   number; else by threshold, grey when nothing serves), then:
+   this week", "· regular seats" in the other modes), a 6 pt bar (red while a reserve seat serves or every seat is
+   out, like the number; else by threshold, grey when the pool is down or not reporting), then:
    - "3 of 4 regular seats ready · reserve 66% left" ("reserve at 34%" in `used` mode)
    - "Next back: Work B in 3h 56m" when a seat is out (emphasised when everything regular is out)
    - **Resets** (blue): "Reset available for Work B · click the seat" when an out seat has a banked free reset
@@ -98,8 +101,8 @@ next click on the item opens the popover straight away.
      "Personal · off, not counted"; no weekly figure: "· usage unknown, not counted". Last line: "Weighted by size:
      54% left · all seats".
 4. **Chart**, titled "Quota left" (`left` mode) or "Usage" (`used` mode): the headline over 24 h or 7 d (toggle),
-   44 pt tall, fixed 0–100 % scale, 1.5 pt line over a soft gradient; green where a regular seat served, red
-   where the reserve did, grey when nothing serves now. It plots what the hero shows: history's `all` or `used`
+   44 pt tall, fixed 0–100 % scale, 1.5 pt line over a soft gradient; the pool's colour where a regular seat
+   served, red where the reserve did, grey when nothing serves now. It plots what the hero shows: history's `all` or `used`
    (regular seats) series, as left or as used, so in `left` mode it falls over time and jumps up at a reset. A
    dashed stub carries the last value to "now". Fewer than 3 samples: "Collecting history…".
 5. **Seats**, in fill order (highest priority first). The header's right side names the order: "Your order"
@@ -154,6 +157,7 @@ position under the same key, and the app leaves it alone.
 ```
 codexpool_menubar.py --snapshot OUT.png [--appearance light|dark] [--status PATH] [--history PATH]
                      [--now ISO-8601] [--range 24h|7d] [--max-height PT] [--hover KIND:VALUE]
+                     [--pool-status PATH] [--pool-history PATH] [--pool ID]
 ```
 Renders the popover (`OUT.png`) and the menu bar item on a menu-bar-like strip (`OUT-menubar.png`), both at 2×,
 and prints the hovered region's tooltip, if any (`--hover tip:headline` prints the hero's breakdown),
@@ -161,6 +165,11 @@ without showing UI (offscreen `NSView` caching on an opaque stand-in for the pop
 needs a window). `--hover tip:order` prints the seat header's tooltip. `--history` defaults to `history.jsonl`
 beside `--status`. Used by humans and agents to check the design; the screenshots in `docs/images/` are made this
 way from synthetic data (`docs/images/demo/status-reset.json` is the regular scenario with `"balancing": "reset"`).
+`--pool-status PATH` installs an add-on's pool (its `menubar_ext.py`) for the snapshot (both numbers in the strip, the
+switcher in the popover), `--pool ID` picks the tab and `--pool-history` defaults to the history file named like the
+status file. Without `--pool-status` a snapshot never reads a live add-on file. `--marks drawn|app` (both scripts)
+picks the pools' marks; the default, `drawn`, reads nothing from `/Applications`, so `docs/images/` renders the same
+on every Mac. An add-on's fixtures live in its own `docs/images/demo/`.
 
 ## Settings window and Setup assistant
 `menubar/codexpool_settings.py`: a System Settings-style window (sidebar + content pane) and a three-step Setup
@@ -202,7 +211,7 @@ row in the Seats list is a radio button and an About link row is a link, each la
 | Overview | The headline (big number, left or used, `pool.display`/`pool.headline` as in the popover, its bar, the Regular/Reserve pill, the per-seat breakdown as its tooltip); new threads → seat, regular seats ready, reserve, next back; a link to a seat with a banked reset; the pace line; every seat with a state dot, plan badge (size ×), Reserve tag, banked resets, weekly and 5-hour bars with reset times; last updated. Down, not reporting and no seats get an explanation and one button. | Restart Pool… (`codexpool restart`), Check Health, Add a ChatGPT Account… |
 | Seats | The seats in fill order (select one), then its settings | Name (`codexpool label SEAT NEW`, on Return or leaving the field), Size (`codexpool weight SEAT N`), Fill order (its place, "2nd of 3 regular seats, in your order", or Reserve; the row opens Balancing, where the order and the reserve are set), In rotation switch (`codexpool enable\|disable SEAT`; a parked seat asks first, since enabling it spends credits), Redeem Reset… (`codexpool reset SEAT --yes` after a sheet saying it spends 1 of n banked free resets and never buys one), Sign In Again… (the assistant, with the seat's label and priority), Remove… (`codexpool remove SEAT --yes` after a destructive confirmation), Add Account…. SEAT is the seat file name. The outcome of the last command shows inline in the group. |
 | Balancing | How the pool picks a seat (`pool.balancing`), the regular seats in fill order (label, plan badge, state, week left and reset; in "Soonest reset first" the guard's order, read-only, "Updates itself"), the reserve seats last, and a Reserve group (every seat with "Use last (reserve)"). No seats: an Add a ChatGPT Account… empty state. | Two radio buttons, **Your order** and **Soonest reset first** (`codexpool set balancing priority\|reset`); ▲▼ per seat in your order (a burst of clicks commits once: `codexpool order SEAT…`); the Reserve checkboxes (`codexpool reserve SEAT [--off]`). A radio button or checkbox shows the choice just made until status.json agrees (the guard pass after the command, or the command failing, ends that). |
-| Lanes | `codexpool lane list --json` and `lane providers --json`: one card per lane (name, “label” in the model picker, effort, role, members in order as name, provider title · model, last test ✓/✗ (a member's failure says just Failed, its reason in the tooltip and on the lane's own test line) and state pill; the lane's last test), then Apply lanes, Documentation and Credentials (each provider in use or ready, and each responses member's own key, with its state; a CLI hint in a detail, "(codexpool lane login xai)", is not shown). No lanes: what a lane is, New Lane… and Read About Lanes. | New Lane…, per card Delete… (set apart from the others; destructive confirm, `codexpool lane remove LANE`), Test… (confirm: spends lane quota, can take minutes; then `codexpool lane test LANE` streams into a sheet with Stop), Edit…; Apply… (confirm, `codexpool lane apply`), Open Docs; per credential Sign In…/Sign In Again… or Add Key…/Replace Key…. |
+| Lanes | `codexpool lane list --json` and `lane providers --json`: one card per lane (name, “label” in the model picker, effort, role, members in order as name, provider title · model, last test ✓/✗ (a member's failure says just Failed, its reason in the tooltip and on the lane's own test line) and state pill; the lane's last test), then Apply lanes, Documentation and Credentials (each provider in use or ready, and each responses member's own key, with its state; a CLI hint in a detail, "(codexpool lane login xai)", is not shown). No lanes: what a lane is, New Lane… and Read About Lanes. | New Lane…, per card Delete… (set apart from the others; destructive confirm, `codexpool lane remove LANE`), Test… (confirm: spends lane quota, can take minutes; then `codexpool lane test LANE` streams into a sheet with Stop), Edit…; Apply… (confirm, `codexpool lane apply`), Open Docs; per credential Sign In…/Sign In Again… or Add Key…/Replace Key…; an add-on's engine provider (`kind` `engine`) adds its own credential action, described in the add-on's spec. |
 | General | The menu bar display | Numbers show Left/Used (`codexpool set display left\|used`), Headline covers All seats/Regular seats (`codexpool set headline all\|regular`), Restart… (confirm, `codexpool restart`), Open Logs (`~/.codexpool/logs/`), Reopen Codex… (confirm; quits every `com.openai.codex` app, waits up to 20 s, then `open -b com.openai.codex`), the Setup assistant |
 | Health | `codexpool doctor --json`: a summary (everything good / n problems, n warnings) and each section's checks with ✓ ! ✗ and the fix hint | Run Again, Copy Report (the doctor's text form, nothing redacted: it stays local), Run in Terminal when there is no report |
 | About | The icon, wordmark, `codexpool version`, the CLIProxyAPI version, the pitch; links (website, source, docs, report an issue); the license in one sentence and the disclaimer | |
@@ -260,11 +269,14 @@ then try again." in place of that data.
   such key instead (a new responses member's key is `<lane>-<id>`, known only once the CLI has named it), and saves
   again once the last one is in.
 - **Add Model**: a Provider popup (xAI disabled when the lane already has an xAI member), a Model combo box filled by
-  `lane models PROVIDER --json` with a spinner (not fetched for a provider that needs a key it doesn't have; typing
+  `lane models PROVIDER --json` with a spinner (not fetched for a provider that needs a key it doesn't have, nor for
+  an engine provider, which has no catalog: the add-on's `model_hint` says what to type); typing
   an id always works; a list that failed says "Couldn’t list the models; type an id." with the reason in the
   tooltip), a Display name defaulting to the listed name, and a Base URL for responses. A provider that isn't ready
-  shows Sign In to xAI… or Add Key… right there, then relists its models. Add refuses a model the lane already has
-  and a second Responses endpoint while one is unsaved (`--base-url` goes to every responses member of one command).
+  shows Sign In to xAI… or Add Key… right there, then relists its models; an engine provider shows the add-on's note
+  instead. Add refuses a model the
+  lane already has and a second Responses endpoint while one is unsaved (`--base-url` goes to every responses
+  member of one command).
 - **Add Key**: an NSSecureTextField whose value is piped to `codexpool lane key NAME -` on stdin (never in argv or a
   file). The field is cleared the moment it is read, and when the sheet is cancelled.
 - **xAI sign-in**: `lane login xai --no-open` with `CODEXPOOL_NO_CLIPBOARD=1`. The sheet copies the first `https://`
@@ -282,10 +294,11 @@ codexpool_settings.py --snapshot OUT.png --pane NAME --appearance light|dark --s
                       [--doctor PATH] [--lanes PATH] [--providers PATH] [--models PATH] [--history PATH]
                       [--now ISO-8601] [--height PT]
 ```
-NAME also takes `setup-signin` (a waiting sign-in with a made-up link) and `setup-added`, and `lanes-edit`,
-`lanes-new`, `lanes-model`, `lanes-model-key`, `lanes-key`, `lanes-signin`: the Lanes pane with that sheet (or
-nested sheets) drawn under the toolbar. `--providers` and `--models` stand in for `lane providers --json` and every
-`lane models --json`. It builds the real
+NAME also takes `setup-signin` (a waiting sign-in with a made-up link) and `setup-added`, and `lanes-edit`
+(`--lane NAME` picks the lane), `lanes-new`, `lanes-model`, `lanes-model-key`, `lanes-model-engine`, `lanes-key`,
+`lanes-signin`: the Lanes pane with that sheet (or nested sheets) drawn under the toolbar; an add-on's `PoolUI` can
+add panes of its own. `--providers` and `--models` stand in for
+`lane providers --json` and every `lane models --json`. It builds the real
 window offscreen, draws it as the key window (a snapshot-only subclass), caches its frame view at 2× and sets it on
 a soft backdrop with a shadow, like the popover shots. `--now` defaults to the status file's `generated_at`, so
 demo data reads as fresh; the height fits the content unless `--height` is given. The Overview's pace line

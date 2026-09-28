@@ -21,13 +21,15 @@ Run:
 Snapshot (no UI shown, no command run; for humans and agents checking the design, and for the docs):
     codexpool_settings.py --snapshot OUT.png --pane NAME --appearance light|dark --status PATH
                           [--doctor PATH] [--lanes PATH] [--providers PATH] [--models PATH] [--now ISO-8601]
-                          [--height PT]
+                          [--height PT] [--marks drawn|app]
     NAME also takes setup-signin (the sign-in step, with a made-up link), setup-added (a seat just added),
     setup-again (the browser signed in to an account that is already a seat), and the Lanes pane's sheets:
     lanes-edit (the lane editor on the first lane), lanes-new (a new lane), lanes-model (Add Model on a ready
     provider), lanes-model-key (Add Model on a provider that needs a key), lanes-key (Add Key) and lanes-signin
     (the xAI sign-in, with a made-up link).
     --now defaults to the status file's generated_at, so demo data reads as fresh.
+    --marks app draws the pool switcher's marks as the live window does, from the pools' apps on this Mac;
+    the default, drawn, uses plain drawn shapes and reads nothing from /Applications, so snapshots are reproducible.
 
 Layout of this file:
     1. Paths and constants            6. Panes: Overview, Seats, Balancing, Lanes, General, Health, About
@@ -71,6 +73,7 @@ from AppKit import (  # noqa: E402
     NSApplicationActivationPolicyRegular,
     NSAttributedString,
     NSBackingStoreBuffered,
+    NSBezierPath,
     NSBox,
     NSButton,
     NSColor,
@@ -145,6 +148,7 @@ from Foundation import (  # noqa: E402
     NSRunLoop,
     NSRunLoopCommonModes,
     NSTimer,
+    NSUserDefaults,
 )
 from PyObjCTools import AppHelper  # noqa: E402
 
@@ -178,7 +182,14 @@ QUIT_WAIT_S = 45           # how long quitting waits for a sign-in that is finis
 
 PANES = ('overview', 'seats', 'balancing', 'lanes', 'general', 'health', 'about')
 SETUP_PANES = ('setup-welcome', 'setup-accounts', 'setup-signin', 'setup-added', 'setup-again', 'setup-done')
-LANE_SHOTS = ('lanes-edit', 'lanes-new', 'lanes-model', 'lanes-model-key', 'lanes-key', 'lanes-signin')  # snapshots
+LANE_SHOTS = ('lanes-edit', 'lanes-new', 'lanes-model', 'lanes-model-key', 'lanes-model-engine', 'lanes-key',
+              'lanes-signin')  # snapshots
+
+# The pools: the Codex pool and, with an add-on (mb.POOL_UI, its menubar_ext.py), one more. The switcher on
+# Overview, Seats and Balancing and in the Setup assistant is drawn only when there are two.
+POOLS = mb.POOLS
+POOL_TITLES = mb.POOL_NAME
+POOL_DEFAULT = 'pool'                # NSUserDefaults key: the switcher's last choice
 
 BALANCING = ('priority', 'reset')    # pool.balancing: your order (fill-first) / soonest weekly reset first
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
@@ -186,7 +197,8 @@ LANE_NAME_OK = re.compile(r'^[a-z][a-z0-9-]{0,30}$')   # what `codexpool lane ad
 DISPLAY_MAX = 40                     # a lane's entry in the Codex model picker
 PROVIDERS = (   # what `lane providers --json` says, for a codexpool that can't say it yet: (id, title, needs, key)
     ('xai', 'xAI', 'login', None), ('opencode-go', 'OpenCode Go', 'key', 'opencode-go'),
-    ('opencode-zen', 'OpenCode Zen', 'key', 'opencode-zen'), ('responses', 'Responses API', 'key', None))
+    ('opencode-zen', 'OpenCode Zen', 'key', 'opencode-zen'), ('responses', 'Responses API', 'key', None)) + \
+    tuple(p for ui in mb.POOL_UI.values() for p in getattr(ui, 'lane_providers', ()))   # + an add-on's engine
 
 WIN_W, WIN_H, MIN_H = 820.0, 640.0, 480.0
 SIDEBAR_W = 220.0
@@ -212,6 +224,16 @@ SNAPSHOT = False           # set in snapshot mode: nothing may run a command, op
 S = mb.fresh               # every str handed to AppKit goes through this (see codexpool_menubar.fresh)
 
 
+def pool_ui(pool: str):
+    """The add-on's PoolUI for an add-on pool; None for the Codex pool."""
+    return mb.POOL_UI.get(pool)
+
+
+def pool_noun(pool: str) -> str:
+    ui = pool_ui(pool)
+    return ui.noun if ui else 'seat'
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 # 2. Running codexpool: in the background, never on the main thread
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -234,7 +256,8 @@ class Result:
     def unknown(self) -> bool:
         """argparse's answer to a command or flag this codexpool doesn't have yet (the NEW ones in the spec)."""
         text = self.err + self.out
-        return self.code == 2 and ('invalid choice' in text or 'unrecognized arguments' in text)
+        return (self.code == 2 and ('invalid choice' in text or 'unrecognized arguments' in text)) or \
+            (self.code != 0 and 'is not one of the settings it changes' in text)   # `set <an add-on setting>`
 
     def message(self) -> str:
         if self.unknown:
@@ -477,11 +500,11 @@ class Provider:
     """A lane provider, from `codexpool lane providers --json`."""
     id: str
     title: str
-    needs: str                 # login (xai) | key
-    key_name: str | None       # the key file's name; None for xai and for responses (whose key is <lane>-<id>)
-    ready: bool | None         # signed in / key saved; None: not known (a codexpool without `lane providers`)
+    needs: str                 # login (xai) | key | engine (an add-on's pool as a read-only lane, accepted once)
+    key_name: str | None       # the key file's name; None for xai, an engine and responses (key: <lane>-<id>)
+    ready: bool | None         # signed in / key saved / engine accepted; None: not known (no `lane providers`)
     detail: str = ''
-    kind: str = ''             # native | bridge
+    kind: str = ''             # native | bridge | engine
 
 
 def parse_providers(d) -> list | None:
@@ -547,13 +570,23 @@ def parse_json_output(text: str):
 
 class Store:
     """What the window shows. status.json and history.jsonl (the pace line) come through the menu bar app's
-    DataSource (same parsing, same stale/down handling); doctor, lanes and version come from codexpool commands, or
-    from fixture files in snapshot mode. Listeners get called with what changed: 'status', 'doctor', 'lanes' or
-    'version'."""
+    DataSource (same parsing, same stale/down handling), as does an add-on pool's status file; doctor, lanes and
+    version come from codexpool commands, or from fixture files in snapshot mode. Listeners get called with what
+    changed: 'status', 'doctor', 'lanes' or 'version'."""
 
     def __init__(self, status_path: Path = mb.STATUS_FILE, now: dt.datetime | None = None,
-                 history_path: Path | None = mb.HISTORY_FILE):
+                 history_path: Path | None = mb.HISTORY_FILE, pool_status: Path | None = 'live',
+                 pool_history: Path | None = 'live'):
+        """pool_status, pool_history: the add-on pool's files; 'live' means its own (PoolUI.status_file), None (a
+        snapshot without --pool-status) no file, so that pool reads as not installed."""
         self.source = mb.DataSource(status_path, history_path)
+        self.sources = {'codex': self.source}   # + the add-on pool's, when it has a file
+        for pool, ui in mb.POOL_UI.items():
+            path = ui.status_file if pool_status == 'live' else pool_status
+            hist = ui.history_file if pool_history == 'live' else pool_history
+            if path:
+                self.sources[pool] = mb.DataSource(path, hist, pool=pool)
+        self.installed_hint: set = set()       # pools whose install succeeded in this session
         self.now = now
         self.doctor: Doctor | None = None
         self.doctor_note = ''
@@ -574,14 +607,29 @@ class Store:
     def clock(self) -> dt.datetime:
         return self.now or mb.utcnow()
 
-    def model(self) -> mb.Model:
-        return self.source.model(self.now)
+    def model(self, pool: str = 'codex') -> mb.Model:
+        src = self.sources.get(pool)
+        if src is None:
+            return mb.build_model(None, mb.NO_FILE, [], self.clock(), pool_name=pool)
+        return src.model(self.now)
+
+    def raw_pool(self, pool: str = 'codex') -> dict:
+        src = self.sources.get(pool)
+        return mb.as_dict(mb.as_dict(src.raw if src is not None else None).get('pool'))
 
     # -- status.json fields the menu bar app's model doesn't carry ---------------------------------------
-    def balancing(self) -> str:
+    def balancing(self, pool: str = 'codex') -> str:
         """pool.balancing: 'priority' (your order) or 'reset' (soonest reset first). An older guard: priority."""
-        v = mb.as_str(mb.as_dict(mb.as_dict(self.source.raw).get('pool')).get('balancing'))
+        v = mb.as_str(self.raw_pool(pool).get('balancing'))
         return v if v in BALANCING else BALANCING[0]
+
+    def installed(self, pool: str) -> bool:
+        """The menu bar app's rule for an add-on's pool (PoolUI.installed over its status file). An install that
+        just succeeded here counts before the guard has written the file. The Codex pool always is."""
+        if pool == 'codex':
+            return True
+        src = self.sources.get(pool)
+        return pool in self.installed_hint or (src is not None and src.installed)
 
     def provider_list(self) -> list:
         return self.providers if self.providers is not None else fallback_providers()
@@ -594,7 +642,10 @@ class Store:
             fn(what)
 
     def poll(self, force: bool = False):
-        if self.source.poll(force=force):
+        changed = False
+        for src in self.sources.values():
+            changed = src.poll(force=force) or changed
+        if changed:
             self.notify('status')
 
     # -- command-backed data (live) --------------------------------------------------------------------
@@ -672,7 +723,8 @@ class Store:
     # -- fixtures (snapshot) ---------------------------------------------------------------------------
     def load_fixtures(self, doctor: Path | None, lanes: Path | None, providers: Path | None = None,
                       models: Path | None = None):
-        self.source.poll(force=True)
+        for src in self.sources.values():
+            src.poll(force=True)
         if doctor:
             self.doctor = parse_doctor(json.loads(doctor.read_text()))
             self.doctor_at = self.clock()
@@ -739,7 +791,7 @@ class K:
 ICON_TINTS = {   # sidebar icon squares: (top, bottom) of the gradient
     'green': (0x4CD964, 0x28B14A), 'blue': (0x3D9BFF, 0x0A6CFF), 'purple': (0xC77DFF, 0x9B4DDB),
     'grey': (0xA2A2A8, 0x7C7C82), 'teal': (0x4FC3D9, 0x1E9DB5), 'indigo': (0x7A78F0, 0x4F4CD1),
-    'orange': (0xFFB340, 0xFF8A00), 'red': (0xFF6B61, 0xE8392E),
+    'orange': (0xFFB340, 0xFF8A00), 'red': (0xFF6B61, 0xE8392E), 'coral': (0xEE9270, 0xD4623F),
 }
 
 
@@ -791,6 +843,45 @@ def draw_icon_square(x: float, y: float, s: float, symbol: str, tint: str):
     NSGradient.alloc().initWithStartingColor_endingColor_(mb.srgb(top), mb.srgb(bottom)).drawInBezierPath_angle_(path, 90)
     mb.draw_symbol(symbol, x + s / 2, y + s / 2, s * 0.56, mb.srgb(0xFFFFFF), NSFontWeightSemibold,
                    fit=(s * 0.72, s * 0.66))
+
+
+def draw_pool_glyph(pool: str, s: float, color):
+    """A pool's plain drawn mark, Codex a rounded hexagon outline and an add-on's pool its own shape
+    (PoolUI.draw_settings_glyph; s x s, flipped): what the switcher shows when the pool's app is not on this Mac
+    (pool_glyph_image), and in snapshots."""
+    color.set()
+    c, path = s / 2, NSBezierPath.bezierPath()
+    path.setLineCapStyle_(1)    # round
+    path.setLineJoinStyle_(1)
+    ui = pool_ui(pool)
+    if ui is not None:
+        ui.draw_settings_glyph(path, s)
+    else:
+        path.setLineWidth_(s * 0.12)
+        for k in range(6):
+            a = math.radians(k * 60 - 90)
+            pt = (c + math.cos(a) * s * 0.42, c + math.sin(a) * s * 0.42)
+            path.moveToPoint_(pt) if k == 0 else path.lineToPoint_(pt)
+        path.closePath()
+    path.stroke()
+
+
+def pool_glyph_image(pool: str, size: float = 12.0):
+    """The pool's mark as a template image (the segmented control tints it): the real logo from the app on this
+    Mac (the menu bar app's mb.app_mark, when mb.MARKS is 'app'), else the drawn glyph. The logo gets the menu
+    bar's box, size * mb.MARK_SCALE[pool], so the cloud and a thin spark carry the same weight here too."""
+    mark = mb.app_mark(pool) if mb.MARKS == 'app' else None
+    box = size * mb.MARK_SCALE.get(pool, 1.0) if mark is not None else size
+
+    def handler(rect):
+        if mark is not None:
+            mb.draw_mark(mark, pool, box / 2, box / 2, NSColor.blackColor(), size)
+        else:
+            draw_pool_glyph(pool, size, NSColor.blackColor())
+        return True
+    img = NSImage.imageWithSize_flipped_drawingHandler_((box, box), True, handler)
+    img.setTemplate_(True)
+    return img
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1053,6 +1144,40 @@ def pill(text: str, fg, bg):
     return canvas(lambda w, h: mb.draw_pill(text, 0, 0, fg(), bg()), mb.pill_width(text), mb.PILL_H, ax=text)
 
 
+def code_chip(text: str, size: float = 12.0):
+    """A command to type, in monospace on a faint rounded tile (selectable, so it can be copied by hand too)."""
+    f = NSFont.monospacedSystemFontOfSize_weight_(size, NSFontWeightRegular)
+    t = label(text, size, select=True)
+    t.setFont_(f)
+    box = auto(GroupView.alloc().initWithFrame_(((0, 0), (80, 22))))
+    box.rows, box.radius = (), 5.0
+    box.addSubview_(t)
+    pin(t, box, 3, 7, 3, 7)
+    return box
+
+
+def pool_switcher(current: str, fn, keep: list, enabled: bool = True, titles=None):
+    """Codex | <the add-on's pool>, centred: a segmented control with each pool's glyph. fn(pool) on a change.
+    None with one pool (the Codex pool alone has nothing to switch to)."""
+    if len(POOLS) < 2:
+        return None
+    titles = titles or POOL_TITLES
+    seg = auto(NSSegmentedControl.segmentedControlWithLabels_trackingMode_target_action_(
+        [S(titles[p]) for p in POOLS], 0, target(lambda s: fn(POOLS[s.selectedSegment()]), keep), 'fire:'))
+    for i, p in enumerate(POOLS):
+        seg.setImage_forSegment_(pool_glyph_image(p), i)
+        seg.setWidth_forSegment_(116, i)
+    seg.setSelectedSegment_(POOLS.index(current) if current in POOLS else 0)
+    seg.setEnabled_(enabled)
+    seg.setAccessibilityLabel_(S('Pool'))
+    seg.setToolTip_(S('Which pool this pane shows: the Codex pool (ChatGPT accounts) or ' +
+                      pool_ui(POOLS[1]).switcher_blurb))
+    row = auto(NSStackView.alloc().initWithFrame_(((0, 0), (100, 24))))
+    row.setOrientation_(0)
+    row.addView_inGravity_(seg, 2)   # centre
+    return row
+
+
 def plan_pill(text: str):
     return pill(text, mb.C.secondary, lambda: mb.C.wash(0.07))
 
@@ -1124,14 +1249,15 @@ class GroupView(NSView):
     """A System Settings group: a rounded box whose rows are separated by inset hairlines."""
     rows = ()
     rules = True     # hairlines between rows
+    radius = RADIUS
 
     def isFlipped(self):
         return True
 
     def drawRect_(self, rect):
         b = self.bounds()
-        mb.fill_rounded(b, RADIUS, K.group())
-        mb.stroke_rounded(b, RADIUS, K.group_line(), 1.0)
+        mb.fill_rounded(b, self.radius, K.group())
+        mb.stroke_rounded(b, self.radius, K.group_line(), 1.0)
         for v in self.rows[1:] if self.rules else ():
             if v.isHidden():
                 continue
@@ -1193,6 +1319,17 @@ def note_row(note, width: float = GROUP_W):
                   insets=(9, ROW_X, 9, ROW_X), min_h=36)
 
 
+def fact_row(text: str, warn: bool = False, symbol: str | None = None, color=None, width: float = GROUP_W):
+    """One line of fact in a group: a small symbol and secondary text (orange for a warning)."""
+    if symbol is None:
+        symbol = 'exclamationmark.triangle.fill' if warn else 'exclamationmark.circle'
+    if color is None:
+        color = mb.C.orange() if warn else NSColor.secondaryLabelColor()
+    return hstack([symbol_view(symbol, 12, color, NSFontWeightMedium, box=16),
+                   label(text, 12, color=mb.C.orange_text() if warn else NSColor.secondaryLabelColor(),
+                         wrap=width - 2 * ROW_X - 30)], spacing=8, insets=(8, ROW_X, 8, ROW_X), min_h=32)
+
+
 def empty_state(symbol: str, tint: str, title: str, body: str, actions=(), width: float = GROUP_W):
     icon = canvas(lambda w, h: draw_icon_square(0, 0, 44, symbol, tint), 44, 44)
     parts = [icon, label(title, 15, NSFontWeightSemibold, align=NSTextAlignmentCenter),
@@ -1221,7 +1358,7 @@ def state_style(seat: mb.Seat, m: mb.Model):
     if not m.reporting or text == 'Out' or (seat.serving and not m.serving_now):
         return text, mb.C.secondary, lambda: mb.C.wash(0.07)
     if seat.serving:
-        if seat.reserve:
+        if seat.reserve or seat.spending:
             return text, mb.C.red_text, lambda: mb.C.soft(mb.C.red())
         return text, mb.C.green_text, lambda: mb.C.soft(mb.C.green())
     if seat.state == 'parked':
@@ -1240,7 +1377,7 @@ def seat_dot_color(seat: mb.Seat, m: mb.Model):
     if not m.reporting:
         return mb.C.grey
     if seat.serving:
-        return mb.C.red if seat.reserve else mb.C.green
+        return mb.C.red if seat.reserve or seat.spending else mb.C.green
     return {'ready': mb.C.green, 'parked': mb.C.orange, 'blocked': mb.C.red}.get(seat.state, mb.C.grey)
 
 
@@ -1281,29 +1418,36 @@ def window_line(m: mb.Model, seat: mb.Seat, win: mb.Window | None, name: str) ->
     return ' · '.join(parts)
 
 
-def seat_meters(seat: mb.Seat, m: mb.Model, width: float):
-    """'Week ▬▬▬▬▬▬▬▬▬▬▬░░░░ 56% left · resets in 6d 13h' and, for seats with one, the 5-hour window."""
-    wins = [('Week', seat.week)] + ([('5h', seat.short)] if seat.short else [])
+def seat_meters(seat: mb.Seat, m: mb.Model, width: float, scoped=()):
+    """'Week ▬▬▬▬▬▬▬▬▬▬▬░░░░ 56% left · resets in 6d 13h' and, for seats with one, the 5-hour window; a seat
+    with scoped weekly caps also gets one bar per cap (scoped: [(name, mb.Window)], e.g. one model family's)."""
+    wins = [('Week', seat.week)] + ([('5h', seat.short)] if seat.short else []) + list(scoped)
     line_h, gap = 15.0, 5.0
     dim = not m.reporting or seat.unavailable
     cap_f, val_f = mb.font(11), mb.font(11, mono=False)
     lines = [(name, win, window_line(m, seat, win, name)) for name, win in wins]
     text_w = max(mb.text_width(t, val_f) for _, _, t in lines) + 4
     text_w = min(max(text_w, 150.0), width * 0.45)
+    cap_w = min(72.0, max([40.0] + [mb.text_width(name, cap_f) + 8 for name, _ in scoped]))
 
     def paint(w, h):
         y = 0.0
         for name, win, text in lines:
             used = win.used if win else None
-            mb.draw_text(name, 0, y, cap_f, mb.C.secondary())
-            bx, bw = 40.0, w - 40.0 - text_w - 12
+            mb.draw_text(name, 0, y, cap_f, mb.C.secondary(), width=cap_w - 4)
+            bx, bw = cap_w, w - cap_w - text_w - 12
             mb.draw_bar(bx, y + (line_h - 6) / 2, bw, 6.0, m.shown(used), mb.bar_fill(used, dim))
             mb.draw_text(text, w - text_w, y, val_f, mb.C.secondary() if dim else mb.C.label(), width=text_w,
                          align='right')
             y += line_h + gap
-    ax = '. '.join(f'{"Weekly" if name == "Week" else "5-hour"}: {text.replace(" · ", ", ")}'
+    ax = '. '.join(f'{ {"Week": "Weekly", "5h": "5-hour"}.get(name, name + " weekly")}: {text.replace(" · ", ", ")}'
                    for name, _, text in lines)
     return canvas(paint, width, len(lines) * line_h + (len(lines) - 1) * gap, ax=ax)
+
+
+def scoped_windows(seat: mb.Seat) -> list:
+    """A seat's scoped weekly caps as (name, mb.Window), for seat_meters."""
+    return [(x.name, mb.Window(x.used, x.reset_at, None)) for x in (getattr(seat, 'scoped', None) or [])]
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1321,10 +1465,37 @@ class Pane:
         self.keep: list = []        # targets of this build's controls
         self.note = None            # ('busy'|'ok'|'error', text) of the last action, shown inline
         self.note_at = 0.0
+        self.ext: dict = {}         # an add-on's own state for its pool's side (cleared when the switcher moves)
 
     @property
     def store(self) -> Store:
         return self.app.store
+
+    @property
+    def pool(self) -> str:
+        """The pool the switcher shows (Overview, Seats and Balancing): codex, or the add-on's pool."""
+        return self.app.pool
+
+    @property
+    def ui(self):
+        """The add-on's PoolUI on its pool's side; None on the Codex side."""
+        return pool_ui(self.pool)
+
+    @property
+    def unit(self) -> str:
+        return pool_noun(self.pool)
+
+    def cmd(self, *args) -> list:
+        """A seat command for this pool: with the add-on's command prefix on its side."""
+        return (list(self.ui.command_prefix) if self.ui else []) + list(args)
+
+    def switcher(self):
+        return pool_switcher(self.pool, self.app.set_pool, self.keep)
+
+    def pool_changed(self):
+        """The switcher moved to the other pool: what was said about the last one goes."""
+        self.note = None
+        self.ext = {}
 
     def shown(self):
         """The pane became visible (fetch what it needs)."""
@@ -1363,8 +1534,10 @@ class OverviewPane(Pane):
     key, title, symbol, tint = 'overview', 'Overview', 'gauge.with.dots.needle.67percent', 'green'
 
     def build(self):
+        out = [self.switcher()]
+        if self.ui is not None:
+            return out + self.ui.overview_sections(self)
         m = self.store.model()
-        out = []
         problem = self.problem(m)
         if problem is not None:
             out.append(problem)
@@ -1395,12 +1568,13 @@ class OverviewPane(Pane):
                                        primary=True)])
         return None
 
-    def hero(self, m: mb.Model):
+    def hero(self, m: mb.Model, pool: str = 'codex'):
+        ui = pool_ui(pool)
         color = mb.headline_text
         number = f'{round(m.shown(m.headline)):d}'
         caption = f'{m.word} this week · {m.scope}'
         big, unit, cap_f = mb.font(40, NSFontWeightSemibold, mono=True), mb.font(22, NSFontWeightSemibold), mb.font(13)
-        pill_text, pill_fg, pill_bg = self.status_pill(m)
+        pill_text, pill_fg, pill_bg = self.status_pill(m, pool)
         inner = GROUP_W - 2 * 16
 
         def paint(w, h):
@@ -1416,7 +1590,7 @@ class OverviewPane(Pane):
         top = canvas(paint, inner, big_h, tip=mb.headline_breakdown(m),
                      ax=f'{number}% {m.word} this week, {m.scope}. {pill_text}')
 
-        facts = self.facts(m)
+        facts = ui.hero_facts(m) if ui else self.facts(m)
         col_w = inner / len(facts)
         grid = auto(NSGridView.gridViewWithViews_([
             [secondary(c, 11) for c, _, _ in facts],
@@ -1426,9 +1600,9 @@ class OverviewPane(Pane):
         for i in range(len(facts)):
             grid.columnAtIndex_(i).setWidth_(col_w)
         lines = [top, grid]
-        extra = []
+        extra = ui.hero_extra(m) if ui else []
         resettable = [s for s in m.seats if s.resets and s.unavailable and s.state != 'disabled'] \
-            if m.reporting else []
+            if m.reporting and not ui else []
         if resettable:   # a link to the seat, where Redeem Reset… lives
             first = resettable[0]
             extra.append(link_button(f'Reset available for {", ".join(s.label for s in resettable)} ›',
@@ -1442,13 +1616,10 @@ class OverviewPane(Pane):
         return group([box])
 
     @staticmethod
-    def status_pill(m: mb.Model):
-        if m.status == 'regular':
-            return 'Regular', mb.C.green_text, lambda: mb.C.soft(mb.C.green(), 0.16)
-        if m.status == 'reserve':
-            return 'Reserve', mb.C.red_text, lambda: mb.C.soft(mb.C.red(), 0.16)
-        word = {'allout': 'All out', 'down': 'Down', 'stale': 'Stale', 'empty': 'No seats'}.get(m.status, 'No data')
-        return word, mb.C.secondary, lambda: mb.C.wash(0.08)
+    def status_pill(m: mb.Model, pool: str = 'codex'):
+        """The popover's pill (mb.pool_pill): the pool's colour for Regular, red for Reserve, All out and Credits."""
+        word, _fg, _bg = mb.pool_pill(m)
+        return word, (lambda: mb.pool_pill(m)[1]), (lambda: mb.pool_pill(m)[2])   # resolved when drawn
 
     @staticmethod
     def facts(m: mb.Model):
@@ -1462,8 +1633,7 @@ class OverviewPane(Pane):
                      f'{"s" if len(m.reserve_seats) != 1 else ""}', label_c),
                     ('Next back', '—', NSColor.secondaryLabelColor())]
         serving = m.serving.label if m.serving and m.serving_now else 'Nothing available'
-        serving_c = (mb.C.red_text() if m.status == 'reserve' else label_c) if m.serving_now else \
-            NSColor.secondaryLabelColor()
+        serving_c = (mb.C.red_text() if m.hot else label_c) if m.serving_now else NSColor.secondaryLabelColor()
         ready = f'{m.regular_ready} of {m.regular_total} ready' if m.regular_total else 'None'
         if not m.reserve_seats:
             reserve = 'None'
@@ -1482,24 +1652,36 @@ class OverviewPane(Pane):
                 ('Reserve', reserve, label_c), ('Next back', nxt, label_c)]
 
     def seat_row(self, seat: mb.Seat, m: mb.Model):
+        """One seat: its bars (with its scoped caps) and, on an add-on pool's side, its own lines (why it is parked,
+        its credits: PoolUI.seat_detail_views)."""
         inner = GROUP_W - 2 * ROW_X
+        ui = pool_ui(m.pool)
         left, right = seat_title_row(seat, m)
-        parts = [hstack(left, right, spacing=7), padded(seat_meters(seat, m, inner - 20), 0, 20, 0, 0)]
+        parts = [hstack(left, right, spacing=7),
+                 padded(seat_meters(seat, m, inner - 20, scoped_windows(seat)), 0, 20, 0, 0)]
+        if ui is not None:
+            parts += ui.seat_detail_views(seat, m)
+        ended = ui.sign_in_ended_text if ui else mb.SIGN_IN_ENDED
         if seat.state == 'blocked':
             parts.append(padded(label(f'Re-login needed · {seat.detail or "needs attention"}', 11,
                                       color=mb.C.red_text(), middle=True), 0, 20, 0, 0))
         elif seat.sign_in_soon:   # still served on its access token, for up to a day
-            parts.append(padded(label(f'Re-login soon · {mb.SIGN_IN_ENDED}', 11,
+            parts.append(padded(label(f'Re-login soon · {ended}', 11,
                                       color=mb.C.orange_text(), middle=True), 0, 20, 0, 0))
         v = vstack(parts, spacing=7, insets=(11, ROW_X, 12, ROW_X))
         if seat.serving and m.serving_now:
-            v.setToolTip_(S('New threads land on this seat'))
+            v.setToolTip_(S(ui.serving_tip if ui else 'New threads land on this seat'))
         return v
 
     @staticmethod
-    def footer(m: mb.Model) -> str:
+    def footer(m: mb.Model, pool: str = 'codex') -> str:
         updated = f'Updated {mb.fmt_age(m.age)}' if m.age is not None else 'Not updated yet'
-        return f'{updated}. The headline weighs each seat by its size: Plus and Team 1×, Business 5×, Pro 20×.'
+        total = mb.total_text(m)   # the pool's size, as the popover's summary line starts ('31× total')
+        weighs = f'{total}; the headline weighs' if total else 'The headline weighs'
+        ui = pool_ui(pool)
+        if ui is not None:
+            return ui.overview_footer(updated, weighs)
+        return f'{updated}. {weighs} each seat by its size: Plus and Team 1×, Business 5×, Pro 20×.'
 
 
 # -- Seats ------------------------------------------------------------------------------------------------
@@ -1555,29 +1737,43 @@ class SeatsPane(Pane):
 
     def __init__(self, app):
         super().__init__(app)
-        self.selected: str | None = None   # seat file name
+        self.picked = {p: None for p in POOLS}   # pool -> the selected seat's file name
+
+    @property
+    def selected(self) -> str | None:
+        return self.picked[self.pool]
+
+    @selected.setter
+    def selected(self, value: str | None):
+        self.picked[self.pool] = value
 
     def build(self):
-        m = self.store.model()
+        ui = self.ui
+        m = self.store.model(self.pool)
         k = self.keep
+        out = [self.switcher()]
+        if ui is not None and not self.store.installed(self.pool):
+            return out + [ui.setup_state(self.app, k)]
         if not m.seats:
-            return [empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
-                                'Each ChatGPT account you add becomes a seat. When one hits its usage limit, the '
-                                'next one picks up the same thread.',
-                                [button('Add a ChatGPT Account…', lambda _: self.app.open_setup('setup-accounts'), k,
-                                        primary=True)])]
+            if ui is not None:
+                return out + [ui.empty_state(self.app, k, 'seats')]
+            return out + [empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
+                                      'Each ChatGPT account you add becomes a seat. When one hits its usage limit, '
+                                      'the next one picks up the same thread.',
+                                      [button('Add a ChatGPT Account…',
+                                              lambda _: self.app.open_setup('setup-accounts'), k, primary=True)])]
         names = [s.name or s.label for s in m.seats]
         if self.selected not in names:
             self.selected = names[0]
         seat = m.seats[names.index(self.selected)]
         rows = [self.list_row(s, m) for s in m.seats]
-        add = hstack([secondary('In fill order. Balancing sets the order and the reserve.', 11,
-                                wrap=GROUP_W - 2 * ROW_X - 130)],
-                     [button('Add Account…', lambda _: self.app.open_setup('setup-accounts'), k)],
+        add = hstack([secondary(ui.seats_hint if ui else 'In fill order. Balancing sets the order and the reserve.',
+                                11, wrap=GROUP_W - 2 * ROW_X - 130)],
+                     [button('Add Account…', lambda _: self.app.open_setup('setup-accounts', pool=self.pool), k)],
                      insets=(8, ROW_X, 8, ROW_X - 2), min_h=40)
-        return [section(group(rows + [add])),
-                section(self.details(seat, m), seat.label,
-                        footer='Changes run codexpool commands and take effect at once.')]
+        details = ui.seat_details(self, seat, m) if ui else self.details(seat, m)
+        return out + [section(group(rows + [add])),
+                      section(details, seat.label, footer='Changes run codexpool commands and take effect at once.')]
 
     def list_row(self, seat: mb.Seat, m: mb.Model):
         key = seat.name or seat.label
@@ -1691,15 +1887,19 @@ class SeatsPane(Pane):
         """Where the seat is in the fill order, as a row that opens Balancing (where the order and the reserve are
         set)."""
         regular = [s for s in m.seats if not s.reserve]
+        unit = self.unit
         if seat.reserve:
-            sub = 'Reserve: used only when every other seat is out.'
+            sub = f'Reserve: used only when every other {unit} is out.'
         else:
             pos = next((i for i, s in enumerate(regular, 1) if (s.name or s.label) == (seat.name or seat.label)), 0)
-            how = 'soonest reset first' if self.store.balancing() == 'reset' else 'in your order'
-            sub = f'{ordinal(pos)} of {len(regular)} regular seat{"s" if len(regular) != 1 else ""}, {how}.'
+            how = 'soonest reset first' if self.store.balancing(self.pool) == 'reset' else 'in your order'
+            sub = f'{ordinal(pos)} of {len(regular)} regular {unit}{"s" if len(regular) != 1 else ""}, {how}.'
+        return self.balancing_link('Fill order', sub)
+
+    def balancing_link(self, title: str, sub: str):
         chevron = symbol_view('chevron.right', 11, NSColor.tertiaryLabelColor(), NSFontWeightSemibold)
-        r = form_row('Fill order', sub, [secondary('Balancing', 12), chevron])
-        return clickable(r, lambda: self.app.show_pane('balancing'), 'Fill order: open Balancing')
+        r = form_row(title, sub, [secondary('Balancing', 12), chevron])
+        return clickable(r, lambda: self.app.show_pane('balancing'), f'{title}: open Balancing')
 
     def confirm_reset(self, seat: mb.Seat):
         n = seat.resets
@@ -1712,11 +1912,14 @@ class SeatsPane(Pane):
                                       f'{seat.label} is back to full usage'))
 
     def confirm_remove(self, seat: mb.Seat):
-        self.app.ask(f'Remove {seat.label} from the pool?',
-                     f'This deletes the seat file {seat.name}. The ChatGPT login itself is not revoked, and you can '
-                     'add the account again later.', 'Remove',
-                     lambda: self.run(['remove', seat.name or seat.label, '--yes'], f'Removing {seat.label}…',
-                                      f'{seat.label} removed'), destructive=True)
+        ui = self.ui
+        text = ui.remove_text(seat) if ui else (
+            f'This deletes the seat file {seat.name}. The ChatGPT login itself is not revoked, and you can '
+            'add the account again later.')
+        self.app.ask(f'Remove {seat.label} from the {ui.title + " " if ui else ""}pool?', text,
+                     'Remove', lambda: self.run(self.cmd('remove', seat.name or seat.label, '--yes'),
+                                                f'Removing {seat.label}…', f'{seat.label} removed'),
+                     destructive=True)
 
 
 # -- Balancing --------------------------------------------------------------------------------------------
@@ -1744,20 +1947,38 @@ class BalancingPane(Pane):
         self.want_mode = None      # the mode clicked here that status.json doesn't show yet
         self.want_reserve = {}     # seat key -> the reserve checkbox clicked here that status.json doesn't show yet
         self.commit_timer = None
+        self.pending_pool = 'codex'   # the pool self.pending belongs to
+
+    def pool_changed(self):
+        super().pool_changed()
+        if self.commit_timer is not None:   # an order still being clicked together: save it for its own pool
+            self.commit_timer.invalidate()
+            self.commit_order()
+        self.want_mode, self.want_reserve = None, {}
 
     def build(self):
-        m = self.store.model()
+        ui = self.ui
+        m = self.store.model(self.pool)
+        out = [self.switcher()]
+        if ui is not None and not self.store.installed(self.pool):
+            return out + [ui.setup_state(self.app, self.keep)]
         if not m.seats:
-            return [empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
-                                'Add your ChatGPT accounts first. Balancing decides which seat new threads go to.',
-                                [button('Add a ChatGPT Account…', lambda _: self.app.open_setup('setup-accounts'),
-                                        self.keep, primary=True)])]
-        mode = self.store.balancing()
+            if ui is not None:
+                return out + [ui.empty_state(self.app, self.keep, 'balancing')]
+            return out + [empty_state('person.crop.circle.badge.plus', 'blue', 'No seats yet',
+                                      'Add your ChatGPT accounts first. Balancing decides which seat new threads go '
+                                      'to.', [button('Add a ChatGPT Account…',
+                                                     lambda _: self.app.open_setup('setup-accounts'), self.keep,
+                                                     primary=True)])]
+        mode = self.store.balancing(self.pool)
         if self.want_mode == mode:
             self.want_mode = None
         mode = self.want_mode or mode   # show the choice just made until status.json agrees
         busy = bool(self.note and self.note[0] == 'busy')
-        return [self.mode_section(mode, busy), self.order_section(m, mode, busy), self.reserve_section(m, busy)]
+        out += [self.mode_section(mode, busy), self.order_section(m, mode, busy), self.reserve_section(m, busy)]
+        if ui is not None:   # the add-on pool's own sections (its usage credits)
+            out += ui.balancing_sections(self, m, busy)
+        return out
 
     def note_for(self, where: str):
         return note_row(self.note_now()) if self.where == where else None
@@ -1766,20 +1987,24 @@ class BalancingPane(Pane):
     def mode_section(self, mode: str, busy: bool):
         k = self.keep
         rows = []
-        for value, title, text in MODES:
+        for value, title, text in (self.ui.modes() if self.ui else MODES):
             r = radio(title, mode == value, lambda _s, v=value: self.set_mode(v), k, enabled=not busy)
             desc = secondary(text, 11, wrap=GROUP_W - 2 * ROW_X - 21)
             rows.append(vstack([r, padded(desc, 0, 21, 0, 0)], spacing=2, full=False, insets=(10, ROW_X, 10, ROW_X)))
         rows.append(self.note_for('mode'))
-        return section(group(rows), 'How the pool picks a seat')
+        return section(group(rows), f'How the pool picks {"an" if self.unit[0] in "aeiou" else "a"} {self.unit}')
 
     def set_mode(self, value: str):
-        if value == (self.want_mode or self.store.balancing()):
+        if value == (self.want_mode or self.store.balancing(self.pool)):
             self.app.rebuild(self)   # the radio clicked again: keep it on
             return
         self.where, self.pending, self.want_mode = 'mode', None, value
-        done = ('New threads now go to the seat that resets soonest' if value == 'reset' else
-                'New threads now follow your order')
+        if self.ui is not None:
+            done, key = self.ui.mode_done(value), self.ui.balancing_key
+        else:
+            done = ('New threads now go to the seat that resets soonest' if value == 'reset' else
+                    'New threads now follow your order')
+            key = 'balancing'
 
         def then(r: Result):
             if r.ok:
@@ -1787,7 +2012,7 @@ class BalancingPane(Pane):
             else:
                 self.forget_mode()
 
-        self.run(['set', 'balancing', value], 'Saving…', done, then=then, settled=self.forget_mode)
+        self.run(['set', key, value], 'Saving…', done, then=then, settled=self.forget_mode)
 
     def forget_mode(self):
         """The command failed, or the guard pass after it was read: status.json is the truth again."""
@@ -1799,7 +2024,7 @@ class BalancingPane(Pane):
     def regular_order(self, m: mb.Model) -> list:
         """The regular seats in fill order: status.json's, or the one set here that it doesn't show yet."""
         regular = [s for s in m.seats if not s.reserve]
-        if self.pending:
+        if self.pending and self.pending_pool == self.pool:
             rank = {key: i for i, key in enumerate(self.pending)}
             regular.sort(key=lambda s: rank.get(seat_key(s), len(rank)))
         return regular
@@ -1810,15 +2035,16 @@ class BalancingPane(Pane):
         rows = [self.order_row(i, s, m, len(regular), reset, busy) for i, s in enumerate(regular)]
         rows += [self.reserve_order_row(s, m) for s in m.reserve_seats]
         rows.append(self.note_for('order'))
-        if reset:
+        if self.ui is not None:
+            footer = self.ui.order_footer(reset)
+        elif reset:
             footer = ('Re-sorted every minute by weekly reset. Seats without usage data follow in your order, '
                       'which comes back when you switch to “Your order”.')
-            right = secondary('Updates itself', 11)
         else:
             footer = ('New threads go to the first seat that has quota left. Threads already running stay on their '
                       'seat until it runs out.')
-            right = secondary('First to last', 11)
-        return section(group(rows), 'Seat order', footer=footer, header_right=right)
+        right = secondary('Updates itself' if reset else 'First to last', 11)
+        return section(group(rows), f'{self.unit.title()} order', footer=footer, header_right=right)
 
     def seat_left(self, seat: mb.Seat, m: mb.Model, badge):
         dim = not m.reporting or seat.unavailable
@@ -1826,8 +2052,9 @@ class BalancingPane(Pane):
         if seat.plan:
             left.append(plan_pill(seat.plan))
         if seat.serving and m.serving_now:
-            left.append(pill('Serving', mb.C.red_text if seat.reserve else mb.C.green_text,
-                             (lambda: mb.C.soft(mb.C.red())) if seat.reserve else (lambda: mb.C.soft(mb.C.green()))))
+            hot = seat.reserve or seat.spending
+            left.append(pill('Serving', mb.C.red_text if hot else mb.C.green_text,
+                             (lambda: mb.C.soft(mb.C.red())) if hot else (lambda: mb.C.soft(mb.C.green()))))
         elif seat.state not in (mb.READY, mb.SERVING):
             text, fg, bg = state_style(seat, m)
             left.append(pill(text, fg, bg) if bg is not None else label(text, 11, NSFontWeightMedium, color=fg()))
@@ -1855,17 +2082,17 @@ class BalancingPane(Pane):
         badge = symbol_view('arrow.down.to.line', 11, NSColor.tertiaryLabelColor(), NSFontWeightSemibold, box=20)
         left = self.seat_left(seat, m, badge)
         left.insert(3 if seat.plan else 2, pill('Reserve', mb.C.secondary, lambda: mb.C.wash(0.07)))
-        return hstack(left, [secondary('Last, when every other seat is out', 11)], spacing=8,
+        return hstack(left, [secondary(f'Last, when every other {self.unit} is out', 11)], spacing=8,
                       insets=(7, ROW_X, 7, ROW_X), min_h=40)
 
     def move(self, i: int, d: int):
-        m = self.store.model()
+        m = self.store.model(self.pool)
         keys = [seat_key(s) for s in self.regular_order(m)]
         j = i + d
         if not 0 <= j < len(keys):
             return
         keys[i], keys[j] = keys[j], keys[i]
-        self.pending, self.where = keys, 'order'
+        self.pending, self.pending_pool, self.where = keys, self.pool, 'order'
         if self.note and self.note[0] != 'busy':
             self.note = None
         self.app.rebuild(self)
@@ -1876,8 +2103,8 @@ class BalancingPane(Pane):
 
     def commit_order(self):
         self.commit_timer = None
-        keys = self.pending
-        m = self.store.model()
+        keys, pool = self.pending, self.pending_pool
+        m = self.store.model(pool)
         if not keys or keys == [seat_key(s) for s in m.seats if not s.reserve]:
             self.pending = None
             self.app.rebuild(self)
@@ -1888,12 +2115,13 @@ class BalancingPane(Pane):
 
         def finished(r: Result):
             if r.ok:
-                self.say('ok', f'New threads now go to {first} first')
+                self.say('ok', f'New {getattr(pool_ui(pool), "session_word", "threads")} now go to {first} first')
                 self.app.after_change(lambda: self.settled(keys))
             else:
                 self.pending = None
                 self.say('error', r.message())
-        self.app.run(['order', *keys], finished)
+        ui = pool_ui(pool)
+        self.app.run((list(ui.command_prefix) if ui else []) + ['order', *keys], finished)
 
     def settled(self, keys: list):
         """The guard pass after `codexpool order`: status.json has the order now."""
@@ -1917,9 +2145,12 @@ class BalancingPane(Pane):
                            lambda sender, s=seat: self.set_reserve(s, sender.state() == 1), k, enabled=not busy)
             rows.append(hstack(left, [box], spacing=8, insets=(7, ROW_X, 7, ROW_X), min_h=38))
         rows.append(self.note_for('reserve'))
-        return section(group(rows), 'Reserve',
-                       footer='The reserve is used only when every other seat is out; the menu bar turns red while '
-                              'it serves. Your biggest seat, such as a Pro 20× plan, makes a good reserve.')
+        if self.ui is not None:
+            footer = self.ui.reserve_footer
+        else:
+            footer = ('The reserve is used only when every other seat is out; the menu bar turns red while it serves. '
+                      'Your biggest seat, such as a Pro 20× plan, makes a good reserve.')
+        return section(group(rows), 'Reserve', footer=footer)
 
     def set_reserve(self, seat: mb.Seat, on: bool):
         key = seat_key(seat)
@@ -1930,8 +2161,8 @@ class BalancingPane(Pane):
             if self.want_reserve.pop(key, None) is not None:
                 self.app.rebuild(self)
 
-        self.run(['reserve', key] + ([] if on else ['--off']), f'Updating {seat.label}…',
-                 f'{seat.label} is {"now the reserve: used last" if on else "a regular seat again"}',
+        self.run(self.cmd('reserve', key, *([] if on else ['--off'])), f'Updating {seat.label}…',
+                 f'{seat.label} is {"now the reserve: used last" if on else f"a regular {self.unit} again"}',
                  then=lambda r: None if r.ok else forget(), settled=forget)
 
 
@@ -1942,7 +2173,43 @@ LANE_STATE = {   # member state from `lane list` -> (label, colour role)
     'cooldown': ('Cooling down', 'orange'), 'exhausted': ('Out', 'orange'), 'disabled': ('Off', 'grey'),
     'no key': ('No key', 'red'), 'bridge down': ('Bridge down', 'red'), 'not in bridge': ('Not in bridge', 'red'),
     'missing': ('Not signed in', 'red'), 'blocked': ('Blocked', 'red'), 'unknown': ('Unknown', 'grey'),
+    # an engine member (an add-on's pool as a read-only lane): its states come from the add-on (PoolUI.settings_loaded)
 }
+
+ENGINE_STATE = {}   # `lane providers` detail of an engine provider (before its ': codexpool …' hint) -> plain words
+ENGINE_HINT = {}    # ... and what to do, for a member row's tooltip (both filled by the add-on)
+ENGINE_COPY = {     # the Lanes pane's words for an engine provider the add-on doesn't name (PoolUI.lane_copy)
+    'provider_line': 'A read-only engine. ', 'provider_ready': 'Engine accepted.',
+    'provider_unready': 'Accept the engine once the lane is saved.', 'model_line': 'Type the model id the engine serves.',
+    'credential_sub': 'Save the lane, then Credentials → Accept Engine… runs one read-only probe turn and records the '
+                      'engine version.',
+    'no_member_tip': 'Add a member on this engine to a lane first; accepting probes that lane’s engine.',
+    'row_state': 'read-only engine', 'accept_title': 'Accept the engine?',
+    'accept_body': 'codexpool runs one read-only probe turn through the engine and records its exact version. Do it '
+                   'again after an update.',
+    'accept_sheet': 'Accepting the engine', 'accept_sheet_sub': 'Output from codexpool lane apply --accept-engine.',
+    'accepted': 'Engine accepted. Start a new Codex thread to use the lane.',
+    'demo_model': ('model-id', ''),   # the lanes-model-engine snapshot's Add Model sheet
+}
+
+
+def lane_copy(pid: str) -> dict:
+    """The Lanes pane's words for an engine provider: the add-on's for its own provider ids, else ENGINE_COPY."""
+    for ui in mb.POOL_UI.values():
+        if pid in getattr(ui, 'lane_provider_ids', ()):
+            return {**ENGINE_COPY, **ui.lane_copy(pid)}
+    return ENGINE_COPY
+
+
+def engine_state_text(detail: str) -> str:
+    """'untested engine: codexpool lane apply --accept-engine' -> 'Not accepted yet'."""
+    state = (detail or '').split(':', 1)[0].strip()
+    return ENGINE_STATE.get(state) or plain_detail(detail) or 'Not ready'
+
+
+def member_line(p: Provider, model: str) -> str:
+    """'xAI · grok-4.7-build-fast'; an engine member says so: '<engine> · <model> · read-only'."""
+    return f'{p.title} · {model}' + (' · read-only' if p.needs == 'engine' else '')
 
 
 def state_pill(state: str):
@@ -1982,12 +2249,13 @@ def test_view(test: LaneTest | None, now: dt.datetime, never: str = 'Never teste
 class Credential:
     """A row in the Lanes pane's Credentials: a provider's sign-in or key, or a responses member's own key."""
     title: str
-    needs: str                 # login | key
+    needs: str                 # login | key | engine
     key_name: str | None       # for needs == key
     ready: bool | None
     uses: list                 # the lanes that need it
     detail: str = ''
     key_title: str = ''        # what the Add Key sheet calls the key ('' = title)
+    provider: str = ''         # the provider's id (an engine's words come from its add-on: lane_copy)
 
 
 CLI_HINT = re.compile(r'\s*\((?:codexpool|check the key)[^)]*\)|:\s*codexpool\s.*$')
@@ -2000,9 +2268,9 @@ def plain_detail(text: str) -> str:
     return d[:1].upper() + d[1:]
 
 
-def infer_ready(pid: str, lanes: list) -> bool | None:
-    """Whether a provider is signed in / has its key, from its members' states in `lane list` (for a codexpool
-    without `lane providers`)."""
+def infer_ready(pid: str, lanes: list, needs: str = '') -> bool | None:
+    """Whether a provider is signed in / has its key / has its engine accepted, from its members' states in
+    `lane list` (for a codexpool without `lane providers`)."""
     states = {m.state for lane in lanes for m in lane.members if m.provider == pid}
     if not states:
         return None
@@ -2010,6 +2278,8 @@ def infer_ready(pid: str, lanes: list) -> bool | None:
         if states & {'ready', 'active', 'cooldown', 'exhausted'}:
             return True
         return False if states & {'missing', 'blocked', 'disabled'} else None
+    if needs == 'engine':
+        return 'engine ok' in states
     return False if 'no key' in states else True
 
 
@@ -2026,10 +2296,10 @@ def credentials(store: Store) -> list:
         if p.id == 'responses':
             continue
         uses = used.get(p.id, [])
-        ready = p.ready if p.ready is not None else infer_ready(p.id, lanes)
+        ready = p.ready if p.ready is not None else infer_ready(p.id, lanes, p.needs)
         if ready or uses:
-            out.append(Credential(p.title, 'login' if p.needs == 'login' else 'key', p.key_name, ready, uses,
-                                  p.detail))
+            out.append(Credential(p.title, p.needs if p.needs in ('login', 'engine') else 'key', p.key_name, ready,
+                                  uses, p.detail, provider=p.id))
     title = store.provider('responses').title
     for lane in lanes:
         for mem in lane.members:
@@ -2113,12 +2383,15 @@ class LanesPane(Pane):
         return vstack([head, group(rows)], spacing=7)
 
     def member_row(self, i: int, mem: Member):
+        p = self.store.provider(mem.provider)
         names = vstack([label(mem.name, 13, NSFontWeightMedium),
-                        secondary(f'{self.store.provider(mem.provider).title} · {mem.model}', 11)], spacing=2,
-                       full=False)
-        return hstack([number_badge(i), names], [test_view(mem.test, self.store.clock(), short=True),
-                                                 state_pill(mem.state)],
-                      spacing=10, insets=(9, ROW_X, 9, ROW_X), min_h=48)
+                        secondary(member_line(p, mem.model), 11)], spacing=2, full=False)
+        row = hstack([number_badge(i), names], [test_view(mem.test, self.store.clock(), short=True),
+                                                state_pill(mem.state)],
+                     spacing=10, insets=(9, ROW_X, 9, ROW_X), min_h=48)
+        if p.needs == 'engine' and mem.state in ENGINE_HINT:   # what the state pill asks for
+            row.setToolTip_(S(ENGINE_HINT[mem.state]))
+        return row
 
     # -- credentials -----------------------------------------------------------------------------------
     def credentials_section(self, busy: bool):
@@ -2129,6 +2402,18 @@ class LanesPane(Pane):
                 state = {True: 'Signed in', False: 'Not signed in', None: 'Not checked yet'}[c.ready]
                 act = button('Sign In Again…' if c.ready else 'Sign In…',
                              lambda _: self.app.sign_in_xai(done=self.signed_in), k, enabled=not busy)
+            elif c.needs == 'engine':   # an add-on's pool as a read-only engine: accepted once, by version
+                copy = lane_copy(c.provider)
+                state = {True: 'Engine accepted', False: engine_state_text(c.detail), None: 'Not checked yet'}[c.ready]
+                act = button('Accept Again…' if c.ready else 'Accept Engine…',
+                             lambda _, pid=c.provider: self.confirm_accept_engine(pid), k,
+                             enabled=not busy and bool(c.uses))
+                if not c.uses:
+                    act.setToolTip_(S(copy['no_member_tip']))
+                uses = f'used by {", ".join(c.uses)}' if c.uses else 'not used by a lane yet'
+                rows.append(form_row(c.title, f'{state} · {copy["row_state"]} · {uses}', act,
+                                     leading=dot(mb.C.green if c.ready else mb.C.orange if c.uses else mb.C.grey)))
+                continue
             else:
                 state = {True: 'Key saved', False: 'No key yet', None: 'Not checked yet'}[c.ready]
                 act = button('Replace Key…' if c.ready else 'Add Key…',
@@ -2161,6 +2446,22 @@ class LanesPane(Pane):
     def key_saved(self, title: str):
         self.where = 'credentials'
         self.say('ok', f'Saved the {title} key. Apply lanes so the bridge reads it.')
+        self.store.fetch_providers()
+        self.store.fetch_lanes()
+
+    def confirm_accept_engine(self, pid: str = ''):
+        """`codexpool lane apply --accept-engine`: one read-only probe turn through the engine's pool, then its exact
+        version is accepted (docs/LANES.md, Engine members). It streams into a sheet like a lane test."""
+        copy = lane_copy(pid)
+        self.app.ask(copy['accept_title'], copy['accept_body'], 'Accept',
+                     lambda: self.app.stream_sheet(copy['accept_sheet'], ['lane', 'apply', '--accept-engine'],
+                                                   lambda r: self.engine_accepted(r, pid),
+                                                   sub=copy['accept_sheet_sub']))
+
+    def engine_accepted(self, r: Result, pid: str = ''):
+        self.where = 'credentials'
+        if r.ok:
+            self.say('ok', lane_copy(pid)['accepted'])
         self.store.fetch_providers()
         self.store.fetch_lanes()
 
@@ -2540,6 +2841,8 @@ class SidebarHeader(NSView):
     """The top of the sidebar: the app icon, the wordmark and one line of status (clicks open Overview)."""
     line = ''
     line_color = None
+    line2 = ''           # the add-on pool's line, when it is installed
+    line2_color = None
     on_click = None
 
     def isFlipped(self):
@@ -2557,24 +2860,40 @@ class SidebarHeader(NSView):
         draw_app_icon(38, shadow=False)
         NSGraphicsContext.restoreGraphicsState()
         tf, sf = mb.font(13, NSFontWeightSemibold), mb.font(11)
-        y = (b.size.height - mb.line_height(tf) - mb.line_height(sf)) / 2
+        lines = [(self.line, self.line_color)] + ([(self.line2, self.line2_color)] if self.line2 else [])
+        y = (b.size.height - mb.line_height(tf) - len(lines) * mb.line_height(sf)) / 2
         mb.draw_text('codexpool', 54, y, tf, mb.C.label(), width=b.size.width - 64)
-        mb.draw_text(self.line, 54, y + mb.line_height(tf), sf, (self.line_color or mb.C.secondary)(),
-                     width=b.size.width - 64)
+        y += mb.line_height(tf)
+        for text, color in lines:
+            mb.draw_text(text, 54, y, sf, (color or mb.C.secondary)(), width=b.size.width - 64)
+            y += mb.line_height(sf)
 
     def mouseDown_(self, event):
         if self.on_click is not None:
             self.on_click('overview')
 
 
-def sidebar_status(m: mb.Model):
-    """(line, colour function) under the wordmark."""
+def sidebar_status(m: mb.Model, prefix: str = '', unit: str = 'seat'):
+    """(line, colour function) under the wordmark, coloured like the menu bar number; prefix names the pool when
+    both are installed."""
+    color = lambda: mb.headline_text(m)   # noqa: E731 (resolved when drawn, for the view's appearance)
     if m.status in ('regular', 'reserve') and m.headline is not None:
         who = m.serving.label if m.serving else ''
-        return (f'{mb.fmt_pct(m.shown(m.headline))} {m.word} · {who}',
-                mb.C.red_text if m.status == 'reserve' else mb.C.green_text)
-    return ({'allout': 'Every seat is out', 'down': 'Pool is down', 'stale': 'Not reporting',
-             'missing': 'Not reporting', 'empty': 'No seats yet'}.get(m.status, m.status), mb.C.secondary)
+        return f'{prefix}{mb.fmt_pct(m.shown(m.headline))} {m.word} · {who}', color
+    if prefix:   # '<pool> pool is down'
+        return (f'{prefix}pool ' + {'allout': 'is all out', 'down': 'is down', 'stale': 'isn’t reporting',
+                                    'missing': 'isn’t reporting', 'empty': 'is empty'}.get(m.status, m.status), color)
+    return ({'allout': f'Every {unit} is out', 'down': 'Pool is down', 'stale': 'Not reporting',
+             'missing': 'Not reporting', 'empty': f'No {unit}s yet'}.get(m.status, m.status), color)
+
+
+def sidebar_lines(store: Store) -> tuple:
+    """(line, colour, line2, colour2): the Codex pool, and the add-on's pool once it is installed."""
+    second = POOLS[1] if len(POOLS) > 1 and store.installed(POOLS[1]) else None
+    if second is None:
+        return (*sidebar_status(store.model()), '', None)
+    return (*sidebar_status(store.model(), 'Codex '),
+            *sidebar_status(store.model(second), f'{POOL_TITLES[second]} ', pool_noun(second)))
 
 
 class SettingsView:
@@ -2653,9 +2972,9 @@ class SettingsView:
         for key, item in self.items.items():
             item.selected = key == self.current
             item.setNeedsDisplay_(True)
-        m = self.app.store.model()
-        self.header.line, self.header.line_color = sidebar_status(m)
-        self.header.setNeedsDisplay_(True)
+        h = self.header
+        h.line, h.line_color, h.line2, h.line2_color = sidebar_lines(self.app.store)
+        h.setNeedsDisplay_(True)
         self.title.setStringValue_(S(pane.title))
         self.win.setTitle_(S(f'{pane.title} · codexpool'))
         y = 0.0 if reset_scroll else self.scroll.contentView().bounds().origin.y
@@ -2934,7 +3253,7 @@ class LaneEditor(Sheet):
         k = self.keep
         title = d.name or d.model
         names = vstack([label(title, 13, NSFontWeightMedium),
-                        secondary(f'{self.app.store.provider(d.provider).title} · {d.model}', 11)],
+                        secondary(member_line(self.app.store.provider(d.provider), d.model), 11)],
                        spacing=2, full=False)
         right = [state_pill(d.state) if d.state else pill('New', mb.C.blue_text,
                                                           lambda: mb.C.soft(NSColor.systemBlueColor()))]
@@ -3150,8 +3469,8 @@ class AddModelSheet(Sheet):
         pid = self.provider
         p = self.app.store.provider(pid)
         self.models, self.models_note, self.loading = self.app.store.models.get(pid), '', False
-        if self.models is not None or pid == 'responses' or (p.needs == 'key' and p.ready is False):
-            return   # listed already; typed by hand; or it needs its key before it can list anything
+        if self.models is not None or pid == 'responses' or p.needs == 'engine' or (p.needs == 'key' and p.ready is False):
+            return   # listed already; typed by hand (responses, and the engine has no catalog); or it needs its key
         self.loading = True
 
         def done(models, note):
@@ -3211,11 +3530,17 @@ class AddModelSheet(Sheet):
             return 'Your own endpoint. Saving the lane asks for its API key.'
         if p.needs == 'login':
             return {True: 'Signed in.', False: 'Not signed in yet.'}.get(p.ready, 'Signs in with your account.')
+        if p.needs == 'engine':
+            copy = lane_copy(p.id)
+            return copy['provider_line'] + \
+                {True: copy['provider_ready'], False: copy['provider_unready']}.get(p.ready, '')
         return {True: 'Key saved.', False: 'Needs an API key.'}.get(p.ready, 'Uses an API key.')
 
     def model_line(self, p: Provider) -> str:
         if p.id == 'responses':
             return 'Type the model id the endpoint expects.'
+        if p.needs == 'engine':
+            return lane_copy(p.id)['model_line']
         if self.loading:
             return 'Loading the models…'
         if self.models is not None:
@@ -3233,6 +3558,10 @@ class AddModelSheet(Sheet):
 
     def credential_box(self, p: Provider, W: float):
         k = self.keep
+        if p.needs == 'engine':   # accepting needs a lane with the member: after Save, in Credentials
+            icon = symbol_view('checkmark.seal', 13, mb.C.orange_text(), NSFontWeightMedium, box=18)
+            return group([form_row(engine_state_text(p.detail) if p.detail else 'Engine not accepted yet',
+                                   lane_copy(p.id)['credential_sub'], (), leading=icon, width=W)], W)
         if p.needs == 'login':
             title, sub = 'Not signed in', f'Sign in to {p.title} so the pool can serve its models.'
             act = button(f'Sign In to {p.title}…', lambda _: self.app.sign_in_xai(parent=self, done=self.signed_in), k)
@@ -3539,6 +3868,17 @@ class Login:
     switch_note: str = ''      # the sign-in could not point Codex at the pool (switch_problem)
     reserve_done: bool = False
     lines: list = field(default_factory=list)
+    pool: str = 'codex'        # codex: `codexpool login`; an add-on's pool: its own (PoolUI.login_args)
+
+
+@dataclass
+class Install:
+    """An add-on pool's install command (PoolUI.install_command), run from the assistant with its output streaming
+    into the add-on's card (PoolUI.setup_install_card)."""
+    phase: str = 'idle'        # idle | running | done | failed
+    lines: list = field(default_factory=list)
+    job: Job | None = None
+    message: str = ''
 
 
 def first_url(text: str) -> str:
@@ -3571,6 +3911,9 @@ class SetupAssistant:
         self.timer = None
         self.tick_target = target(lambda _t: self.tick(), [])
         self.default_label = ''
+        self.pool = 'codex'        # the Add accounts step's pool: ChatGPT accounts (codex) or the add-on pool's
+        self.install = Install()
+        self.install_text = None   # the text view the install streams into, while it shows
         self.chrome = None         # Google Chrome installed (asked once, when a link first shows)
         self.win, root = make_window(SETUP_W, SETUP_H, 'Set Up codexpool', toolbar=False, resizable=False)
         self.root = root
@@ -3595,7 +3938,7 @@ class SetupAssistant:
         if step in STEPS:
             self.step = step
         if label is not None and self.login.phase in ('idle', 'added', 'again', 'failed', 'expired'):
-            self.login = Login(label=label, priority=priority, relogin=True)
+            self.login = Login(label=label, priority=priority, relogin=True, pool=self.pool)
             self.default_label = label
         self.render()
 
@@ -3608,12 +3951,13 @@ class SetupAssistant:
     def render(self):
         self.keep = []
         self.countdown = None
+        self.install_text = None   # install_card() sets it when the install's output shows
         for v in (self.body, self.bottom):
             if v is not None:
                 v.removeFromSuperview()
         self.dots.setNeedsDisplay_(True)
         body = {'welcome': self.welcome, 'accounts': self.accounts, 'done': self.done}[self.step]()
-        self.body = vstack(body, spacing=16, insets=(0, 0, 0, 0))
+        self.body = vstack([v for v in body if v is not None], spacing=16, insets=(0, 0, 0, 0))
         self.root.addSubview_(self.body)
         self.bottom = self.bottom_bar()
         self.root.addSubview_(self.bottom)
@@ -3668,8 +4012,10 @@ class SetupAssistant:
         elif self.step == 'accounts':
             right.append(button('Back', lambda _: self.go('welcome'), k, enabled=not busy))
             retry = self.login.phase in ('failed', 'expired') and bool(self.login.label)   # Try Again is the default
+            install = not self.app.store.installed(self.pool)                          # so is Install the … Pool
             right.append(button('Continue', lambda _: self.go('done'), k,
-                                primary=self.has_seats() and not busy and not retry, enabled=not busy))
+                                primary=self.has_seats() and not busy and not retry and not install,
+                                enabled=not busy))
         else:
             left.append(button('Open Settings', lambda _: self.app.show_settings(close_setup=True), k))
             right.append(button('Back', lambda _: self.go('accounts'), k))
@@ -3679,7 +4025,21 @@ class SetupAssistant:
         return vstack([rule, bar], spacing=0)
 
     def has_seats(self) -> bool:
-        return bool(self.app.store.model().seats) or self.login.phase in ('added', 'again')
+        st = self.app.store
+        return any(st.installed(p) and st.model(p).seats for p in POOLS) or self.login.phase in ('added', 'again')
+
+    @property
+    def ui(self):
+        """The add-on's PoolUI while the step is on its pool; None for ChatGPT accounts."""
+        return pool_ui(self.pool)
+
+    def set_pool(self, pool: str):
+        if pool in POOLS and pool != self.pool:
+            self.pool = pool
+            if self.login.phase in ('idle', 'failed', 'expired', 'added', 'again'):
+                self.login = Login(pool=pool)
+                self.default_label = ''
+            self.render()
 
     # -- step 1 -----------------------------------------------------------------------------------------
     def welcome(self):
@@ -3687,7 +4047,8 @@ class SetupAssistant:
         icon = canvas(lambda w, h: draw_app_icon(w), 72, 72)
         head = self.heading('Welcome to codexpool',
                             'codexpool pools your ChatGPT accounts behind the Codex app and CLI. When one seat runs '
-                            'out, the next one picks up the same thread.', icon)
+                            'out, the next one picks up the same thread.' +
+                            ''.join(getattr(u, 'welcome_suffix', '') for u in mb.POOL_UI.values()), icon)
         rows = []
         for title, status, detail in doctor_checklist(st.doctor, st.model()):
             name, _ = CHECK_ICON.get(status, CHECK_ICON['unknown'])
@@ -3702,10 +4063,21 @@ class SetupAssistant:
 
     # -- step 2 -----------------------------------------------------------------------------------------
     def accounts(self):
-        m = self.app.store.model()
-        head = self.heading('Add your ChatGPT accounts',
-                            'Each account becomes a seat. Add every account you want Codex to use: personal, work, '
-                            'team or Pro.')
+        st = self.app.store
+        ui = self.ui
+        m = st.model(self.pool)
+        if ui is not None:
+            head = self.heading(*ui.setup_heading)
+        else:
+            head = self.heading('Add your ChatGPT accounts',
+                                'Each account becomes a seat. Add every account you want Codex to use: personal, '
+                                'work, team or Pro.')
+        busy = self.login.phase in ('starting', 'waiting', 'finishing')
+        switch = pool_switcher(self.pool, self.set_pool, self.keep, enabled=not busy,
+                               titles={'codex': 'ChatGPT', **{p: u.account_title for p, u in mb.POOL_UI.items()}})
+        if ui is not None and not st.installed(self.pool):
+            return [head, switch, ui.setup_install_card(self)]
+        unit = self.unit
         seats = list(m.seats)
         if seats:
             rows = []
@@ -3717,19 +4089,90 @@ class SetupAssistant:
                 rows.append(hstack([secondary(f'and {len(seats) - len(shown)} more (see Settings › Seats)', 12)],
                                    insets=(0, ROW_X + 17, 0, ROW_X), min_h=34))
             listing = section(group(rows, SETUP_BODY_W),
-                              f'In the pool ({len(seats)} seat{"s" if len(seats) != 1 else ""})', width=SETUP_BODY_W)
+                              f'In the {ui.title + " " if ui else ""}pool ({len(seats)} {unit}'
+                              f'{"s" if len(seats) != 1 else ""})', width=SETUP_BODY_W)
         else:
             listing = group([hstack([symbol_view('person.crop.circle.badge.questionmark', 16,
                                                  NSColor.secondaryLabelColor()),
-                                     secondary('No seats yet. Add your first account below.', 12)], spacing=10,
+                                     secondary(f'No {unit}s yet. Add your first account below.', 12)], spacing=10,
                                     insets=(12, ROW_X, 12, ROW_X))], SETUP_BODY_W)
-        return [head, listing, self.login_card()]
+        out = [head, switch, listing, self.login_card()]
+        if ui is not None and self.install.phase == 'done':
+            out.insert(2, group([note_row(('ok', ui.installed_note), SETUP_BODY_W)], SETUP_BODY_W))
+        return out
+
+    @property
+    def unit(self) -> str:
+        return pool_noun(self.pool)
+
+    # -- installing the add-on's pool (its card: PoolUI.setup_install_card; the plumbing is here) -----------
+    def install_output(self, width: float, height: float = 150.0):
+        """The install's output so far, in a scrolling monospace box that later lines are appended to."""
+        scroll = auto(NSTextView.scrollableTextView())
+        text = scroll.documentView()
+        text.setEditable_(False)
+        text.setDrawsBackground_(False)
+        scroll.setDrawsBackground_(False)
+        text.setTextContainerInset_((6, 6))
+        scroll.setHasVerticalScroller_(not SNAPSHOT)
+        box = auto(GroupView.alloc().initWithFrame_(((0, 0), (width, height))))
+        box.rows, box.radius = (), 7.0
+        box.addSubview_(scroll)
+        pin(scroll, box, 1, 1, 1, 1)
+        fix(box, width, height)
+        self.install_text = text
+        for ln in self.install.lines:
+            self.append_install(ln)
+        return box
+
+    def append_install(self, line: str):
+        t = self.install_text
+        if t is None:
+            return
+        f = NSFont.monospacedSystemFontOfSize_weight_(10.5, NSFontWeightRegular)
+        t.textStorage().appendAttributedString_(NSAttributedString.alloc().initWithString_attributes_(
+            S(line + '\n'), {NSFontAttributeName: f, NSForegroundColorAttributeName: NSColor.secondaryLabelColor()}))
+        t.scrollToEndOfDocument_(None)
+
+    def start_install(self):
+        if self.install.phase == 'running' or self.ui is None:
+            return
+        pool = self.pool
+        ins = self.install = Install(phase='running')
+
+        def line(text: str):
+            if ins is self.install:
+                ins.lines.append(text)
+                self.append_install(text)
+
+        def done(r: Result):
+            ins.job = None
+            if ins is not self.install or ins.phase != 'running':
+                return   # stopped: already shown
+            if r.ok:
+                ins.phase = 'done'
+                self.app.store.installed_hint.add(pool)
+                self.app.after_change()   # a guard pass writes the pool's status file
+            else:
+                ins.phase, ins.message = 'failed', r.message()
+            self.render()
+        ins.job = Job(list(self.ui.install_command), done, line)
+        self.render()
+
+    def stop_install(self):
+        ins = self.install
+        if ins.job is not None:
+            ins.job.stop()
+        ins.phase, ins.message = 'failed', 'Stopped. Installing again starts over and keeps what is already done.'
+        self.render()
 
     def login_card(self):
         lg, k = self.login, self.keep
         W = SETUP_BODY_W
+        ui = self.ui
+        title = f'Add a {ui.account_title} account' if ui else 'Add a ChatGPT account'
         if lg.phase in ('idle', 'failed', 'expired'):   # the name field
-            field = text_field(lg.label or self.default_label, 230, 'Seat name, e.g. Work or Personal')
+            field = text_field(lg.label or self.default_label, 230, 'e.g. Work or Personal')   # the row says Name
             field.cell().setSendsActionOnEndEditing_(False)   # Return starts the sign-in; leaving the field doesn't
 
             def start(_sender):
@@ -3741,21 +4184,24 @@ class SetupAssistant:
             rows = [hstack([label('Name', 13), field], [go], spacing=10, insets=(10, ROW_X, 10, ROW_X), min_h=44)]
             if lg.phase in ('failed', 'expired'):
                 rows.append(note_row(('error', lg.message)))
-            return section(group(rows, W), 'Add a ChatGPT account', width=W,
-                           footer='You sign in on chatgpt.com in your browser; codexpool never sees your password.')
+            site = ui.sign_in_site if ui else 'chatgpt.com'
+            return section(group(rows, W), title, width=W,
+                           footer=f'You sign in on {site} in your browser; codexpool never sees your password.')
         if lg.phase == 'again':
             rows = [hstack([symbol_view('arrow.triangle.2.circlepath', 16, NSColor.secondaryLabelColor(),
                                         NSFontWeightMedium, box=18),
                             vstack([label(f'That was {lg.label} again', 13, NSFontWeightSemibold),
-                                    secondary('The same ChatGPT account and workspace: its sign-in is refreshed and '
-                                              'nothing was added. For another account, close every private window, '
-                                              'then open the link in a new one.', 11, wrap=W - 200)],
+                                    secondary((ui.same_account_text if ui else
+                                               'The same ChatGPT account and workspace') +
+                                              ': its sign-in is refreshed and nothing was added. For another account, '
+                                              'close every private window, then open the link in a new one.', 11,
+                                              wrap=W - 200)],
                                    spacing=2, full=False)],
                            [button('Add Another…', lambda _: self.reset_login(), k)], spacing=10,
                            insets=(12, ROW_X, 12, ROW_X), min_h=56)]
             if lg.switch_note:
                 rows.append(note_row(('error', lg.switch_note)))
-            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+            return section(group(rows, W), title, width=W)
         if lg.phase == 'added':
             verb = 'Signed in again:' if lg.relogin else 'Added'
             text = f'{verb} {lg.label or lg.seat_file}' + (f' · {lg.plan}' if lg.plan else '')
@@ -3764,27 +4210,28 @@ class SetupAssistant:
             another = button('Add Another…', lambda _: self.reset_login(), k)
             rows = [hstack([symbol_view('checkmark.circle.fill', 18, mb.C.green_text(), NSFontWeightMedium),
                             vstack([label(text, 13, NSFontWeightSemibold),
-                                    secondary('A reserve seat is used last.' if not lg.reserve_done else
-                                              f'{lg.label} is now a reserve seat.', 11, wrap=W - 300)],
+                                    secondary(f'A reserve {self.unit} is used last.'
+                                              if not lg.reserve_done else
+                                              f'{lg.label} is now the reserve.', 11, wrap=W - 300)],
                                    spacing=2, full=False)],
                            [reserve, another], spacing=10, insets=(12, ROW_X, 12, ROW_X), min_h=56)]
             if lg.switch_note:
                 rows.append(note_row(('error', lg.switch_note)))
             if lg.message:
                 rows.append(note_row(('error', lg.message)))
-            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+            return section(group(rows, W), title, width=W)
         if lg.phase == 'finishing':
-            rows = [hstack([spinner(), label(f'Signed in. Adding {lg.label or "the seat"}…', 13,
+            rows = [hstack([spinner(), label(f'Signed in. Adding {lg.label or "the account"}…', 13,
                                              NSFontWeightSemibold)], spacing=8, insets=(12, ROW_X, 12, ROW_X),
                            min_h=48)]
-            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+            return section(group(rows, W), title, width=W)
         # starting / waiting
         who = f'the account for “{lg.label}”' if lg.label else 'the account to add'
-        title = hstack([spinner(), label(f'Sign in as {who}', 13, NSFontWeightSemibold)], spacing=8, cluster=True)
+        heading = hstack([spinner(), label(f'Sign in as {who}', 13, NSFontWeightSemibold)], spacing=8, cluster=True)
         if lg.phase == 'starting':
-            rows = [hstack([title], [button('Cancel', lambda _: self.cancel_login(), k)], spacing=10,
+            rows = [hstack([heading], [button('Cancel', lambda _: self.cancel_login(), k)], spacing=10,
                            insets=(12, ROW_X, 12, ROW_X), min_h=48)]
-            return section(group(rows, W), 'Add a ChatGPT account', width=W)
+            return section(group(rows, W), title, width=W)
         self.countdown = secondary(self.countdown_text(), 11)
         url = label(lg.url, 11, color=NSColor.secondaryLabelColor(), mono=True, middle=True, select=True)
         url.setToolTip_(S(lg.url))
@@ -3800,14 +4247,14 @@ class SetupAssistant:
                              secondary('Copied', 12)], spacing=4, cluster=True)
             copied.setAccessibilityLabel_(S('The sign-in link is on the clipboard'))
         rows = [
-            hstack([title], [self.countdown], spacing=10, insets=(12, ROW_X, 4, ROW_X)),
+            hstack([heading], [self.countdown], spacing=10, insets=(12, ROW_X, 4, ROW_X)),
             padded(secondary('To add a different account than the one your browser is signed in to, use a private '
                              'window.', 12, wrap=W - 2 * ROW_X), 0, ROW_X, 6, ROW_X),
             hstack(buttons, [copied], spacing=8, insets=(4, ROW_X, 8, ROW_X)),
             hstack([url], [link_button('Cancel', lambda _: self.cancel_login(), k)], spacing=10,
                    insets=(4, ROW_X, 10, ROW_X)),
         ]
-        return section(group(rows, W, rules=False), 'Add a ChatGPT account', width=W)
+        return section(group(rows, W, rules=False), title, width=W)
 
     def countdown_text(self) -> str:
         left = max(0, int(self.login.deadline - self.clock()))
@@ -3832,20 +4279,30 @@ class SetupAssistant:
 
     # -- login flow ------------------------------------------------------------------------------------
     def start_login(self, name: str):
+        noun = self.unit
         if not name:
-            self.login = Login(phase='failed', message='Give the seat a name first, e.g. Work or Personal.')
+            self.login = Login(phase='failed', message=f'Give the {noun} a name first, e.g. Work or Personal.')
             self.render()
             return
         if name.startswith('-'):
-            self.login = Login(phase='failed', label=name, message='A seat name can’t start with a dash.')
+            an = 'An' if noun[0] in 'aeiou' else 'A'
+            self.login = Login(phase='failed', label=name, message=f'{an} {noun} name can’t start with a dash.')
             self.render()
             return
         same = self.login.label == name
         pr = self.login.priority if same else None
+        pool = self.pool
         lg = self.login = Login(phase='starting', label=name, priority=pr, relogin=self.login.relogin and same,
-                                before={s.name: s.label for s in self.app.store.model().seats if s.name})
-        # --no-copy: the assistant puts the link on the clipboard itself, and shows that it did
-        args = ['login', name, '--no-open', '--no-copy'] + (['--priority', str(pr)] if pr is not None else [])
+                                before={s.name: s.label for s in self.app.store.model(pool).seats if s.name},
+                                pool=pool)
+        # The assistant puts the link on the clipboard itself, and shows that it did: --no-copy keeps codexpool's
+        # own copy out of it (an add-on's pool says how in PoolUI.login_args, e.g. an environment variable)
+        ui = pool_ui(pool)
+        if ui is not None:
+            args, env = ui.login_args(name, pr)
+        else:
+            args = ['login', name, '--no-open', '--no-copy'] + (['--priority', str(pr)] if pr is not None else [])
+            env = None
 
         def line(text: str):
             if lg is not self.login:
@@ -3876,16 +4333,17 @@ class SetupAssistant:
                 m = re.match(r'seat\s+(\S+?):', seat)
                 lg.seat_file = m.group(1) if m else ''
                 plan = re.search(r'\bplan=(\S+)', seat)
-                lg.phase, lg.plan = 'added', mb.plan_badge(plan.group(1), None) if plan else ''
+                names = ui.plan_names if ui else mb.PLAN_NAMES
+                lg.phase, lg.plan = 'added', mb.plan_badge(plan.group(1), None, names) if plan else ''
                 old = lg.before.get(lg.seat_file)
                 if old is not None and not lg.relogin:
                     # The browser signed in to an account that is already a seat: its login was refreshed, nothing
                     # was added, and `codexpool login` left its name as it was.
                     lg.phase, lg.label = 'again', old
-                lg.switch_note = switch_problem(lg.lines)
+                lg.switch_note = switch_problem(lg.lines) if lg.pool == 'codex' else ''
                 if lg.switch_note:
                     self.switch_note = lg.switch_note
-                elif any('Codex now uses the pool' in ln for ln in lg.lines):
+                elif lg.pool == 'codex' and any('Codex now uses the pool' in ln for ln in lg.lines):
                     self.switch_note = ''
                 self.render()
                 self.app.after_change(lambda: self.fill_plan(lg))
@@ -3895,12 +4353,12 @@ class SetupAssistant:
         def ended(r: Result):
             done(r)
             self.app.login_ended()   # a quit that was waiting for this sign-in can go ahead
-        lg.job = Job(args, ended, line)
+        lg.job = Job(args, ended, line, env=env)
         self.render()
 
     def fill_plan(self, lg: Login):
         """After the guard has seen the new seat: its plan and the size the pool gave it."""
-        seat = next((s for s in self.app.store.model().seats if s.name == lg.seat_file), None)
+        seat = next((s for s in self.app.store.model(lg.pool).seats if s.name == lg.seat_file), None)
         if seat is not None and lg is self.login:
             lg.plan = seat.plan
             self.render()
@@ -3936,11 +4394,11 @@ class SetupAssistant:
         if lg.job:
             lg.job.stop()
         self.stop_timer()
-        self.login = Login(label=lg.label, priority=lg.priority)
+        self.login = Login(label=lg.label, priority=lg.priority, pool=lg.pool)
         self.render()
 
     def reset_login(self):
-        self.login = Login()
+        self.login = Login(pool=self.pool)
         self.default_label = ''
         self.render()
 
@@ -3954,7 +4412,8 @@ class SetupAssistant:
             else:
                 lg.message = r.message()
             self.render()
-        self.app.run(['reserve', lg.seat_file or lg.label], done)
+        ui = pool_ui(lg.pool)
+        self.app.run((list(ui.command_prefix) if ui else []) + ['reserve', lg.seat_file or lg.label], done)
 
     # -- step 3 -----------------------------------------------------------------------------------------
     def done(self):
@@ -3972,17 +4431,26 @@ class SetupAssistant:
         rows = [form_row('Codex app', 'Picks up the pool when it starts.', reopen, width=SETUP_BODY_W)]
         if note is not None:
             rows.append(note)
+        for u in mb.POOL_UI.values():   # the add-on pool's own rows (its launcher, its desktop app)
+            rows += u.setup_done_rows(self)
         tips = group([
             form_row('Settings', 'Seats, lanes, the menu bar display and health checks. Click the menu bar meter, '
                      'then Settings… (⌘,).', (), leading=canvas(lambda w, h: draw_icon_square(0, 0, 22,
                                                                                                'gearshape.fill', 'grey'),
                                                                22, 22), width=SETUP_BODY_W),
-            form_row('Menu bar meter', 'The number is what is left this week across every seat: green while a '
-                     'regular seat serves, red once the reserve takes over, grey when the pool needs attention.', (),
+            form_row('Menu bar meter', 'The number is what is left this week across every seat, in the pool’s own '
+                     'colour while a regular seat serves, red once the reserve takes over, grey when the pool needs '
+                     'attention.' + ''.join(getattr(u, 'meter_tip_suffix', '') for u in mb.POOL_UI.values()), (),
                      leading=canvas(lambda w, h: draw_icon_square(0, 0, 22, 'gauge.with.dots.needle.67percent',
                                                                   'green'), 22, 22), width=SETUP_BODY_W),
         ], SETUP_BODY_W)
         return [head, group(rows, SETUP_BODY_W), tips]
+
+    def desktop_feedback(self, kind, text):
+        """Progress of an add-on's Done-step action (Set Up Pooled Desktop…), in the step's note (None: cancelled or
+        refused)."""
+        self.done_note = (kind, text) if kind else None
+        self.render()
 
     done_note = None
     switch_note = ''   # the last sign-in that tried to point Codex at the pool could not (switch_problem)
@@ -4035,7 +4503,13 @@ def take_request() -> str | None:
         REQUEST_FILE.unlink()
     except OSError:
         return None
-    return pane if fresh and pane in PANES + SETUP_PANES + ('front',) else None
+    return pane if fresh and split_request(pane)[0] in PANES + SETUP_PANES + ('front',) else None
+
+
+def split_request(text: str) -> tuple:
+    """'seats@<pool>' -> ('seats', '<pool>'); 'seats' -> ('seats', None). A launch's --pool travels this way."""
+    pane, _, pool = text.partition('@')
+    return pane, (pool if pool in POOLS else None)
 
 
 def release_single_instance():
@@ -4065,13 +4539,17 @@ class SettingsController(NSObject):
         self.top_sheet = None      # a Lanes sheet on the Settings window (its own sheets hang on it)
         self.quitting = False      # a quit is waiting for a sign-in to finish (NSTerminateLater)
         self.last_status = None
+        self.pool = 'codex'        # the switcher's pool on Overview, Seats and Balancing (remembered)
         return self
 
     # -- construction ----------------------------------------------------------------------------------
     @objc.python_method
-    def configure(self, store: Store, pane: str, height: float = WIN_H):
+    def configure(self, store: Store, pane: str, height: float = WIN_H, pool: str | None = None):
         self.store = store
         self.start_pane = pane
+        if pool not in POOLS and not SNAPSHOT:
+            pool = mb.as_str(NSUserDefaults.standardUserDefaults().stringForKey_(POOL_DEFAULT))
+        self.pool = pool if pool in POOLS else 'codex'
         self.panes = {cls.key: cls(self) for cls in PANE_CLASSES}
         store.listeners.append(self.data_changed)
         self.height = height
@@ -4098,13 +4576,13 @@ class SettingsController(NSObject):
         NSDistributedNotificationCenter.defaultCenter().addObserver_selector_name_object_(
             self, 'showRequested:', SHOW_NOTE, None)
         self.store.poll(force=True)
-        self.last_status = self.store.model().status
+        self.last_status = tuple(self.store.model(p).status for p in POOLS)
         self.store.fetch_version()
         # The default run loop mode only: no rebuild while a pop-up menu is open or the window is being resized.
         timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(POLL_EVERY_S, self, 'tick:',
                                                                                          None, True)
         timer.setTolerance_(2.0)
-        self.open_pane(self.start_pane)
+        self.handle_request(self.start_pane)
         pending = take_request()   # a second launch that came before the observer above was registered
         if pending and pending != self.start_pane:
             self.handle_request(pending)
@@ -4148,6 +4626,9 @@ class SettingsController(NSObject):
         lg = self.setup.login if self.setup is not None else None
         if lg is not None and lg.job is not None and lg.phase in ('starting', 'waiting'):
             lg.job.stop()   # a sign-in still waiting for the browser (once signed in, it is never stopped)
+        ins = self.setup.install if self.setup is not None else None
+        if ins is not None and ins.job is not None:
+            ins.job.stop()   # the pool's install would run on with no reader; running it again finishes it
         if self.stream_job is not None:
             self.stream_job.stop()   # a lane test, and the subagents it started, would run on with no reader
         s = self.top_sheet
@@ -4162,7 +4643,19 @@ class SettingsController(NSObject):
         mb.activate_app()
 
     @objc.python_method
-    def handle_request(self, pane: str):
+    def handle_request(self, request: str):
+        pane, pool = split_request(request)
+        if pool is not None:
+            if pane.startswith('setup-'):
+                setup = self.ensure_setup()
+                if setup.login.phase in ('idle', 'added', 'again', 'failed', 'expired'):
+                    setup.pool = pool   # never away from a sign-in in progress
+            else:
+                self.set_pool(pool, render=False)
+        self.show_request(pane)
+
+    @objc.python_method
+    def show_request(self, pane: str):
         """A pane another launch asked for (the menu bar, the installer, `codexpool gui`). An open Setup assistant
         is only brought forward when the request would move it back to Welcome or away from a sign-in in
         progress: the installer and the menu bar's first run can both ask for it within a minute."""
@@ -4176,7 +4669,8 @@ class SettingsController(NSObject):
 
     def tick_(self, timer):
         self.store.poll()
-        status = self.store.model().status   # it can change with no new file: the guard stopped writing (stale)
+        # it can change with no new file: the guard stopped writing (stale), for either pool
+        status = tuple(self.store.model(p).status for p in POOLS)
         if status != self.last_status:
             self.last_status = status
             self.store.notify('status')
@@ -4216,6 +4710,19 @@ class SettingsController(NSObject):
         self.open_pane(key)
 
     @objc.python_method
+    def set_pool(self, pool: str, render: bool = True):
+        """The pool switcher: Overview, Seats and Balancing show this pool now, and next time too."""
+        if pool not in POOLS or pool == self.pool:
+            return
+        self.pool = pool
+        if not SNAPSHOT:
+            NSUserDefaults.standardUserDefaults().setObject_forKey_(pool, POOL_DEFAULT)
+        for key in ('overview', 'seats', 'balancing'):
+            self.panes[key].pool_changed()
+        if render and self.view is not None:
+            self.view.render(reset_scroll=True)
+
+    @objc.python_method
     def show_seat(self, name: str):
         self.panes['seats'].selected = name
         self.open_pane('seats')
@@ -4228,8 +4735,10 @@ class SettingsController(NSObject):
 
     @objc.python_method
     def open_setup(self, pane: str = 'setup-welcome', step: str | None = None, label: str | None = None,
-                   priority: int | None = None):
+                   priority: int | None = None, pool: str | None = None):
         setup = self.ensure_setup()
+        if pool in POOLS and setup.login.phase in ('idle', 'added', 'again', 'failed', 'expired'):
+            setup.pool = pool
         step = step or {'setup-welcome': 'welcome', 'setup-accounts': 'accounts', 'setup-done': 'done'}.get(pane,
                                                                                                          'accounts')
         if step == 'welcome' and not SNAPSHOT and self.store.doctor is None:
@@ -4262,9 +4771,10 @@ class SettingsController(NSObject):
                         'lanes': ('lanes',), 'providers': ('lanes',), 'version': ('about',)}.get(what, ())
             if self.view.current in relevant and not self.editing():
                 self.view.render()
-            elif what == 'status':   # the sidebar's status line
-                self.view.header.line, self.view.header.line_color = sidebar_status(self.store.model())
-                self.view.header.setNeedsDisplay_(True)
+            elif what == 'status':   # the sidebar's status lines
+                h = self.view.header
+                h.line, h.line_color, h.line2, h.line2_color = sidebar_lines(self.store)
+                h.setNeedsDisplay_(True)
         if self.setup is not None and self.setup.win.isVisible() and what in ('status', 'doctor') and \
                 self.setup.login.phase not in ('waiting', 'starting') and not self.editing(self.setup.win):
             self.setup.render()
@@ -4317,11 +4827,15 @@ class SettingsController(NSObject):
             self.present_sheet(KeySheet(self, key_name, title, replace, parent, done), parent)
 
     @objc.python_method
-    def present_sheet(self, sheet: Sheet, parent: Sheet | None = None):
+    def present_sheet(self, sheet: Sheet, parent: Sheet | None = None, pane: str | None = 'lanes'):
+        """A sheet on the Settings window (on pane, when given) or on another sheet."""
         if parent is not None:
             parent.child = sheet
         else:
-            self.open_pane('lanes')
+            if self.top_sheet is not None:
+                return
+            if pane:
+                self.open_pane(pane)
             self.top_sheet = sheet
         sheet.present()
 
@@ -4339,7 +4853,7 @@ class SettingsController(NSObject):
         return self.view.win if self.view and self.view.win.isVisible() else (self.setup.win if self.setup else None)
 
     @objc.python_method
-    def ask(self, title: str, text: str, button_title: str, then, destructive: bool = False):
+    def ask(self, title: str, text: str, button_title: str, then, destructive: bool = False, cancelled=None):
         alert = NSAlert.alloc().init()
         alert.setMessageText_(S(title))
         alert.setInformativeText_(S(text))
@@ -4353,6 +4867,8 @@ class SettingsController(NSObject):
         def answered(code):
             if code == NSAlertFirstButtonReturn:
                 then()
+            elif cancelled is not None:
+                cancelled()
         win = self.front_window()
         if win is not None:
             alert.beginSheetModalForWindow_completionHandler_(win, answered)
@@ -4360,8 +4876,9 @@ class SettingsController(NSObject):
             answered(alert.runModal())
 
     @objc.python_method
-    def stream_sheet(self, title: str, args: list, finished=None):
-        """Runs a long command (lane test) with its output streaming into a sheet; Stop ends it."""
+    def stream_sheet(self, title: str, args: list, finished=None, sub: str | None = None):
+        """Runs a long command (lane test, accepting an engine) with its output streaming into a sheet; Stop ends
+        it. sub: the line under the title (default: the lane test's)."""
         win = self.front_window()
         w, h = 620.0, 420.0
         sheet = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(((0, 0), (w, h)), NSWindowStyleMaskTitled,
@@ -4371,7 +4888,7 @@ class SettingsController(NSObject):
         keep: list = []
         head_spin = spinner()
         head = label(S(f'{title}…'), 15, NSFontWeightSemibold)
-        sub = secondary('Output from codexpool lane test. This can take a few minutes.', 11)
+        sub = secondary(sub or 'Output from codexpool lane test. This can take a few minutes.', 11)
         scroll = NSTextView.scrollableTextView()
         text = scroll.documentView()
         text.setEditable_(False)
@@ -4523,14 +5040,15 @@ def patch_identity():
     NSProcessInfo.processInfo().setProcessName_('codexpool')
 
 
-def run_app(pane: str):
-    if not claim_single_instance(pane):
+def run_app(pane: str, pool: str | None = None):
+    request = f'{pane}@{pool}' if pool else pane   # a second launch forwards the pool with the pane
+    if not claim_single_instance(request):
         return
     patch_identity()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
     controller = SettingsController.alloc().init()
-    controller.configure(Store(), pane)
+    controller.configure(Store(), request)
     app.setDelegate_(controller)
     AppHelper.runEventLoop(unexpectedErrorAlert=lambda: True)
 
@@ -4610,30 +5128,43 @@ def snapshot(args):
     if now is None and raw is not None:
         generated = mb.parse_time(raw.get('generated_at'))
         now = generated + dt.timedelta(seconds=12) if generated else None
-    store = Store(args.status, now or mb.utcnow(), args.history)   # no --history: no pace line (deterministic)
+    # no --history / --pool-history: no pace line; no --pool-status: no add-on pool (deterministic)
+    store = Store(args.status, now or mb.utcnow(), args.history, args.pool_status, args.pool_history)
     store.load_fixtures(args.doctor, args.lanes, args.providers, args.models)
     controller = SettingsController.alloc().init()
-    controller.configure(store, args.pane, args.height or WIN_H)
+    pool = pool_id(args.pool) or 'codex'
+    controller.configure(store, args.pane, args.height or WIN_H, pool)
+    ext_ui = next((u for u in mb.POOL_UI.values() if args.pane in u.snapshot_panes), None)   # an add-on's state
+    pane, ext_pool = ext_ui.snapshot_pane(args.pane) if ext_ui else (args.pane, None)
 
     sheets = []
-    if args.pane.startswith('setup-'):
+    if pane.startswith('setup-'):
         setup = controller.ensure_setup()
+        setup.pool = ext_pool or pool
         setup.win.setAppearance_(appearance)
-        step = {'setup-welcome': 'welcome', 'setup-done': 'done'}.get(args.pane, 'accounts')
+        step = {'setup-welcome': 'welcome', 'setup-done': 'done'}.get(pane, 'accounts')
+        ui = pool_ui(setup.pool)
+        login = ui.snapshot_login(args.pane, setup) if ui else None   # the add-on's made-up sign-in states
         if args.pane == 'setup-signin':
             setup.snapshot_clock = 1000.0
-            setup.login = Login(phase='waiting', label='Work C', url=DEMO_SIGNIN_URL, deadline=1000.0 + 252, copied=1)
+            setup.login = login or Login(phase='waiting', label='Work C', url=DEMO_SIGNIN_URL,
+                                         deadline=1000.0 + 252, copied=1)
         elif args.pane == 'setup-added':
-            setup.login = Login(phase='added', label='Work C', seat_file='codex-work-c.json', plan='Business 5×')
+            setup.login = login or Login(phase='added', label='Work C', seat_file='codex-work-c.json',
+                                         plan='Business 5×')
         elif args.pane == 'setup-again':
-            setup.login = Login(phase='again', label='Personal', seat_file='codex-personal.json', plan='Plus')
+            setup.login = login or Login(phase='again', label='Personal', seat_file='codex-personal.json', plan='Plus')
         setup.show(step)
         rep, w, h = render_window(setup.win)
     else:
+        if args.seat:
+            controller.panes['seats'].picked[pool] = args.seat
         view = controller.ensure_view()
         view.win.setAppearance_(appearance)
-        view.select('lanes' if args.pane in LANE_SHOTS else args.pane)
-        chain = demo_sheets(controller, args.pane) if args.pane in LANE_SHOTS else []
+        chain = ext_ui.snapshot_prepare(controller, args.pane) if ext_ui else []
+        view.select('lanes' if pane in LANE_SHOTS else pane)
+        if pane in LANE_SHOTS:
+            chain = demo_sheets(controller, pane, args.lane)
         for sheet in chain:
             sheet.win.setAppearance_(appearance)
             sheet.render()
@@ -4649,10 +5180,13 @@ def snapshot(args):
     print(args.snapshot)
 
 
-def demo_sheets(controller, pane: str) -> list:
-    """The sheets a lanes-* snapshot shows, from the fixtures, bottom first."""
+def demo_sheets(controller, pane: str, lane: str | None = None) -> list:
+    """The sheets a lanes-* snapshot shows, from the fixtures, bottom first. lane: the lane the editor opens on
+    (default: the first)."""
     st = controller.store
     lanes = st.lanes or []
+    if lane:
+        lanes = [x for x in lanes if x.name == lane] or lanes
     providers = st.provider_list()
     if pane == 'lanes-key':
         p = next((q for q in providers if q.needs == 'key' and q.key_name and not q.ready), None) or \
@@ -4672,10 +5206,16 @@ def demo_sheets(controller, pane: str) -> list:
     else:
         editor = LaneEditor(controller, lanes[0], lambda *a: None)
     chain = [editor]
-    if pane in ('lanes-model', 'lanes-model-key'):
+    if pane in ('lanes-model', 'lanes-model-key', 'lanes-model-engine'):
         has_xai = any(d.provider == 'xai' for d in editor.members)
-        want = [q for q in providers if q.id not in ('xai', 'responses') and bool(q.ready) == (pane == 'lanes-model')]
+        if pane == 'lanes-model-engine':
+            want = [q for q in providers if q.needs == 'engine']
+        else:
+            want = [q for q in providers if q.id not in ('xai', 'responses') and q.needs != 'engine' and
+                    bool(q.ready) == (pane == 'lanes-model')]
         sheet = AddModelSheet(controller, editor, has_xai, lambda d: None, (want or providers)[0].id)
+        if pane == 'lanes-model-engine':
+            sheet.model, sheet.name = lane_copy(sheet.provider)['demo_model']
         if pane == 'lanes-model' and sheet.models:
             taken = {d.model for d in editor.members if d.provider == sheet.provider}
             m = next((x for x in sheet.models if x.id not in taken), sheet.models[0])
@@ -4693,10 +5233,18 @@ def render_view(view) -> tuple:
     return rep, size.width, size.height
 
 
+def ext_shots() -> tuple:
+    """The add-on's snapshot-only states (PoolUI.snapshot_panes)."""
+    return tuple(pane for u in mb.POOL_UI.values() for pane in getattr(u, 'snapshot_panes', ()))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog='codexpool-settings', description='codexpool Settings window and Setup assistant')
-    p.add_argument('--pane', default='overview', choices=PANES + SETUP_PANES + LANE_SHOTS,
-                   help='the pane or Setup assistant step to open (lanes-*: a Lanes sheet, snapshots only)')
+    p.add_argument('--pane', default='overview', choices=PANES + SETUP_PANES + LANE_SHOTS + ext_shots(),
+                   help="the pane or Setup assistant step to open (lanes-* and an add-on's states: snapshots only)")
+    p.add_argument('--pool', choices=POOLS + mb.pool_aliases(),
+                   help='the pool Overview, Seats, Balancing or the Setup assistant show (default: the last one '
+                        'chosen)')
     p.add_argument('--snapshot', metavar='OUT.png', help='render the window to a PNG and exit (runs no command)')
     p.add_argument('--appearance', choices=('light', 'dark'), default='light', help='(snapshot)')
     p.add_argument('--status', type=Path, default=mb.STATUS_FILE, help='status.json to render (snapshot)')
@@ -4705,13 +5253,39 @@ def main(argv=None):
     p.add_argument('--providers', type=Path, help='codexpool lane providers --json output to render (snapshot)')
     p.add_argument('--models', type=Path, help='codexpool lane models --json output, for every provider (snapshot)')
     p.add_argument('--history', type=Path, help='history.jsonl for the pace line (snapshot; default: none)')
+    p.add_argument('--pool-status', type=Path, help="an add-on pool's status file to render (snapshot; default: none, "
+                                                     'so that pool reads as not installed)')
+    p.add_argument('--pool-history', type=Path, help="its history file, for its pace line (snapshot)")
     p.add_argument('--now', help='pretend the time is this ISO-8601 instant (snapshot)')
     p.add_argument('--height', type=float, help='window height in pt (snapshot; default: fit the content)')
+    p.add_argument('--seat', metavar='FILE', help='the seat file name the Seats pane selects (snapshot; default: the '
+                                                  'first)')
+    p.add_argument('--lane', metavar='NAME', help='the lane the lanes-edit / lanes-model snapshots open (default: '
+                                                  'the first)')
+    p.add_argument('--marks', choices=('drawn', 'app'),
+                   help="the pool switcher's marks: plain drawn shapes, or the logos from the pools' apps on this "
+                        "Mac (default: drawn for a snapshot, app for the live window)")
     args = p.parse_args(argv)
+    args.pool = pool_id(args.pool)
+    # the menu bar module's own default is drawn (so importing it reads nothing from /Applications); the live window
+    # wants the logos, a snapshot the reproducible shapes unless asked
+    mb.MARKS = args.marks or ('drawn' if args.snapshot else 'app')
     if args.snapshot:
         snapshot(args)
         return
-    run_app(args.pane)
+    ext_ui = next((u for u in mb.POOL_UI.values() if args.pane in u.snapshot_panes), None)
+    if ext_ui is not None:   # snapshot states: live, the pane or step they are drawn on
+        args.pane, args.pool = ext_ui.snapshot_pane(args.pane)
+    run_app(args.pane, args.pool)
+
+
+def pool_id(name):
+    return mb.pool_id(name)
+
+
+# The add-on's PoolUI gets this module once it is defined: its Settings members are built on the helpers above.
+for _ui in mb.POOL_UI.values():
+    _ui.settings_loaded(sys.modules[__name__])
 
 
 if __name__ == '__main__':

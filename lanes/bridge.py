@@ -18,6 +18,8 @@ Seat traffic never touches it. Per request it:
 
 Standard library only, Python 3.9+. Config: ~/.codexpool/lanes/bridge.json. Never logs prompts, outputs or keys.
 """
+import importlib.util
+import types
 import base64
 import copy
 import hashlib
@@ -27,8 +29,10 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -107,10 +111,18 @@ class Config:
                 'headers': dict(up.get('headers') or {}),
                 'timeout': int(up.get('timeout', 900)),
             }
+        self.raw = raw
+        self.extensions = raw.get('extensions') if isinstance(raw.get('extensions'), dict) else {}
         self.models = {}
         for model, route in (raw.get('models') or {}).items():
+            if 'extension' in route:
+                self.models[model] = dict(route)
+                continue
             if route.get('upstream') not in self.upstreams:
-                raise SystemExit(f'model {model}: unknown upstream {route.get("upstream")!r}')
+                if 'upstream' in route:
+                    raise SystemExit(f'model {model}: unknown upstream {route.get("upstream")!r}')
+                self.models[model] = dict(route, extension='unavailable')
+                continue
             self.models[model] = {'upstream': route['upstream'], 'upstream_model': route.get('upstream_model', model),
                                   'summary_max_output_tokens': int(route.get('summary_max_output_tokens', 8192))}
 
@@ -261,11 +273,18 @@ class Sealer:
         self.key = key
 
     def seal(self, model, summary):
-        blob = zlib.compress(json.dumps({'v': 1, 'model': model, 'summary': summary}).encode())
+        return self.seal_payload({'v': 1, 'model': model, 'summary': summary})
+
+    def seal_payload(self, payload):
+        blob = zlib.compress(json.dumps(payload).encode())
         tag = hmac.new(self.key, blob, hashlib.sha256).digest()[:16]
         return SEAL_PREFIX + base64.urlsafe_b64encode(tag + blob).decode().rstrip('=')
 
     def unseal(self, value):
+        payload = self.unseal_payload(value)
+        return payload.get('summary') if payload and isinstance(payload.get('summary'), str) else None
+
+    def unseal_payload(self, value):
         if not isinstance(value, str) or not value.startswith(SEAL_PREFIX):
             return None
         try:
@@ -275,7 +294,9 @@ class Sealer:
             if not hmac.compare_digest(tag, hmac.new(self.key, blob, hashlib.sha256).digest()[:16]):
                 raise ValueError('bad tag')
             payload = json.loads(zlib.decompress(blob))
-            return payload['summary'] if isinstance(payload.get('summary'), str) else None
+            if not isinstance(payload, dict):
+                raise ValueError('bad checkpoint payload')
+            return payload
         except Exception:
             raise BridgeError(400, 'A compaction checkpoint in this thread failed verification (was the seal key '
                                    'replaced?). Start a new subagent.', 'bad_checkpoint')
@@ -497,12 +518,84 @@ def upstream_error(status, headers, raw):
     return BridgeError(status if 400 <= status <= 599 else 502, f'Lane provider error (HTTP {status}): {message}', 'upstream_error')
 
 
-# ---------------------------------------------------------------------------------------------- server
+def load_extension_module(path):
+    """Load a local extension and bind the exact error/helper objects of this running bridge.
+
+    The bridge never imports the CLI or discovers add-ons. Only explicit config paths are loaded.
+    A caller isolates import, initialization and runtime failures to the extension's routes.
+    """
+    path = Path(path)
+    if not path.is_absolute() or not path.is_file():
+        raise ValueError('extension must be an absolute local file')
+    spec = importlib.util.spec_from_file_location('codexpool_bridge_extension_' + hashlib.sha256(str(path).encode()).hexdigest()[:16], path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.bind(types.SimpleNamespace(**globals()))
+    return module
+
 
 class Bridge:
     def __init__(self, cfg):
         self.cfg = cfg
         self.sealer = Sealer(cfg.seal_key)
+        self.extensions, self.extension_errors = {}, {}
+        for name, path in getattr(cfg, 'extensions', {}).items():
+            service = None
+            try:
+                module = load_extension_module(path)
+                service = module.Service(cfg, self.sealer, HOME / 'state')
+                self.extensions[name] = service
+            except (Exception, SystemExit) as error:
+                self.extension_errors[name] = type(error).__name__
+                log(f'extension {name} unavailable: {type(error).__name__}')
+                if service is not None:
+                    try:
+                        service.shutdown()
+                    except (Exception, SystemExit):
+                        pass
+
+    def recover(self):
+        for name, service in list(self.extensions.items()):
+            try:
+                service.recover()
+            except (Exception, SystemExit) as error:
+                self.extension_errors[name] = type(error).__name__
+                self.extensions.pop(name, None)
+                log(f'extension {name} recovery failed: {type(error).__name__}')
+                try:
+                    service.shutdown()
+                except (Exception, SystemExit):
+                    pass
+
+    def run_extension(self, handler, route, body):
+        name = route.get('extension')
+        service = self.extensions.get(name)
+        if service is None:
+            raise BridgeError(503, 'This lane extension is unavailable.', 'extension_unavailable')
+        try:
+            service.validate(route)
+            return service.run(handler, route, body)
+        except BridgeError:
+            raise
+        except (Exception, SystemExit) as error:
+            self.extension_errors[name] = type(error).__name__
+            self.extensions.pop(name, None)
+            try:
+                service.shutdown()
+            except (Exception, SystemExit):
+                pass
+            raise BridgeError(503, 'This lane extension failed.', 'extension_unavailable') from error
+
+    def available_models(self):
+        return {model: route for model, route in self.cfg.models.items()
+                if 'extension' not in route or route['extension'] in self.extensions}
+
+    def shutdown(self):
+        for name, service in list(self.extensions.items()):
+            try:
+                service.shutdown()
+            except (Exception, SystemExit) as error:
+                log(f'extension {name} shutdown failed: {type(error).__name__}')
 
     def session_id(self, body):
         key = body.get('prompt_cache_key')
@@ -581,13 +674,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.rstrip('/') == '/healthz':
-            self.send_json(200, {'ok': True, 'models': sorted(self.bridge.cfg.models)})
+            self.send_json(200, {'ok': True, 'models': sorted(self.bridge.available_models())})
             return
         if not self.allowed():
             return
         if request_path(self.path) == '/v1/models':
-            self.send_json(200, {'object': 'list', 'data': [{'id': m, 'object': 'model', 'owned_by': r['upstream']}
-                                                            for m, r in self.bridge.cfg.models.items()]})
+            self.send_json(200, {'object': 'list', 'data': [{'id': m, 'object': 'model', 'owned_by': r.get('extension', r.get('upstream'))}
+                                                            for m, r in self.bridge.available_models().items()]})
             return
         self.send_json(404, {'error': {'message': 'not found', 'code': 'not_found'}})
 
@@ -607,6 +700,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             route = self.bridge.cfg.models.get(model)
             if not route:
                 raise BridgeError(404, f'model {model!r} is not configured in the bridge', 'model_not_found')
+            if 'extension' in route:
+                status = self.bridge.run_extension(self, route, body)
+                log(f'{status} extension {time.time() - started:.1f}s')
+                return
             wire, names, compact, stats = prepare(body, route, self.bridge.sealer)
             note = ' '.join(f'{k}={v}' for k, v in stats.items())
             session = self.bridge.session_id(body)
@@ -695,11 +792,21 @@ def main():
     cfg = Config(Path(sys.argv[1]) if len(sys.argv) > 1 else CONFIG_PATH)
     Handler.bridge = Bridge(cfg)
     server = Server(('127.0.0.1', cfg.port), Handler)
+    Handler.bridge.recover()
     log(f'codexpool bridge listening on 127.0.0.1:{cfg.port} for {", ".join(sorted(cfg.models)) or "no models"}')
+    def stop_server(signum, frame):
+        # shutdown() cannot be called on the serve_forever thread.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, stop_server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        Handler.bridge.shutdown()
+        server.server_close()
 
 
 if __name__ == '__main__':

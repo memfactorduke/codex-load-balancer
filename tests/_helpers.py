@@ -6,7 +6,7 @@ settings.json when it loads, so the fake home must exist before it does. Nothing
 ~/.codexpool, ~/.codex, ~/Library/LaunchAgents, the Keychain, the clipboard or the network: launchctl, security,
 osascript and mdfind are stubs that log their arguments and fail, pbcopy is a stub that writes to a file in the fake
 home (all of them first on PATH, for bin/codexpool run as a command too; CODEXPOOL_NO_CLIPBOARD=1 keeps even the
-pbcopy stub off unless a test turns it on), the pool and bridge ports are free ports picked at random, and the
+pbcopy stub off unless a test turns it on), the pool, bridge and add-on pool ports are free ports picked at random, and the
 launchd labels are test labels. Standard library only; Python 3.9+.
 """
 import argparse
@@ -82,6 +82,15 @@ def build_home():
     cpa.chmod(0o755)
     port, bridge_port = free_ports(2)
     settings = dict(TEST_LABELS, port=port, bridge_port=bridge_port)
+    for fragment in sorted((REPO / 'addons').glob('*/tests/settings.json')):
+        for key, value in json.loads(fragment.read_text()).items():
+            if value == 'free-port':
+                value = free_ports(1)[0]
+                while value in settings.values():
+                    value = free_ports(1)[0]
+            settings[key] = value
+            if key.endswith('_label'):
+                TEST_LABELS[key] = value
     (root / 'settings.json').write_text(json.dumps(settings, indent=2) + '\n')
     config = (REPO / 'examples' / 'config.yaml').read_text()
     config = config.replace('port: 8319', f'port: {port}').replace('127.0.0.1:8319', f'127.0.0.1:{port}')
@@ -98,7 +107,7 @@ os.environ['HOME'] = str(HOME)
 os.environ['PATH'] = f'{HOME / "stubs"}{os.pathsep}{os.environ.get("PATH", "")}'
 os.environ['CODEXPOOL_HOME'] = str(HOME / '.codexpool')  # what lanes/bridge.py reads
 for _name in ('CODEXPOOL_SETTINGS', 'CODEX_HOME', 'CODEXPOOL_REEXEC', 'CODEXPOOL_HEADLINE_NOTE',
-              'CODEXPOOL_VIA_INSTALLER', 'FAKE_PBCOPY_EXIT'):
+              'CODEXPOOL_VIA_INSTALLER', 'FAKE_PBCOPY_EXIT', 'CODEXPOOL_GATE_PROFILE'):
     os.environ.pop(_name, None)
 os.environ['CODEXPOOL_NO_CLIPBOARD'] = '1'  # subprocesses too; tests.test_setup.clipboard() turns copies on in-process
 
@@ -125,6 +134,7 @@ def load_bridge():
     return module
 
 
+sys.modules.setdefault('codexpool_test_helpers', sys.modules[__name__])
 cp = load_cli()
 ROOT = HOME / '.codexpool'
 PBCOPY_STUB = HOME / 'stubs' / 'pbcopy'

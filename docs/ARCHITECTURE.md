@@ -116,14 +116,16 @@ loopback banned from the management API. `build/codexpool_gate.go` rejects a req
 `127.0.0.1`, `localhost` or `::1` (DNS rebinding), or when it carries browser provenance: an `Origin` other than
 the Codex renderer's `app://-`, or a `Sec-Fetch-Site` other than `none`. It is installed through
 `api.WithEngineConfigurator`, which runs before CLIProxyAPI's access logger, CORS, auth, IP ban and routes, so
-rejected requests never reach them. Its own log line quotes every field, so a page can't forge log lines.
+rejected requests never reach them. Its own log line quotes every field, so a page can't forge log lines. An
+[add-on](#add-ons) can run the same gate with a stricter profile of its own.
 
 **Build from source instead of forking.** `codexpool build` downloads the release tag's source, replaces one
 anchor line in `cmd/server/main.go` (`serverOptions := []api.ServerOption(nil)`) to install the gate, adds the gate
 file, and builds with CGO off using a Go toolchain downloaded from go.dev with its sha256 checked. Before the
 build is used, an 11-case self-test runs it on a scratch port with an empty auth dir: Codex-like requests,
 browser origins, CORS preflight, no-cors cross-site, DNS rebinding, the Codex renderer origin, management with
-the key and again after six keyless browser attempts (no loopback ban), and three WebSocket upgrades. The build refuses to
+the key and again after six keyless browser attempts (no loopback ban), and three WebSocket upgrades. An add-on's gate
+profile adds its own cases to the run. The build refuses to
 continue if the anchor moved or if upstream starts using the engine-configurator slot itself. The version string
 `X.Y.Z+gate.<hash>` names the upstream release and a hash of the gate source and the anchor edit.
 
@@ -152,7 +154,8 @@ configured Python 3.11+. Nothing that runs in the background relies on the scrip
 the launchd agents, the `~/.local/bin/codexpool` wrapper and the menu bar app's actions all name their
 interpreter, because under launchd `PATH` is `/usr/bin:/bin` and `python3` there is the system one.
 
-**The menu bar app reads files only.** It reads `status.json` and `history.jsonl` and runs `codexpool` for
+**The menu bar app reads files only.** It reads `status.json` and `history.jsonl` (and an add-on pool's own status and
+history files) and runs `codexpool` for
 actions. It never touches the Keychain, because a locked Keychain would pop password dialogs, and it never calls
 the network or the management API.
 
@@ -270,6 +273,15 @@ renders everything else from it, deterministically: a marked block in `config.ya
 bridge's launchd job, role files, the `AGENTS.md` block. `codexpool doctor` compares what is on disk with a
 fresh render. Generated files carry a marker; apply refuses to overwrite a file without it, and refuses to merge
 its pool sections with top-level ones the user wrote, rather than guess.
+
+## Add-ons
+
+A second pool for another tool is an add-on: a directory `addons/<id>/` with an `addon.py` that registers its pool
+instance, guard pass, doctor and status sections, gate profile, lane provider and menu bar `PoolUI` through the hooks
+in [ADDONS.md](ADDONS.md). None ship with codexpool. The registry exists so the core never names another product:
+every hook site iterates `ADDONS`, and a broken add-on is reported by `doctor` and skipped, never a reason for the
+Codex pool to stop. The gate's profile registry is core for the same reason: an add-on's pool needs stricter
+admission rules than the Codex pool, and the gate must fail closed on any profile it does not know.
 
 ## Known limits
 

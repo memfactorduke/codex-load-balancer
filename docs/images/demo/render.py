@@ -8,7 +8,8 @@ Run it with a Python that has PyObjC (the menu bar app's venv):
 The popovers come straight from the app's own `--snapshot` mode, and the Settings window and Setup assistant
 from codexpool_settings.py's (with doctor.json, lanes.json, lane-providers.json and lane-models.json from this
 folder). The menu bar strip and the hero image reuse the app's drawing code (imported, never modified) and add
-only the backdrop around it.
+only the backdrop around it. An add-on renders its own images with its own script, which imports this one
+(`addons/<id>/docs/images/demo/render.py`).
 """
 from __future__ import annotations
 
@@ -56,13 +57,13 @@ def load_app(path: Path):
     return mod
 
 
-def snapshot(app_path: Path, out: Path, appearance: str, scenario: str):
+def snapshot(app_path: Path, out: Path, appearance: str, scenario: str, extra=()):
     """The app's own --snapshot of the popover; its extra -menubar.png is dropped."""
     with tempfile.TemporaryDirectory() as tmp:
         shot = Path(tmp) / 'shot.png'
         subprocess.run([sys.executable, str(app_path), '--snapshot', str(shot), '--appearance', appearance,
                         '--status', str(HERE / f'status-{scenario}.json'),
-                        '--history', str(history_path(scenario)), '--now', NOW],
+                        '--history', str(history_path(scenario)), '--now', NOW, *extra],
                        check=True, stdout=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
         shutil.copyfile(shot, out)
     print(rel(out))
@@ -79,13 +80,14 @@ SETTINGS_SHOTS = (   # (file name, pane, Lanes sheet or Setup assistant step, ap
 )
 
 
-def settings_snapshot(settings_path: Path, out: Path, pane: str, appearance: str):
-    """codexpool_settings.py's own --snapshot of one pane (it runs no command)."""
+
+def settings_snapshot(settings_path: Path, out: Path, pane: str, appearance: str, extra=()):
+    """codexpool_settings.py's own --snapshot of one pane (it runs no command); extra: more arguments, e.g. an add-on's pool."""
     subprocess.run([sys.executable, str(settings_path), '--snapshot', str(out), '--pane', pane,
                     '--appearance', appearance, '--status', str(HERE / 'status-regular.json'),
                     '--doctor', str(HERE / 'doctor.json'), '--lanes', str(HERE / 'lanes.json'),
                     '--providers', str(HERE / 'lane-providers.json'), '--models', str(HERE / 'lane-models.json'),
-                    '--history', str(history_path('regular')), '--now', NOW],
+                    '--history', str(history_path('regular')), '--now', NOW, *extra],
                    check=True, stdout=subprocess.DEVNULL, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     print(rel(out))
 

@@ -82,7 +82,7 @@ it runs.
 | `opencode-go` | the bridge, `https://opencode.ai/zen/go/v1` | `codexpool lane key opencode-go` | tested with `muse-spark-1.3-contributor` |
 | `opencode-zen` | the bridge, `https://opencode.ai/zen/v1` | `codexpool lane key opencode-zen` | same bridge path, untested |
 | `responses` | the bridge, any OpenAI Responses API endpoint | `codexpool lane key <lane>-<id>` | generic, untested |
-| Anthropic, Gemini, OpenRouter, others | | | not supported yet |
+| Gemini, OpenRouter, other APIs | | | not supported yet |
 
 - **xAI.** One login serves every lane with an xAI member, at most one per lane. Fast tiers are separate model
   ids (`grok-4.7-build-fast`), so pick the tier by model id. The context window comes from the pool's xAI model
@@ -97,7 +97,8 @@ it runs.
   (the header only if the provider needs a per-thread session id), or in `lanes.json` with `base_url` and
   `session_header`. Its key is named `<lane>-<id>`. The bridge's adaptations were written for OpenCode; another
   endpoint may need more.
-- **Not supported yet**: Anthropic, Gemini, OpenRouter and other APIs. They would need their own adapters.
+- **Not supported yet**: Gemini, OpenRouter and other APIs. They would need their own adapters. An add-on can
+  register a lane provider of its own (`docs/ADDONS.md`).
 
 Bridge members default to a context window of 272000 tokens; set `context` in `lanes.json` for a model that has
 more or less.
@@ -634,3 +635,4 @@ and follow AGENTS.md: a live pool carries all my Codex traffic, yours included.
    and whether doctor ended with OK. If something failed, say what you checked and what you suggest instead of
    retrying in a loop. Remind me to start a new Codex thread so Codex sees the lanes.
 ```
+

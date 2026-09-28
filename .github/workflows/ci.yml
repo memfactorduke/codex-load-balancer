@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Checks (Python ${{ matrix.python }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile the Python code
+        run: python -m py_compile bin/codexpool lanes/bridge.py menubar/*.py
+
+      - name: Python 3.9 syntax (install and uninstall run on a fresh Mac's /usr/bin/python3)
+        run: |
+          python - <<'EOF'
+          import ast
+          for path in ("bin/codexpool", "lanes/bridge.py"):
+              with open(path, encoding="utf-8") as f:
+                  ast.parse(f.read(), path, feature_version=(3, 9))
+              print(f"{path}: parses as Python 3.9")
+          EOF
+
+      - name: codexpool --help
+        run: HOME="$(mktemp -d)" python bin/codexpool --help > /dev/null
+
+      - name: install.sh syntax (macOS /bin/bash 3.2)
+        run: /bin/bash -n install.sh
+
+      - name: install.sh dry run (downloads and changes nothing)
+        run: HOME="$(mktemp -d)" /bin/bash install.sh --dry-run --no-gui
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  scan:
+    name: Secrets and personal data
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same two scans AGENTS.md asks for before every commit, over every tracked file. The synthetic
+      # demo data in docs/images/demo/ is left out.
+      - name: No tokens or password hashes
+        run: |
+          rc=0
+          # shellcheck disable=SC2016  # the pattern matches a literal "$" (bcrypt hashes)
+          git grep -nIE \
+            'eyJ[A-Za-z0-9_-]{20,}|"(refresh|access|id)_token"[[:space:]]*:|\$2[aby]\$|sk-[A-Za-z0-9]{20,}' \
+            -- . ':(exclude)docs/images/demo' || rc=$?
+          case "$rc" in
+            0) echo "::error::Possible token or password hash above; remove it."; exit 1 ;;
+            1) echo "Nothing found." ;;
+            *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
+          esac
+
+      - name: No add-ons in the public tree (they are private; docs/ADDONS.md)
+        run: test ! -d addons && echo "No addons/ directory."
+
+      - name: No home-directory paths or email addresses
+        run: |
+          rc=0
+          git grep -nIE \
+            '/Users/[A-Za-z]|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}' \
+            -- . ':(exclude)docs/images/demo' || rc=$?
+          case "$rc" in
+            0) echo "::error::Home-directory path or email address above; remove it."; exit 1 ;;
+            1) echo "Nothing found." ;;
+            *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
+          esac
+
+  shellcheck:
+    name: shellcheck install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck --version && shellcheck install.sh

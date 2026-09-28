@@ -1,0 +1,18 @@
+{
+  "port": 8320,
+  "key_file": "lanes/secrets/bridge.key",
+  "seal_key_file": "lanes/secrets/seal.key",
+  "upstreams": {
+    "responses-review-example": {
+      "base_url": "https://example.test/v1",
+      "key_file": "lanes/secrets/review-example.key",
+      "session_header": "x-session"
+    }
+  },
+  "models": {
+    "lane-review-example": {
+      "upstream": "responses-review-example",
+      "upstream_model": "example-model"
+    }
+  }
+}

@@ -4,6 +4,7 @@ exist only while lane test runs: lane_plan(..., with_members=True)."""
 import contextlib
 import io
 import json
+import os
 import random
 import shutil
 import socket
@@ -12,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from _helpers import EXAMPLE_LANES, HOME, FakePool, cp, preserved, run
+from _helpers import EXAMPLE_LANES, HOME, FakePool, cp, load_bridge, preserved, run
 
 try:
     import tomllib
@@ -61,7 +62,7 @@ class Validation(unittest.TestCase):
         (lane([GOOD], effort='max'), ['effort "max" is not one of']),
         (lane([]), ['"members" must be a non-empty list']),
         (lane([GOOD, {'provider': 'xai', 'model': 'grok-2'}]), ['at most one xai member']),
-        (lane([{'provider': 'anthropic', 'model': 'm'}]), ['provider "anthropic" is not one of']),
+        (lane([{'provider': 'gemini', 'model': 'm'}]), ['provider "gemini" is not one of']),
         (lane([{'provider': 'xai', 'model': 'bad model!'}]), ['"model" must be']),
         (lane([dict(GOOD, id='a'), {'id': 'a', 'provider': 'opencode-go', 'model': 'x'}]), ['id "a" is used twice']),
         (lane([dict(GOOD, id='Bad_Id')]), ['"id" must be 1 to 16']),

@@ -15,11 +15,18 @@ Run (the LaunchAgent that `codexpool install` sets up does this, with "menubar_p
 Snapshot (no UI; for humans and agents checking the design):
     codexpool_menubar.py --snapshot OUT.png [--appearance light|dark] [--status PATH] [--history PATH]
                          [--now ISO-8601] [--range 24h|7d] [--max-height PT] [--hover KIND:VALUE]
+                         [--marks drawn|app]
     writes OUT.png (the popover) and OUT-menubar.png (the menu bar item), both at 2x.
     --history defaults to history.jsonl beside --status when that exists, else the live history.
     --max-height caps the popover the way a short screen does (the seat list then scrolls).
     --hover highlights one region, e.g. seat:<seat file name> or action:doctor, and prints its tooltip if it has one
     (tip:headline prints the hero's breakdown).
+    --marks app draws the pools' marks as the live app does, from the pools' apps on this Mac; the default,
+    drawn, uses plain drawn shapes and reads nothing from /Applications, so snapshots are reproducible.
+    --pool-status makes an add-on's pool installed (both numbers in the item, the switcher in the popover).
+
+A second pool comes from an add-on (addons/<id>/menubar_ext.py, docs/ADDONS.md): its `load(mb)` returns a PoolUI
+whose members this file reads by name (section 1, load_pool_extensions). Without one the app is the Codex pool's.
 
 Layout of this file:
     1. Paths and constants          6. Drawing primitives
@@ -35,6 +42,7 @@ import datetime as dt
 import json
 import math
 import os
+import plistlib
 import shlex
 import subprocess
 import sys
@@ -44,6 +52,7 @@ import time
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 import objc
 from AppKit import (
@@ -60,10 +69,15 @@ from AppKit import (
     NSBitmapImageFileTypePNG,
     NSBitmapImageRep,
     NSColor,
+    NSCompositingOperationCopy,
     NSCompositingOperationSourceIn,
     NSCompositingOperationSourceOver,
     NSDeviceRGBColorSpace,
     NSEvent,
+    NSEventTypeLeftMouseDown,
+    NSEventTypeLeftMouseUp,
+    NSEventTypeRightMouseDown,
+    NSEventTypeRightMouseUp,
     NSEventMaskKeyDown,
     NSEventMaskLeftMouseDown,
     NSEventMaskOtherMouseDown,
@@ -82,7 +96,9 @@ from AppKit import (
     NSGradient,
     NSGraphicsContext,
     NSImage,
+    NSImageInterpolationHigh,
     NSImageLeft,
+    NSImageOnly,
     NSImageSymbolConfiguration,
     NSLineBreakByTruncatingMiddle,
     NSLineBreakByTruncatingTail,
@@ -138,6 +154,15 @@ DOCS = POOL_DIR / 'README.md'                      # the local copy of the repo'
 DOCS_URL = 'https://github.com/memfactorduke/codex-load-balancer#readme'   # when there is no local copy
 SETTINGS_SCRIPT = Path(__file__).resolve().with_name('codexpool_settings.py')   # the Settings window (own process)
 SETUP_SHOWN = POOL_DIR / 'state' / 'setup-shown'   # the first-run Setup assistant has been opened (or wasn't needed)
+ADDONS_DIR = Path(os.environ.get('CODEXPOOL_ADDONS') or Path(__file__).resolve().parent.parent / 'addons')
+
+# The pools: the Codex pool, and at most one more from an add-on (a second CLIProxyAPI instance with its own status
+# file). An add-on's pool is installed when its PoolUI says so from its status file; without that the item and the
+# popover are the Codex pool's alone. POOLS, POOL_NAME, POOL_UI, POOL_COLORS, MARK_APPS and MARK_SCALE are extended
+# by register_pool_ui() when the module has loaded (load_pool_extensions, at the end of this file).
+POOLS = ('codex',)
+POOL_NAME = {'codex': 'Codex'}
+POOL_UI: dict = {}    # pool id -> the add-on's PoolUI (never the Codex pool)
 
 BUNDLE_ID = 'com.codexpool.menubar'
 AUTOSAVE_NAME = 'CodexPool'
@@ -167,7 +192,7 @@ RANGES = {'24h': (24 * 3600, '24h'), '7d': (7 * 24 * 3600, '7d')}
 # copies from settings.json. A file without them (an older guard) gets the defaults, the first of each.
 HEADLINES = ('all', 'regular')     # every seat that is not off, reserve included / the regular seats only
 DISPLAYS = ('left', 'used')        # count down from 100 % / count up from 0 %
-SCOPE = {'all': 'all seats', 'regular': 'regular seats'}
+SCOPE = {'all': 'all seats', 'regular': 'regular seats'}   # an add-on's pool has its own words (PoolUI.scope_words)
 # How the pool picks a seat: pool.balancing, also copied from settings.json. `priority`: the fill order you set;
 # `reset`: the guard reorders the regular seats so the one whose weekly quota resets soonest goes first.
 BALANCINGS = ('priority', 'reset')
@@ -189,7 +214,7 @@ SIGN_IN_ENDED = 'OpenAI ended this sign-in'   # a seat that still serves on its 
 
 # Plan families, matched in order against the plan string ("self_serve_business_prolite" is Business).
 PLAN_NAMES = (('enterprise', 'Enterprise'), ('business', 'Business'), ('team', 'Team'), ('edu', 'Edu'),
-              ('pro', 'Pro'), ('plus', 'Plus'), ('free', 'Free'))
+              ('pro', 'Pro'), ('plus', 'Plus'), ('free', 'Free'))   # an add-on's pool: PoolUI.plan_names
 
 NO_FILE = 'No status file yet'
 INCOMPLETE = 'The status file is incomplete'
@@ -283,10 +308,19 @@ def fmt_approx_hours(hours: float) -> str:
     return f'~{round(hours / 24)}d'
 
 
-def plan_badge(plan: str, weight) -> str:
-    """'team', 1 -> 'Team 1×'; 'self_serve_business_prolite', 5 -> 'Business 5×'; 'pro', 20 -> 'Pro 20×'."""
+def money(v, currency: str = 'USD') -> str:
+    """'$31', '$112.40' (cents only when there are any); other currencies as 'EUR 31'."""
+    if v is None:
+        return '—'
+    text = f'{v:,.0f}' if abs(v - round(v)) < 0.005 else f'{v:,.2f}'
+    return f'${text}' if currency.upper() == 'USD' else f'{currency.upper()} {text}'
+
+
+def plan_badge(plan: str, weight, names=PLAN_NAMES) -> str:
+    """'team', 1 -> 'Team 1×'; 'self_serve_business_prolite', 5 -> 'Business 5×'; 'pro', 20 -> 'Pro 20×'.
+    An add-on's pool passes its own names, e.g. 'max_20x', 20 -> 'Max 20×'."""
     p = plan.lower()
-    name = next((n for key, n in PLAN_NAMES if key in p), plan.replace('_', ' ').title() if plan else '')
+    name = next((n for key, n in names if key in p), plan.replace('_', ' ').title() if plan else '')
     mult = f'{weight:g}×' if weight is not None else ''
     return ' '.join(x for x in (name, mult) if x)
 
@@ -300,6 +334,15 @@ class Window:
     used: float | None           # percent, 0..100
     reset_at: dt.datetime | None
     minutes: float | None        # 300 = the 5-hour window, 10080 = the week
+
+
+@dataclass
+class Scoped:
+    """One more named limit an add-on's pool has (a weekly cap that covers one model family): drawn as a thin bar
+    under the week's, and counted among the seat's windows."""
+    name: str
+    used: float | None
+    reset_at: dt.datetime | None
 
 
 @dataclass
@@ -318,11 +361,19 @@ class Seat:
     short: Window | None         # the 5-hour window (Team seats)
     resets: int = 0              # banked free resets (codexpool reset uses one)
     reset_expiry: dt.datetime | None = None   # when the soonest banked reset expires
-    sign_in_ended: bool = False  # OpenAI ended its sign-in: only a new one helps
+    sign_in_ended: bool = False  # the provider ended its sign-in: only a new one helps
+    provider: str = 'codex'      # the pool the seat is in (its id)
+    scoped: list[Scoped] = field(default_factory=list)   # an add-on's pool: its extra named limits
+    extra: object = None         # an add-on's pool: what else its PoolUI.parse_seat read (its credits, say)
+    spending: bool = False       # the normalised alarm: serving on paid use right now (PoolUI.parse_seat sets it)
 
     @property
     def serving(self) -> bool:
         return self.state == SERVING
+
+    def at_limit(self, now: dt.datetime) -> bool:  # a plan window is used up and still in force at now
+        return any(w is not None and w.used is not None and w.used >= 100 and (w.reset_at is None or w.reset_at > now)
+                   for w in (self.week, self.short))
 
     @property
     def sign_in_soon(self) -> bool:  # still served on an access token that has not run out yet (up to a day)
@@ -343,6 +394,11 @@ class Sample:
     used: float | None           # weekly use of the regular seats (history.jsonl 'used')
     reserve: bool                # a reserve seat was serving
     all: float | None = None     # weekly use of every seat, reserve included (history.jsonl 'all')
+    spending: bool = False       # the historical alarm: a seat served on paid use (PoolUI.history_alarm_key)
+
+    @property
+    def alarm(self) -> bool:     # red on the chart, as the headline is: the reserve, paid use, or every seat out
+        return self.reserve or self.spending or (self.all is not None and self.all >= 100)
 
 
 def sample_value(s: Sample, mode: str) -> float | None:
@@ -368,10 +424,36 @@ class Model:
     next_back: tuple[str, dt.datetime] | None = None
     version: str = ''
     history: list[Sample] = field(default_factory=list)
+    pool: str = 'codex'          # which pool this is (status.json, or an add-on's status file)
+    extra: object = None         # an add-on's pool: what else its PoolUI.parse_pool read from the pool block
+
+    @property
+    def ui(self):                   # the add-on's PoolUI; None for the Codex pool
+        return POOL_UI.get(self.pool)
 
     @property
     def reporting(self) -> bool:  # the numbers are current
         return self.status not in ('stale', 'missing')
+
+    @property
+    def spending(self) -> Seat | None:   # the seat serving on paid use (an add-on's last resort)
+        return next((s for s in self.seats if s.spending), None) if self.serving_now else None
+
+    @property
+    def hot(self) -> bool:          # red: the reserve serves, every seat is out, or paid use is being spent
+        return self.status in ('reserve', 'allout') or self.spending is not None
+
+    @property
+    def warn(self) -> bool:         # grey with a warning glyph: down, not reporting, or nothing in it
+        return self.status in ('down', 'stale', 'missing', 'empty')
+
+    @property
+    def name(self) -> str:          # 'Codex', or the add-on pool's title
+        return POOL_NAME.get(self.pool, 'Codex')
+
+    @property
+    def noun(self) -> str:          # what the pool calls a seat
+        return self.ui.noun if self.ui else 'seat'
 
     @property
     def serving_now(self) -> bool:  # a seat is actually taking requests
@@ -390,8 +472,9 @@ class Model:
         return 'left' if self.left else 'used'
 
     @property
-    def scope(self) -> str:         # 'all seats' / 'regular seats'
-        return SCOPE.get(self.headline_mode, SCOPE['all'])
+    def scope(self) -> str:         # 'all seats' / 'regular seats' (an add-on's pool: its own words)
+        scope = self.ui.scope_words if self.ui else SCOPE
+        return scope.get(self.headline_mode, scope['all'])
 
     def shown(self, used):
         """A used % as this model shows it: unchanged, or what is left of it. Also the length of its bar; the
@@ -423,27 +506,40 @@ def parse_window(d) -> Window | None:
     return Window(clamp_pct(as_num(d.get('used'))), parse_time(d.get('reset_at')), as_num(d.get('window_min')))
 
 
-def parse_seat(d) -> Seat | None:
+def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat | None:
+    """One row of status.json's seats[], or of an add-on pool's status file (pool=its id): the same shape, with the
+    add-on's names for the week and the short window (PoolUI.week_key, short_key), and whatever else its
+    PoolUI.parse_seat reads (the extra limits, the credits, the spending flag; `now` for its rules)."""
     d = as_dict(d)
     if not d:
         return None
-    week = parse_window(d.get('week'))
+    ui = POOL_UI.get(pool)
+    week_key = getattr(ui, 'week_key', None) if ui else None
+    short_key = getattr(ui, 'short_key', None) if ui else None
+    week = parse_window(d.get('week') or (d.get(week_key) if week_key else None))
     week_used = clamp_pct(as_num(d.get('week_used')))
     if week_used is not None and (week is None or week.used is None):
         week = Window(week_used, week.reset_at if week else None, 10080)
-    short = parse_window(d.get('short'))
+    short = parse_window(d.get(short_key) if short_key and d.get(short_key) else d.get('short'))
     if short is not None and short.used is None:
         short = None
+    if short is not None and short.minutes is None and short_key:
+        short.minutes = 300
     weight = as_num(d.get('weight'))
     plan = as_str(d.get('plan')) or as_str(as_dict(d.get('usage')).get('plan'))
-    label = as_str(d.get('label')) or as_str(d.get('email')) or as_str(d.get('name')) or 'Seat'
-    return Seat(label=label, name=as_str(d.get('name')), email=as_str(d.get('email')),
-                plan=plan_badge(plan, weight), state=as_str(d.get('state')).lower() or 'unknown',
+    noun = ui.noun if ui else 'seat'
+    label = as_str(d.get('label')) or as_str(d.get('email')) or as_str(d.get('name')) or noun.title()
+    seat = Seat(label=label, name=as_str(d.get('name')), email=as_str(d.get('email')),
+                plan=plan_badge(plan, weight, ui.plan_names if ui else PLAN_NAMES),
+                state=as_str(d.get('state')).lower() or 'unknown',
                 detail=as_str(d.get('detail')).strip(), until=parse_time(d.get('until')),
                 priority=as_num(d.get('priority')), weight=weight, reserve=d.get('reserve') is True,
                 week=week, short=short, resets=int(as_num(as_dict(d.get('resets')).get('available'), 0) or 0),
                 reset_expiry=parse_time(as_dict(d.get('resets')).get('next_expiry')),
-                sign_in_ended=d.get('sign_in_ended') is True)
+                sign_in_ended=d.get('sign_in_ended') is True, provider=pool)
+    if ui:
+        ui.parse_seat(d, seat, now)
+    return seat
 
 
 def weighted_used(seats: list[Seat]) -> float | None:
@@ -455,20 +551,27 @@ def weighted_used(seats: list[Seat]) -> float | None:
 
 
 def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.datetime,
-                mtime: dt.datetime | None = None, wake_grace: bool = False) -> Model:
+                mtime: dt.datetime | None = None, wake_grace: bool = False, pool_name: str = 'codex') -> Model:
     """mtime: when status.json was last written (None in snapshots, whose --now is made up). The age is the
     older of that and generated_at, so a clock step cannot hide a guard that stopped. wake_grace: the Mac
-    woke up moments ago, so an old file is not (yet) a guard that stopped."""
+    woke up moments ago, so an old file is not (yet) a guard that stopped. pool_name: an add-on pool's id for
+    its status file (same shape, its own seat fields)."""
+    pool_name = pool_name if pool_name in POOLS else 'codex'
+    ui = POOL_UI.get(pool_name)
     written = (now - mtime).total_seconds() if mtime else None
     if raw is None:
-        return Model(now=now, status='missing', problem=problem or NO_FILE, age=written, history=history)
+        return Model(now=now, status='missing', problem=problem or NO_FILE, age=written, history=history,
+                     pool=pool_name)
 
     pool = as_dict(raw.get('pool'))
     generated = parse_time(raw.get('generated_at'))
     ages = [a for a in ((now - generated).total_seconds() if generated else None, written) if a is not None]
     age = max(ages) if ages else None
 
-    seats = [s for s in (parse_seat(x) for x in as_list(raw.get('seats'))) if s]
+    rows = as_list(raw.get('seats'))
+    if pool_name == 'codex':  # status.json also lists lane logins (e.g. xAI): they aren't seats, and have no usage
+        rows = [x for x in rows if as_str(as_dict(x).get('provider'), 'codex') == 'codex']
+    seats = [s for s in (parse_seat(x, pool_name, now) for x in rows) if s]
     seats.sort(key=lambda s: -(s.priority if s.priority is not None else -1e9))  # fill order; stable
     regular = [s for s in seats if not s.reserve]
     reserve = [s for s in seats if s.reserve]
@@ -500,11 +603,12 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
             at, label = min(waiting)
             next_back = (label, at)
 
-    regular_ready = sum(1 for s in regular if s.available)
+    regular_ready = sum(1 for s in regular if s.available and not s.spending)  # on plan quota, not on paid use
     if not seats:
         regular_ready = int(as_num(pool.get('regular_available'), 0))
     reserve_in_use = pool.get('reserve_in_use') is True or bool(serving and serving.reserve)
-    if not reserve_in_use and regular and regular_ready == 0 and any(s.available for s in reserve):
+    if not reserve_in_use and regular and regular_ready == 0 and (serving is None or serving.reserve) and \
+            any(s.available for s in reserve):
         reserve_in_use = True  # nothing regular left: the next request goes to the reserve seat
 
     if not pool or 'seats' not in raw:
@@ -527,15 +631,18 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
     return Model(now=now, status=status, problem=problem, age=age, headline=headline, headline_mode=headline_mode,
                  display=display, balancing=balancing, serving=serving, seats=seats, regular_ready=regular_ready,
                  regular_total=regular_total, reserve_seats=reserve, next_back=next_back,
-                 version=as_str(pool.get('version')), history=history)
+                 version=as_str(pool.get('version')), history=history, pool=pool_name,
+                 extra=ui.parse_pool(pool) if ui else None)
 
 
 class DataSource:
     """Caches status.json and history.jsonl by mtime. poll() is cheap enough to run every few seconds."""
 
-    def __init__(self, status_path: Path = STATUS_FILE, history_path: Path | None = HISTORY_FILE):
+    def __init__(self, status_path: Path = STATUS_FILE, history_path: Path | None = HISTORY_FILE,
+                 pool: str = 'codex'):
         self.status_path = Path(status_path)
         self.history_path = Path(history_path) if history_path else None
+        self.pool = pool                 # codex (status.json), or an add-on pool's id (its own status file)
         self.raw: dict | None = None
         self.problem = NO_FILE
         self.status_mtime: dt.datetime | None = None   # when the copy in self.raw was written
@@ -563,7 +670,8 @@ class DataSource:
             changed = True
         m = self._mtime_ns(self.history_path)
         if force or m != self._history_ns:
-            self.history = load_history(self.history_path)
+            ui = POOL_UI.get(self.pool)
+            self.history = load_history(self.history_path, getattr(ui, 'history_alarm_key', None) if ui else None)
             self._history_ns = m
             changed = True
         return changed
@@ -571,15 +679,29 @@ class DataSource:
     def model(self, now: dt.datetime | None = None, wake_grace: bool = False) -> Model:
         """now: pretend time (snapshots); the file's mtime is only meaningful against the real clock."""
         return build_model(self.raw, self.problem, self.history, now or utcnow(),
-                           mtime=self.status_mtime if now is None else None, wake_grace=wake_grace)
+                           mtime=self.status_mtime if now is None else None, wake_grace=wake_grace,
+                           pool_name=self.pool)
+
+    def is_installed(self, now: dt.datetime | None = None) -> bool:
+        """For an add-on's pool: is it installed at all, by its PoolUI's rule over the status file (now: pretend
+        time, as in model()). The Codex pool always is."""
+        ui = POOL_UI.get(self.pool)
+        if ui is None:
+            return True
+        return ui.installed(self.raw, self.problem, self.model(now).age if self.raw is not None else None)
+
+    @property
+    def installed(self) -> bool:
+        return self.is_installed()
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 # 4. History, pace and the chart series
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 
-def load_history(path: Path | None) -> list[Sample]:
-    """history.jsonl lines: {t, used, all, reserve, seats{label: week_used}}. Bad lines are skipped."""
+def load_history(path: Path | None, alarm_key: str | None = None) -> list[Sample]:
+    """history.jsonl lines: {t, used, all, reserve, seats{label: week_used}}. Bad lines are skipped. alarm_key: an
+    add-on pool's per-sample flag for paid use (PoolUI.history_alarm_key)."""
     if not path:
         return []
     try:
@@ -604,9 +726,17 @@ def load_history(path: Path | None) -> list[Sample]:
         if t is None:
             continue
         out.append(Sample(t.timestamp(), clamp_pct(as_num(d.get('used'))), d.get('reserve') is True,
-                          clamp_pct(as_num(d.get('all')))))
+                          clamp_pct(as_num(d.get('all'))),
+                          spending=bool(alarm_key) and d.get(alarm_key) is True))
     out.sort(key=lambda s: s.t)
     return out
+
+
+def total_text(m: Model) -> str:
+    """'36× total': the pool's size, every seat's × added up as the headline weighs them (seats turned off aside;
+    as `codexpool status` has it); '' with no seats."""
+    total = sum(min(max(s.weight or 1.0, 0.0), 1e6) for s in m.seats if s.state != 'disabled')
+    return f'{round(total, 2):g}× total' if total else ''
 
 
 def pace_text(m: Model) -> str | None:
@@ -642,7 +772,7 @@ def pace_text(m: Model) -> str | None:
 
 @dataclass
 class ChartData:
-    pts: list[tuple[float, float, bool]]  # (t, value shown, reserve); starts with the last sample before t0, if any
+    pts: list[tuple[float, float, bool]]  # (t, value shown, red: Sample.alarm); starts with the last sample before t0
     in_range: int                         # samples inside [t0, t1]
     t0: float                             # the x axis always spans the whole range: now - 24 h (or 7 d) ...
     t1: float                             # ... to now
@@ -654,7 +784,7 @@ def chart_data(m: Model, range_key: str) -> ChartData:
     span_s = RANGES.get(range_key, RANGES['24h'])[0]
     t1 = m.now.timestamp()
     t0 = t1 - span_s
-    rows = [(s.t, m.shown(v), s.reserve) for s in m.history
+    rows = [(s.t, m.shown(v), s.alarm) for s in m.history
             if (v := sample_value(s, m.headline_mode)) is not None and s.t <= t1 + 300]
     inside = [r for r in rows if r[0] >= t0]
     before = [r for r in rows if r[0] < t0][-1:]   # lets the line enter from the left edge
@@ -673,6 +803,10 @@ def srgb(hex_rgb: int, alpha: float = 1.0):
 
 
 _DYNAMIC: dict = {}
+
+# The pools' colours: (text on light, text on dark, fill on light, fill on dark).
+CODEX_BLUE = (0x0A6FB5, 0x6CC4FF, 0x1A7BC7, 0x6CC4FF)   # text light, text dark, fill light, fill dark
+POOL_COLORS = {'codex': CODEX_BLUE}                        # an add-on's pool adds its own (PoolUI.colors)
 
 
 def dynamic(name: str, light: int, dark: int):
@@ -704,6 +838,20 @@ class C:
     red_text = staticmethod(lambda: dynamic('codexpool.red', 0xD70015, 0xFF453A))
     orange_text = staticmethod(lambda: dynamic('codexpool.orange', 0xC93400, 0xFF9F0A))
     blue_text = staticmethod(lambda: dynamic('codexpool.blue', 0x0066CC, 0x409CFF))   # actionable (resets)
+    # Each pool's own colour: its number while it serves normally (menu bar, tiles, hero), its glyph, its chart.
+    # Text shades are >= 4.5:1 on the light and dark menu bar and popover; fills are for glyphs and lines.
+    codex_text = staticmethod(lambda: C.pool_text('codex'))
+    codex = staticmethod(lambda: C.pool_fill('codex'))
+
+    @staticmethod
+    def pool_text(pool: str):
+        c = POOL_COLORS.get(pool, CODEX_BLUE)
+        return dynamic(f'codexpool.{pool}', c[0], c[1])
+
+    @staticmethod
+    def pool_fill(pool: str):
+        c = POOL_COLORS.get(pool, CODEX_BLUE)
+        return dynamic(f'codexpool.{pool}.fill', c[2], c[3])
 
     @staticmethod
     def wash(alpha: float):                      # neutral fills: tracks, tints, quiet pills, hover
@@ -720,8 +868,25 @@ class C:
 
 
 def headline_text(m: Model):
-    """The headline number's colour: green while a regular seat serves, red on the reserve, else grey."""
-    return {'regular': C.green_text, 'reserve': C.red_text}.get(m.status, C.secondary)()
+    """The headline number's colour: the pool's own colour while a regular seat serves; red while the reserve
+    serves, every seat is out or a seat spends paid use; else grey."""
+    if m.hot:
+        return C.red_text()
+    return C.pool_text(m.pool) if m.status == 'regular' else C.secondary()
+
+
+def pool_pill(m: Model):
+    """(word, text colour, background) for the pool's state: the header pill and the switcher tiles."""
+    if m.spending is not None:
+        return getattr(m.ui, 'alarm_word', 'Paid use'), C.red_text(), C.soft(C.red(), 0.16)
+    if m.status == 'regular':
+        return 'Regular', C.pool_text(m.pool), C.soft(C.pool_fill(m.pool), 0.16)
+    if m.status == 'reserve':
+        return 'Reserve', C.red_text(), C.soft(C.red(), 0.16)
+    if m.status == 'allout':
+        return 'All out', C.red_text(), C.soft(C.red(), 0.16)
+    word = {'down': 'Down', 'stale': 'Stale', 'empty': f'No {m.noun}s'}.get(m.status, 'No data')
+    return word, C.secondary(), C.wash(0.08)
 
 
 def usage_color(pct):
@@ -738,8 +903,9 @@ def bar_fill(pct, dim: bool):
 
 def headline_fill(m: Model):
     """The headline's own bars (the hero bar, the meter's top bar): red while the reserve serves, like the
-    number above them, else by threshold (grey when nothing serves). Seat bars keep their threshold colours."""
-    return C.red() if m.status == 'reserve' else bar_fill(m.headline, m.degraded)
+    number above them (and while every seat is out or credits are spent), else by threshold (grey when down or
+    not reporting). Seat bars keep their threshold colours."""
+    return C.red() if m.hot else bar_fill(m.headline, m.degraded)
 
 
 _FONTS: dict = {}
@@ -821,6 +987,21 @@ def draw_text_block(text: str, x: float, y: float, width: float, f, color, max_l
     a.drawWithRect_options_context_(((x, y), (width, fragment_height(f) * max_lines + 1)),
                                     NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine,
                                     None)
+
+
+def wrap_words(text: str, f, width: float, max_lines: int = 3) -> list:
+    """The text broken into lines at spaces so each fits `width` (the last one may not, when max_lines is hit;
+    draw_text truncates it). Used where a line's length must be known, e.g. to fit a link after it."""
+    lines, line = [], ''
+    for word in text.split(' '):
+        trial = f'{line} {word}' if line else word
+        if line and text_width(trial, f) > width and len(lines) < max_lines - 1:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    lines.append(line)
+    return lines
 
 
 def rounded(rect, radius):
@@ -915,10 +1096,11 @@ def draw_symbol(name: str, cx: float, cy: float, size: float, color, weight=NSFo
         ((cx - w / 2, cy - h / 2), (w, h)), ((0, 0), (0, 0)), NSCompositingOperationSourceOver, 1.0, True, None)
 
 
-def draw_sparkline(rect, pts, t0, t1, grey: bool):
+def draw_sparkline(rect, pts, t0, t1, grey: bool, regular=None, area: float = 0.28):
     """The headline (as used or as left) on a fixed 0-100 % scale across [t0, t1]: a 1.5 pt line over a soft
-    gradient, green while a regular seat served and red while the reserve did (all grey when nothing is serving
-    now). A dashed stub carries the last value on to 'now' (t1); a dot marks the latest sample."""
+    gradient, in `regular` (the pool's colour; green if not given) while a regular seat served and red while the
+    reserve did, credits were spent or every seat was out (Sample.alarm; all grey when nothing is serving now).
+    A dashed stub carries the last value on to 'now' (t1); a dot marks the latest sample."""
     (x, y), (w, h) = rect
     top, bottom = y + 2.5, y + h - 0.5
     span = max(1.0, t1 - t0)
@@ -930,7 +1112,7 @@ def draw_sparkline(rect, pts, t0, t1, grey: bool):
         return bottom - (v / 100.0) * (bottom - top)
 
     def colour(reserve):
-        return C.grey() if grey else (C.red() if reserve else C.green())
+        return C.grey() if grey else (C.red() if reserve else (regular or C.green()))
 
     fill_rect(((x, y + h - 0.5), (w, 0.5)), C.separator())               # 0 %
     guide = NSBezierPath.bezierPath()                                     # 50 %
@@ -947,10 +1129,11 @@ def draw_sparkline(rect, pts, t0, t1, grey: bool):
     line.setLineWidth_(1.5)
     line.setLineJoinStyle_(NSLineJoinStyleRound)
     line.setLineCapStyle_(NSLineCapStyleRound)
-    area = line.copy()
-    area.lineToPoint_((px(pts[-1][0]), bottom))
-    area.lineToPoint_((px(pts[0][0]), bottom))
-    area.closePath()
+    alpha = area
+    fill = line.copy()
+    fill.lineToPoint_((px(pts[-1][0]), bottom))
+    fill.lineToPoint_((px(pts[0][0]), bottom))
+    fill.closePath()
 
     # Colour runs: the segment from sample i to i+1 takes sample i's colour. Each run is drawn clipped to
     # its own x range (and everything to the chart's), so the colour changes exactly where serving changed.
@@ -971,7 +1154,7 @@ def draw_sparkline(rect, pts, t0, t1, grey: bool):
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath.clipRect_(((lo, y - 2), (hi - lo, h + 3)))
         NSGradient.alloc().initWithStartingColor_endingColor_(
-            c.colorWithAlphaComponent_(0.28), c.colorWithAlphaComponent_(0.0)).drawInBezierPath_angle_(area, 90)
+            c.colorWithAlphaComponent_(alpha), c.colorWithAlphaComponent_(0.0)).drawInBezierPath_angle_(fill, 90)
         c.setStroke()
         line.stroke()
         NSGraphicsContext.restoreGraphicsState()
@@ -1024,12 +1207,12 @@ def draw_warning_glyph(x: float, y: float):
 
 
 def menubar_image(m: Model):
-    """The meter, or a warning glyph in its place when nothing is serving. Drawn lazily, so its colours
-    follow the menu bar's own light/dark appearance (NSImage re-draws per appearance)."""
-    degraded = m.degraded
+    """The meter, or a warning glyph in its place when the pool is down, not reporting or empty. Drawn lazily, so
+    its colours follow the menu bar's own light/dark appearance (NSImage re-draws per appearance)."""
+    warn = m.warn
 
     def handler(rect):
-        if degraded:
+        if warn:
             draw_warning_glyph(0, 0)
         else:
             draw_meter(0, 0, m)
@@ -1040,10 +1223,467 @@ def menubar_image(m: Model):
 
 
 def menubar_title(m: Model):
-    """' 53%' (left, or used) in green/red; the last known % in grey when degraded; '—' only without a usable
-    status file."""
-    color = C.secondary() if m.degraded else headline_text(m)
+    """' 53%' (left, or used) in the pool's blue, or red (reserve, all out); the last known % in grey when down or
+    not reporting; '—' only without a usable status file."""
+    color = C.secondary() if m.warn else headline_text(m)
     return attributed(' ' + fmt_pct(m.shown(m.headline)), menubar_font(), color)
+
+
+# -- the pools' marks: the logos, from the pools' apps on this Mac ----------------------------------------------
+#
+# The repo ships no logo files. Each mark is an alpha mask made at runtime from the app's own icon, found by
+# bundle id: Codex from the ChatGPT app's icon-codex-light.png (the cloud is the only saturated thing in it, so
+# alpha comes from chroma and the `>_` prompt, the white squircle and the shadow stay cut out; the glossy
+# highlight on the top lobe is low-chroma lavender, so inside the cloud's outline a softer key fills it in); an
+# add-on's pool names its app and files (PoolUI.mark) and turns the icon into a mask itself (PoolUI.mark_alpha,
+# e.g. a menu bar template's own alpha, thickened by a pixel with dilate_alpha). A mask is trimmed to its bounds,
+# checked (not tiny, and plausibly covered), cached per (app path, version) and drawn flat in the pool's colour, on
+# the pixel grid. A missing app or file, a mask that fails the check, or anything that throws falls back to the
+# drawn glyph, with one line of stderr per cause, and is tried again at the next re-check. The pixel maths are pure
+# functions over bytes (chroma_alpha, flood_exterior, solid_inside, dilate_alpha, mask_bounds, valid_mask,
+# crop_alpha).
+
+MARKS = 'drawn'   # 'app': the logos (the live app); 'drawn': plain shapes, nothing read from /Applications
+                  # (imports, and --snapshot unless --marks app)
+MARK_APPS = {'codex': ('com.openai.codex', ('icon-codex-light.png',))}   # + an add-on pool's (PoolUI.mark)
+MARK_PX = 256                   # the Codex icon (1024^2) is rasterised this big before masking
+MARK_KEY = (32, 112)            # the chroma key for the cloud's outline: 0 alpha up to 32, full from 112
+MARK_INNER_KEY = (32, 64)       # inside the outline: the highlight starts at chroma 43, the `>_` prompt ends at 42
+MARK_RECHECK_S = 600.0          # an app's path and version are looked up again at most this often
+MARK_SCALE = {'codex': 1.0}     # optical size, as a fraction of the GLYPH box: the solid cloud fills it; a thin
+                                # mark (an add-on's PoolUI.mark_scale) overhangs it a little, so the two weigh the
+                                # same next to the 13 pt numbers (tuned by eye at 2x)
+
+
+def chroma_alpha(rgba: bytes, lo: int = 32, hi: int = 112) -> bytes:
+    """One alpha byte per pixel of `rgba` (w*h*4 bytes, premultiplied or not) from its chroma, max(r, g, b) -
+    min(r, g, b): 0 up to `lo`, 255 from `hi`, a straight ramp between, and never above the pixel's own alpha.
+    Saturated pixels stay, near-neutral ones (white, grey, black, a shadow) go."""
+    out = bytearray(len(rgba) >> 2)
+    span = max(1, hi - lo)
+    for i in range(0, len(rgba) - 3, 4):
+        r, g, b, a = rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]
+        c = max(r, g, b) - min(r, g, b)
+        v = 0 if c <= lo else 255 if c >= hi else (c - lo) * 255 // span
+        out[i >> 2] = v if v < a else a
+    return bytes(out)
+
+
+def flood_exterior(alpha: bytes, w: int, h: int, threshold: int = 32) -> bytes:
+    """One byte per pixel of a w*h mask: 1 where the pixel is outside the mark (below `threshold` and joined to the
+    bitmap's border by such pixels, four-connected), 0 inside it, in a hole or on its edge. The pure function under
+    solid_inside: the `>_` prompt is a hole, the highlight is inside, the white squircle is outside."""
+    n = w * h
+    out = bytearray(n)
+    if n == 0 or n != len(alpha):
+        return bytes(out)
+    stack = [i for i in range(w) if alpha[i] < threshold]
+    stack += [i for i in range(n - w, n) if alpha[i] < threshold]
+    stack += [y * w for y in range(1, h - 1) if alpha[y * w] < threshold]
+    stack += [y * w + w - 1 for y in range(1, h - 1) if alpha[y * w + w - 1] < threshold]
+    for i in stack:
+        out[i] = 1
+    while stack:
+        i = stack.pop()
+        x = i % w
+        for j in ((i - 1) if x > 0 else -1, (i + 1) if x < w - 1 else -1, i - w, i + w):
+            if 0 <= j < n and not out[j] and alpha[j] < threshold:
+                out[j] = 1
+                stack.append(j)
+    return bytes(out)
+
+
+def solid_inside(alpha: bytes, inner: bytes, exterior: bytes) -> bytes:
+    """`alpha` with every pixel that is not `exterior` (flood_exterior) raised to `inner`, the same pixels through a
+    softer key: the mark's outline keeps its edge, the inside loses its soft spots. A hole stays a hole as long as
+    the softer key leaves it alone."""
+    return bytes(a if e else (a if a >= b else b) for a, b, e in zip(alpha, inner, exterior))
+
+
+def dilate_alpha(alpha: bytes, w: int, h: int, radius: int = 1) -> bytes:
+    """The w*h mask thickened by `radius` pixels each way: each pixel becomes the largest alpha in its
+    (2 * radius + 1)-square (clipped at the edges). radius 0 is the mask itself."""
+    if radius <= 0 or w <= 0 or h <= 0:
+        return bytes(alpha)
+    # separable: the running maximum along each row, then along each column
+    rows = bytearray(alpha)
+    for y in range(h):
+        row = alpha[y * w:(y + 1) * w]
+        for x in range(w):
+            rows[y * w + x] = max(row[max(0, x - radius):x + radius + 1])
+    out = bytearray(len(alpha))
+    for x in range(w):
+        col = rows[x::w]
+        for y in range(h):
+            out[y * w + x] = max(col[max(0, y - radius):y + radius + 1])
+    return bytes(out)
+
+
+def spark_dilation(filename: str) -> int:
+    """How many pixels a thin menu bar template is thickened by (an add-on's mark_alpha): one at @2x and @3x (a
+    third or a half of a point: rays 1.3 pt wide then cover a pixel at menu bar size), none for the 1x file, where
+    a pixel is a whole point."""
+    return 1 if '@' in filename else 0
+
+
+def mask_bounds(alpha: bytes, w: int, h: int, threshold: int = 8):
+    """The box (x0, y0, x1, y1; x1 and y1 exclusive) around the pixels of a w*h mask above `threshold`, or None
+    when there are none."""
+    rows = [y for y in range(h) if max(alpha[y * w:(y + 1) * w], default=0) > threshold]
+    if not rows:
+        return None
+    cols = [x for x in range(w) if max(alpha[x::w], default=0) > threshold]
+    return cols[0], rows[0], cols[-1] + 1, rows[-1] + 1
+
+
+def crop_alpha(alpha: bytes, w: int, bounds) -> tuple[bytes, int, int]:
+    """(mask, width, height): the w-wide mask cut down to `bounds`."""
+    x0, y0, x1, y1 = bounds
+    return b''.join(alpha[y * w + x0:y * w + x1] for y in range(y0, y1)), x1 - x0, y1 - y0
+
+
+def valid_mask(alpha: bytes, w: int, h: int, bounds, min_side: float = 0.1, coverage=(0.15, 0.85)) -> bool:
+    """Whether a w*h mask trimmed to `bounds` is plausibly a mark: the box is at least `min_side` of the bitmap on
+    each side (a speck is not), and the mean alpha inside it is within `coverage` (an empty or a solid box is
+    not). The Codex cloud sits near 0.65, a thin spark near 0.4."""
+    if bounds is None:
+        return False
+    cut, cw, ch = crop_alpha(alpha, w, bounds)
+    if cw < min_side * w or ch < min_side * h or not cut:
+        return False
+    return coverage[0] <= sum(cut) / (255.0 * len(cut)) <= coverage[1]
+
+
+def render_rgba(path: str, px: int | None = None):
+    """The image file drawn into an RGBA bitmap: (bytes, w, h), row-packed; None when it cannot be read. px: the
+    longer side, in pixels, to draw it at (aspect kept); default, the file's own pixels (a template is not
+    resampled)."""
+    img = NSImage.alloc().initWithContentsOfFile_(path)
+    if img is None or not img.representations():
+        return None
+    rep0 = img.representations()[0]
+    sw, sh = max(1, int(rep0.pixelsWide())), max(1, int(rep0.pixelsHigh()))
+    k = 1.0 if px is None else px / max(sw, sh)
+    w, h = max(1, round(sw * k)), max(1, round(sh * k))
+    rep = new_bitmap(w, h, 1.0)
+    ctx = NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+    NSGraphicsContext.saveGraphicsState()
+    try:
+        NSGraphicsContext.setCurrentContext_(ctx)
+        ctx.setImageInterpolation_(NSImageInterpolationHigh)
+        NSColor.clearColor().set()
+        NSRectFillUsingOperation(((0, 0), (w, h)), NSCompositingOperationCopy)
+        img.drawInRect_fromRect_operation_fraction_(((0, 0), (w, h)), ((0, 0), (0, 0)),
+                                                    NSCompositingOperationSourceOver, 1.0)
+        ctx.flushGraphics()
+    finally:
+        NSGraphicsContext.restoreGraphicsState()
+    stride = rep.bytesPerRow()
+    raw = bytes(rep.bitmapData()[:stride * h])
+    if stride != w * 4:
+        raw = b''.join(raw[y * stride:y * stride + w * 4] for y in range(h))
+    return raw, w, h
+
+
+def mask_image(alpha: bytes, w: int, h: int):
+    """The mask as a w*h NSImage: white, with the mask for alpha. Drawn tinted by draw_mark; as a template it is
+    what a segmented control tints (the Settings switcher)."""
+    rep = new_bitmap(w, h, 1.0)
+    stride, buf = rep.bytesPerRow(), rep.bitmapData()
+    for y in range(h):
+        row = alpha[y * w:(y + 1) * w]
+        buf[y * stride:y * stride + 4 * w] = bytes(v for a in row for v in (a, a, a, a))   # premultiplied white
+    img = NSImage.alloc().initWithSize_((w, h))
+    img.addRepresentation_(rep)
+    return img
+
+
+def app_bundle(bundle_id: str):
+    """(app path, CFBundleShortVersionString) of the app installed for `bundle_id`, or None. Info.plist is read
+    fresh (NSBundle caches it), so an update in place changes the key; one that cannot be read (missing, or half
+    written while the app is being replaced) gives an empty version, so the next re-check sees a new key."""
+    url = NSWorkspace.sharedWorkspace().URLForApplicationWithBundleIdentifier_(bundle_id)
+    if url is None:
+        return None
+    path = str(url.path())
+    try:
+        with open(os.path.join(path, 'Contents', 'Info.plist'), 'rb') as f:
+            version = plistlib.load(f).get('CFBundleShortVersionString')
+    except (OSError, ValueError, TypeError, ExpatError, plistlib.InvalidFileException):
+        version = None
+    return path, str(version or '')
+
+
+_MARKS: dict = {}          # pool -> [looked up at (monotonic), app_bundle() key (None: no mark), NSImage or None]
+_MARK_NOTED: set = set()   # (pool, cause) already reported to stderr
+
+
+def mark_note(pool: str, cause: str, detail: str | None = None):
+    """One line of stderr per cause, ever: the mark is decoration, and this runs on every redraw. `detail` (an
+    exception's text) goes in the line, not in what makes a cause new, so a message that varies is still one."""
+    if (pool, cause) not in _MARK_NOTED:
+        _MARK_NOTED.add((pool, cause))
+        what = f'{cause} ({detail})' if detail else cause
+        print(f'codexpool-menubar: {POOL_NAME[pool]} mark: {what}; drawing the plain glyph instead', file=sys.stderr)
+
+
+def build_mark(pool: str, app_path: str):
+    """The pool's mask from the app at app_path, as mask_image(); None, with the cause noted, when it cannot be."""
+    names = MARK_APPS[pool][1]
+    res = os.path.join(app_path, 'Contents', 'Resources')
+    path = next((os.path.join(res, n) for n in names if os.path.isfile(os.path.join(res, n))), None)
+    if path is None:
+        mark_note(pool, f'no {names[0]} in {app_path}')
+        return None
+    ui = POOL_UI.get(pool)
+    rendered = render_rgba(path, MARK_PX if ui is None else getattr(ui, 'mark_px', None))
+    if rendered is None:
+        mark_note(pool, f'could not read {path}')
+        return None
+    rgba, w, h = rendered
+    if ui is None:
+        outline = chroma_alpha(rgba, *MARK_KEY)
+        alpha = solid_inside(outline, chroma_alpha(rgba, *MARK_INNER_KEY), flood_exterior(outline, w, h, MARK_KEY[0]))
+    else:
+        alpha = ui.mark_alpha(rgba, w, h, os.path.basename(path))
+    bounds = mask_bounds(alpha, w, h)
+    if not valid_mask(alpha, w, h, bounds):
+        mark_note(pool, f'{os.path.basename(path)} does not look like a mark')
+        return None
+    return mask_image(*crop_alpha(alpha, w, bounds))
+
+
+def app_mark(pool: str):
+    """The pool's mark from its app (mask_image(), trimmed), or None: draw the plain glyph. Made once per (app
+    path, version) and kept for the process; the app is looked up again at most every MARK_RECHECK_S, so an
+    install or update shows up without a relaunch. A build that fails is remembered without its key, so the next
+    re-check tries it again (an app half copied into /Applications is whole by then); a look-up that throws keeps
+    whatever the pool had. Never raises."""
+    now = time.monotonic()
+    entry = _MARKS.get(pool)
+    if entry is not None and now - entry[0] < MARK_RECHECK_S:
+        return entry[2]
+    try:
+        key = app_bundle(MARK_APPS[pool][0])
+    except Exception as e:  # noqa: BLE001 - any AppKit surprise
+        mark_note(pool, 'looking the app up failed', str(e))
+        if entry is None:
+            entry = _MARKS[pool] = [now, None, None]
+        entry[0] = now
+        return entry[2]
+    if key is None:
+        mark_note(pool, f'{MARK_APPS[pool][0]} is not installed')
+    if entry is not None and key == entry[1]:   # the same app, or still none
+        entry[0] = now
+        return entry[2]
+    image = None
+    if key is not None:
+        try:
+            image = build_mark(pool, key[0])
+        except Exception as e:  # noqa: BLE001 - a broken icon file must not take the menu bar down
+            mark_note(pool, f'could not make it from {key[0]}', str(e))
+    _MARKS[pool] = [now, key if image is not None else None, image]
+    return image
+
+
+def mark_keys():
+    """Which app builds each mark now, one key per pool in POOLS order, for the strip's signature: a new app or
+    version makes the item redraw. None while the marks are drawn shapes."""
+    if MARKS != 'app':
+        return None
+    return tuple(_MARKS[pool][1] if app_mark(pool) is not None else None for pool in POOLS)
+
+
+def bind_ctm():
+    """CGContextGetCTM from CoreGraphics, with CGContextRef registered as a CF type so NSGraphicsContext.CGContext()
+    hands one over without a warning (the menu bar's venv has the AppKit and Foundation bindings, not Quartz). None
+    when the binding fails: the marks are then drawn where they fall, not on the pixel grid."""
+    try:
+        bundle = objc.loadBundle('CoreGraphics', {}, bundle_path='/System/Library/Frameworks/CoreGraphics.framework',
+                                 scan_classes=False)
+        fns: dict = {}
+        objc.loadBundleFunctions(bundle, fns, [('CGContextGetCTM', b'{CGAffineTransform=dddddd}^{CGContext=}'),
+                                               ('CGContextGetTypeID', b'Q')])
+        objc.registerCFSignature('CGContextRef', b'^{CGContext=}', fns['CGContextGetTypeID']())
+        return fns['CGContextGetCTM']
+    except Exception:  # noqa: BLE001 - a PyObjC without the pieces: no snapping, nothing else lost
+        return None
+
+
+CGContextGetCTM = bind_ctm()
+
+
+def pixel_rect(rect):
+    """`rect` ((x, y), (w, h)), in the current context's points, moved onto its device pixel grid: the origin on a
+    pixel, the size a whole number of pixels (at least one), so an image drawn into it is rasterised once. The
+    rect itself when the context's transform cannot be read or is not axis-aligned."""
+    ctx = NSGraphicsContext.currentContext()
+    if ctx is None or CGContextGetCTM is None:
+        return rect
+    try:
+        m = CGContextGetCTM(ctx.CGContext())
+    except Exception:  # noqa: BLE001
+        return rect
+    if m.b or m.c or not m.a or not m.d:
+        return rect
+    (x, y), (w, h) = rect
+    sx, sy = abs(m.a), abs(m.d)
+    px = math.floor(m.a * x + m.tx + 0.5)          # the origin's device pixel
+    py = math.floor(m.d * y + m.ty + 0.5)
+    pw, ph = max(1, math.floor(w * sx + 0.5)), max(1, math.floor(h * sy + 0.5))
+    return ((px - m.tx) / m.a, (py - m.ty) / m.d), (pw / sx, ph / sy)
+
+
+def draw_mark(mark, pool: str, cx: float, cy: float, color, size: float):
+    """The mark centred on (cx, cy): fitted aspect-correct into a box of size * MARK_SCALE[pool], snapped to the
+    pixel grid (pixel_rect: rasterised once, crisp at 1x too), drawn flat in `color` the way symbol_image does
+    (SourceIn in its own image, so a dynamic colour follows the appearance)."""
+    mw, mh = mark.size()
+    box = size * MARK_SCALE[pool]
+    k = min(box / mw, box / mh)
+    w, h = mw * k, mh * k
+    (x, y), (w, h) = pixel_rect(((cx - w / 2, cy - h / 2), (w, h)))
+
+    def handler(rect):
+        NSGraphicsContext.currentContext().setImageInterpolation_(NSImageInterpolationHigh)
+        mark.drawInRect_(rect)
+        color.set()
+        NSRectFillUsingOperation(rect, NSCompositingOperationSourceIn)
+        return True
+    img = NSImage.imageWithSize_flipped_drawingHandler_((w, h), False, handler)
+    img.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+        ((x, y), (w, h)), ((0, 0), (0, 0)), NSCompositingOperationSourceOver, 1.0, True, None)
+
+
+# -- both pools: '⬡ 54%   ✳ 71%' (each pool's mark, then its number) -----------------------------------------
+
+GLYPH = 11.0          # the pool marks' box, pt
+GLYPH_GAP = 4.0       # mark to number
+HALF_GAP = 10.0       # between the two halves
+STRIP_PAD = 3.0       # inside the item, left and right
+STRIP_H = 18.0        # the strip image's height (the menu bar centres it)
+
+
+def draw_pool_glyph(pool: str, cx: float, cy: float, color, size: float = GLYPH, weight: float = 1.45):
+    """The pool's mark, centred on (cx, cy), flat in `color`: the real logo from the app on this Mac (app_mark,
+    when MARKS is 'app'), else a plain drawn shape, Codex a rounded hexagon outline and an add-on's pool whatever
+    its PoolUI.draw_glyph strokes."""
+    mark = app_mark(pool) if MARKS == 'app' else None
+    if mark is not None:
+        draw_mark(mark, pool, cx, cy, color, size)
+        return
+    color.setStroke()
+    p = NSBezierPath.bezierPath()
+    p.setLineWidth_(weight)
+    p.setLineCapStyle_(NSLineCapStyleRound)
+    p.setLineJoinStyle_(NSLineJoinStyleRound)
+    ui = POOL_UI.get(pool)
+    if ui is not None:
+        ui.draw_glyph(p, cx, cy, size, weight)
+    else:
+        p.setLineWidth_(weight * 0.9)
+        r = size / 2 - weight / 2 - 0.35
+        pts = [(cx + r * math.sin(math.radians(60 * i)), cy - r * math.cos(math.radians(60 * i))) for i in range(6)]
+        corner = 1.3   # rounded corners
+        mid = ((pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2)
+        p.moveToPoint_(mid)
+        for i in range(1, 7):
+            a, b = pts[i % 6], pts[(i + 1) % 6]
+            p.appendBezierPathWithArcFromPoint_toPoint_radius_(a, b, corner)
+        p.closePath()
+    p.stroke()
+
+
+def strip_number(m: Model):
+    """One pool's number in the strip: its colour (or red), grey when down or not reporting."""
+    return attributed(fmt_pct(m.shown(m.headline)), menubar_font(), C.secondary() if m.warn else headline_text(m))
+
+
+def strip_length() -> float:
+    """The two-pool item's fixed width: room for '100%' in both halves, so the items to the left never shift."""
+    w = text_width('100%', menubar_font())
+    return float(math.ceil(2 * STRIP_PAD + 2 * (GLYPH + GLYPH_GAP + w) + HALF_GAP))
+
+
+def strip_layout(codex: Model, second: Model) -> tuple[list, float]:
+    """([(pool, model, glyph x, number x)], split x) for a strip image as wide as strip_length(). Both halves sit
+    against the gap in the middle (Codex ends there, the second pool starts there), so each one moves only when
+    its own number changes width, never when the other pool's does. split: where the Codex half ends for a click
+    (the middle of the gap, the middle of the item)."""
+    split = strip_length() / 2
+    cw = math.ceil(strip_number(codex).size().width)
+    cx = math.floor(split - HALF_GAP / 2 - cw - GLYPH_GAP - GLYPH)   # at '100%' this is STRIP_PAD
+    kx = math.ceil(split + HALF_GAP / 2)
+    return [('codex', codex, cx, cx + GLYPH + GLYPH_GAP), (second.pool, second, kx, kx + GLYPH + GLYPH_GAP)], split
+
+
+def strip_image(codex: Model, second: Model):
+    """The two-pool item: each half is the pool's glyph (a warning triangle when that pool is down or not
+    reporting) and its number. Drawn lazily, so its colours follow the menu bar's appearance."""
+    halves, _ = strip_layout(codex, second)
+    w = strip_length()
+
+    def handler(rect):
+        for pool, m, gx, tx in halves:
+            cy = STRIP_H / 2
+            if m.warn:
+                draw_symbol('exclamationmark.triangle.fill', gx + GLYPH / 2, cy, 11, C.secondary(),
+                            fit=(GLYPH + 1, GLYPH))
+            else:
+                draw_pool_glyph(pool, gx + GLYPH / 2, cy, C.pool_fill(pool))
+            s = strip_number(m)
+            s.drawAtPoint_((tx, (STRIP_H - s.size().height) / 2))
+        return True
+    img = NSImage.imageWithSize_flipped_drawingHandler_((w, STRIP_H), True, handler)
+    img.setTemplate_(False)
+    return img
+
+
+def pool_severity(m: Model) -> float:
+    """How much a pool needs a look: down > all out > paid use > reserve > regular > empty. Keyboard and VoiceOver
+    activation opens the popover on the worse one."""
+    if m.status in ('down', 'stale', 'missing'):
+        return 4
+    if m.status == 'allout':
+        return 3
+    if m.spending is not None:
+        return 2.5
+    return {'reserve': 2, 'regular': 1}.get(m.status, 0)
+
+
+def pool_line(m: Model) -> str:
+    """One pool in the two-pool tooltip: 'Codex 54% left this week · serving Work B'."""
+    who = m.serving.label if m.serving else ''
+    figure = f'{fmt_pct(m.shown(m.headline))} {m.word} this week'
+    spend = m.spending
+    if spend is not None:
+        text = f'{figure} · {m.ui.spending_line(spend) if m.ui else spend.label}'
+    else:
+        text = {
+            'regular': f'{figure} · serving {who}',
+            'reserve': f'{figure} · serving the reserve {m.noun} {who}',
+            'allout': f'every {m.noun} is out',
+            'down': 'the pool is down',
+            'stale': 'not reporting',
+            'empty': f'no {m.noun}s yet',
+            'missing': 'not reporting',
+        }.get(m.status, m.status)
+    return f'{m.name} {text}{m.ui.tip_suffix(m) if m.ui else ""}'
+
+
+def strip_tooltip(codex: Model, second: Model) -> str:
+    return f'{pool_line(codex)}\n{pool_line(second)}'
+
+
+def strip_accessibility(codex: Model, second: Model) -> str:
+    """What VoiceOver reads for the two-pool item: 'Codex 54% left, <pool> 45% left, reserve'."""
+    def one(m):
+        if m.warn:
+            return f'{m.name} ' + {'down': 'down', 'empty': f'no {m.noun}s'}.get(m.status, 'not reporting')
+        state = getattr(m.ui, 'alarm_word', 'paid use').lower() if m.spending else \
+            {'reserve': 'reserve', 'allout': 'all out'}.get(m.status, '')
+        return ', '.join(t for t in (f'{m.name} {fmt_pct(m.shown(m.headline))} {m.word}', state) if t)
+    return ', '.join(one(m) for m in (codex, second))
 
 
 def menubar_tooltip(m: Model) -> str:
@@ -1071,7 +1711,8 @@ def menubar_signature(m: Model):
     """Everything the menu bar item shows; the item is only redrawn when this changes."""
     serving = m.shown(m.serving.week.used if m.serving and m.serving.week else None)
     return (m.status, m.headline_mode, m.display, fmt_pct(m.shown(m.headline)),
-            None if serving is None else round(serving), m.serving.label if m.serving else '')
+            None if serving is None else round(serving), m.serving.label if m.serving else '', m.spending is not None,
+            m.ui.tip_suffix(m) if m.ui else '')   # an add-on's word in the tooltip (its desktop app, say)
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1098,6 +1739,7 @@ APP_ROWS = (     # above Quit: the Settings window and its Setup assistant (SF S
 )
 
 BANNER_STATES = ('down', 'stale', 'missing', 'empty')
+TILE_GAP, TILE_H = 10.0, 66.0    # the two-pool switcher at the top of the popover
 ROW_PAD, ROW_GAP = 4.0, 2.0      # seat rows: inner top/bottom padding, space between rows
 SMALL_LH = 13.0                  # seat rows set their 11 pt lines on a tight 13 pt line
 
@@ -1106,11 +1748,31 @@ def fmt_day(t: dt.datetime | None) -> str:
     return t.astimezone().strftime('%b %-d') if t else ''
 
 
+def seat_windows(seat: Seat) -> list[tuple[str, float | None, dt.datetime | None]]:
+    """(label, used %, reset) for each limit a seat has: the week, the 5-hour window, then the scoped caps."""
+    out = [('Week', seat.week.used if seat.week else None, seat.week.reset_at if seat.week else None)]
+    if seat.short:
+        out.append(('5h', seat.short.used, seat.short.reset_at))
+    out += [(sc.name, sc.used, sc.reset_at) for sc in seat.scoped]
+    return out
+
+
+def binding_window(seat: Seat) -> int:
+    """Index in seat_windows() of the limit that binds: the most used one (the week on a tie)."""
+    wins = seat_windows(seat)
+    return max(range(len(wins)), key=lambda i: (wins[i][1] or 0, -i))
+
+
 def seat_right_text(seat: Seat, now: dt.datetime) -> str:
     if seat.state in OUT_STATES + ('parked',):
         back = seat.until or (seat.week.reset_at if seat.week else None)
         return f'Back in {fmt_span((back - now).total_seconds())}' if back and back > now else 'Back soon'
     reset = seat.week.reset_at if seat.week else None
+    ui = POOL_UI.get(seat.provider)
+    if ui is not None:   # its own line, e.g. the limit that binds: '5h resets in 2h 10m'
+        text = ui.seat_right_text(seat, now)
+        if text is not None:
+            return text
     return f'Resets in {fmt_span((reset - now).total_seconds())}' if reset and reset > now else ''
 
 
@@ -1145,10 +1807,16 @@ def headline_breakdown(m: Model) -> str:
 class PopoverLayout:
     """Builds the popover top to bottom. Each section method takes y and returns the y below it."""
 
-    def __init__(self, m: Model, range_key: str = '24h', toast: str | None = None):
+    def __init__(self, m: Model, range_key: str = '24h', toast: str | None = None, tiles: dict | None = None,
+                 busy: str | None = None):
+        """tiles: {pool: Model} for both pools when an add-on's pool is installed; the popover then opens with a
+        two-tile switcher and shows m (one of the two) below it. busy: an add-on's command is running (its
+        caption; its control is greyed meanwhile)."""
         self.m = m
+        self.tiles = tiles if tiles and len(POOLS) > 1 and all(p in tiles for p in POOLS) else None
         self.range_key = range_key if range_key in RANGES else '24h'
         self.toast = toast
+        self.busy = busy
         self.ops: list = []          # callables op(DrawState), run in order by PopoverView.drawRect_
         self.regions: list = []      # (rect, key) for clicks and hover
         self.tips: dict = {}         # key -> tooltip
@@ -1184,8 +1852,8 @@ class PopoverLayout:
 
     def build(self) -> PopoverLayout:
         m = self.m
-        y = self.header(11.0)
-        banner = m.status in BANNER_STATES
+        y = self.switcher(11.0) if self.tiles else self.header(11.0)
+        banner = m.status in BANNER_STATES or m.spending is not None
         hero = bool(m.seats) and m.headline is not None
         if banner or hero:
             y = self.rule(y)
@@ -1214,17 +1882,11 @@ class PopoverLayout:
         return f'{updated} · Serving {m.serving.label}' if m.serving_now and m.serving else updated
 
     def header_pill(self):
-        m = self.m
-        if m.status == 'regular':
-            return 'Regular', C.green_text(), C.soft(C.green(), 0.16)
-        if m.status == 'reserve':
-            return 'Reserve', C.red_text(), C.soft(C.red(), 0.16)
-        word = {'allout': 'All out', 'down': 'Down', 'stale': 'Stale', 'empty': 'No seats'}.get(m.status, 'No data')
-        return word, C.secondary(), C.wash(0.08)
+        return pool_pill(self.m)
 
     def header(self, y: float) -> float:
         tf, sf = font(15, NSFontWeightSemibold), font(11)
-        self.text('Codex Pool', PAD, y, tf, C.label())
+        self.text(f'{self.m.name} Pool', PAD, y, tf, C.label())
         text, fg, bg = self.header_pill()
         pw = pill_width(text)
         self.add(draw_pill, text, WIDTH - PAD - pw, y + (line_height(tf) - PILL_H) / 2, fg, bg)
@@ -1232,10 +1894,61 @@ class PopoverLayout:
         self.text(self.subtitle(), PAD, y, sf, C.secondary(), width=INNER - pw - 8)
         return y + line_height(sf)
 
+    def switcher(self, y: float) -> float:
+        """Two tiles, one per pool: glyph, name and state; the number (coloured like the menu bar); a 4 pt bar.
+        The selected one has a quiet fill and a hairline in its pool's colour. The subtitle follows it."""
+        w = (INNER - TILE_GAP) / 2
+        name_f, state_f, big, unit, cap_f = (font(12.5, NSFontWeightSemibold), font(10.5, NSFontWeightMedium),
+                                             font(21, NSFontWeightSemibold, mono=True),
+                                             font(13, NSFontWeightSemibold), font(11))
+        for i, pool in enumerate(POOLS):
+            tm = self.tiles[pool]
+            x = PAD + i * (w + TILE_GAP)
+            rect = ((x, y), (w, TILE_H))
+            selected = pool == self.m.pool
+            self.region(rect, ('pool', pool), radius=10, tint=C.wash(0.055) if selected else None)
+            if selected:
+                self.add(stroke_rounded, rect, 10, C.pool_fill(pool).colorWithAlphaComponent_(0.6), 1.0)
+            else:
+                self.add(stroke_rounded, rect, 10, C.separator(), 1.0)
+            ix, top = x + 10, y + 9
+            lh = line_height(name_f)
+            if tm.warn:
+                self.add(draw_symbol, 'exclamationmark.triangle.fill', ix + GLYPH / 2, top + lh / 2, 11,
+                         C.secondary(), NSFontWeightRegular, (GLYPH + 1, GLYPH))
+            else:
+                self.add(draw_pool_glyph, pool, ix + GLYPH / 2, top + lh / 2, C.pool_fill(pool))
+            self.text(tm.name, ix + GLYPH + 6, top, name_f, C.label())
+            word, fg, _ = pool_pill(tm)
+            ny = top + lh + 2
+            baseline = ny + round(big.ascender())
+            if tm.headline is None:   # no number (no accounts, no data): the state takes its place
+                sf2 = font(13, NSFontWeightMedium)
+                self.text(word, ix, baseline - sf2.ascender(), sf2, C.secondary(), width=w - 20)
+            else:
+                self.text(word, ix, top + name_f.ascender() - state_f.ascender(), state_f,
+                          C.secondary() if word == 'Regular' else fg, width=w - 20, align='right')
+                color = C.secondary() if tm.warn else headline_text(tm)
+                number = fmt_pct(tm.shown(tm.headline)).rstrip('%')
+                nw, uw = text_width(number, big), text_width('%', unit)
+                self.text(number, ix, ny, big, color)
+                self.text('%', ix + nw, baseline - unit.ascender(), unit, color)
+                self.text(tm.word, ix + nw + uw + 5, baseline - cap_f.ascender(), cap_f, C.secondary(),
+                          width=w - 20 - nw - uw - 5)
+            by = y + TILE_H - 9 - 4
+            self.add(draw_bar, ix, by, w - 20, 4.0, tm.shown(tm.headline), headline_fill(tm))
+            self.tips[('pool', pool)] = pool_line(tm)
+        y += TILE_H + 7
+        sf = font(11)
+        self.text(self.subtitle(), PAD, y, sf, C.secondary(), width=INNER)
+        return y + line_height(sf)
+
     # -- 2. problem banner (down / not reporting / no seats) -----------------------------------------
     def banner_copy(self):
-        """(title, body, (button title, action))."""
+        """(title, body, (button title, action) or a list of them, or None)."""
         m = self.m
+        if m.ui is not None:
+            return m.ui.banner_copy(m)
         if m.status == 'down':
             return 'Pool is down', 'Codex requests fail until the pool is running again.', ('Restart Pool', 'restart')
         if m.status == 'stale':
@@ -1250,8 +1963,10 @@ class PopoverLayout:
         return 'Pool not reporting', body, ('Run Doctor', 'doctor')
 
     def banner(self, y: float) -> float:
-        down = self.m.status == 'down'
-        title, body, (button, action) = self.banner_copy()
+        down = self.m.status == 'down' or (self.m.spending is not None and self.m.status not in BANNER_STATES)
+        title, body, button = self.banner_copy()
+        if self.tiles and title.startswith('Pool '):   # with the switcher up, say which pool
+            title = f'{self.m.name} pool {title[5:]}'
         box = 32.0
         self.add(fill_rounded, ((PAD, y), (box, box)), 8, C.soft(C.orange(), 0.16) if down else C.wash(0.08))
         self.add(draw_symbol, 'exclamationmark.triangle.fill', PAD + box / 2, y + box / 2 - 0.5, 14,
@@ -1263,12 +1978,16 @@ class PopoverLayout:
         by = y - 1 + line_height(tf) + 1
         self.add(draw_text_block, body, x, by, w, bf, C.secondary(), 3)
         by += text_block_height(body, bf, w, 3) + 8
-        bw = button_width(button)
-        self.region(((x, by), (bw, BUTTON_H)), ('action', action), radius=BUTTON_H / 2,
-                    tint=C.soft(C.orange(), 0.16) if down else C.wash(0.08))
+        if button is None:
+            return max(y + box, by - 8)
         bfont = button_font()
-        self.text(button, x, by + (BUTTON_H - line_height(bfont)) / 2, bfont,
-                  C.orange_text() if down else C.label(), width=bw, align='center')
+        for title, action in (button if isinstance(button, list) else [button]):   # one button, or a row of them
+            bw = button_width(title)
+            self.region(((x, by), (bw, BUTTON_H)), action if isinstance(action, tuple) else ('action', action),
+                        radius=BUTTON_H / 2, tint=C.soft(C.orange(), 0.16) if down else C.wash(0.08))
+            self.text(title, x, by + (BUTTON_H - line_height(bfont)) / 2, bfont,
+                      C.orange_text() if down else C.label(), width=bw, align='center')
+            x += bw + 8
         return max(y + box, by + BUTTON_H)
 
     # -- 3. hero -------------------------------------------------------------------------------------
@@ -1293,7 +2012,9 @@ class PopoverLayout:
         y += 10
 
         lines = []
-        parts = [f'{m.regular_ready} of {m.regular_total} regular seats ready'] if m.regular_total else []
+        parts = [f'{m.regular_ready} of {m.regular_total} regular {m.noun}s ready'] if m.regular_total else []
+        if total := total_text(m):
+            parts.insert(0, total)
         solo = len(m.reserve_seats) == 1
         for r in m.reserve_seats:
             name = 'reserve' if solo else f'{r.label} reserve'
@@ -1304,7 +2025,12 @@ class PopoverLayout:
             else:
                 parts.append(f'{name} at {fmt_pct(r.week.used if r.week else None)}')
         if parts:
-            lines.append((' · '.join(parts), font(12), C.label()))
+            text = ' · '.join(parts)
+            if text_width(text, font(12)) > INNER:   # '… accounts ready' is longer than '… seats ready': the reserve
+                text = text.replace(' regular ', ' ', 1)   # is named after it, so 'regular' is implied
+            lines.append((text, font(12), C.label()))
+        if m.ui is not None:   # what makes its seats change, e.g. the serving one's 5-hour window
+            lines += m.ui.hero_lines(m)
         if m.next_back and m.reporting:
             label, at = m.next_back
             loud = m.status in ('allout', 'reserve')   # it is the thing to wait for
@@ -1345,7 +2071,8 @@ class PopoverLayout:
             self.text('Collecting history…', PAD, y + (chart_h - line_height(f)) / 2, f, C.secondary(),
                       width=INNER, align='center')
         else:
-            self.add(draw_sparkline, ((PAD, y), (INNER, chart_h)), data.pts, data.t0, data.t1, not m.serving_now)
+            self.add(draw_sparkline, ((PAD, y), (INNER, chart_h)), data.pts, data.t0, data.t1, not m.serving_now,
+                     C.pool_fill(m.pool), getattr(m.ui, 'chart_area', 0.28))
         y += chart_h + 5
         self.text(f'{RANGES[self.range_key][1]} ago', PAD, y, af, C.secondary())
         self.text('now', PAD, y, af, C.secondary(), width=INNER, align='right')
@@ -1370,7 +2097,7 @@ class PopoverLayout:
     # -- 5. seats ------------------------------------------------------------------------------------
     def seats(self, y: float) -> float:
         hf, nf = font(11, NSFontWeightSemibold), font(10.5)
-        self.section_title('Seats', y, line_height(hf))
+        self.section_title(f'{self.m.noun.title()}s', y, line_height(hf))
         order = ORDER_TITLE[self.m.balancing]
         self.text(order, PAD, y + hf.ascender() - nf.ascender(), nf, C.secondary(), width=INNER, align='right')
         # Hovering it says how the pool picks a seat (a tooltip only: no highlight, no click).
@@ -1399,7 +2126,8 @@ class PopoverLayout:
         if stale or text == 'Out' or (seat.serving and not m.serving_now):
             fg, bg = quiet
         elif seat.serving:
-            fg, bg = (C.red_text(), C.soft(C.red())) if seat.reserve else (C.green_text(), C.soft(C.green()))
+            hot = seat.reserve or seat.spending
+            fg, bg = (C.red_text(), C.soft(C.red())) if hot else (C.green_text(), C.soft(C.green()))
         elif seat.state == 'parked':
             fg, bg = C.orange_text(), C.soft(C.orange())
         else:
@@ -1409,19 +2137,30 @@ class PopoverLayout:
         return w
 
     def seat_row(self, seat: Seat, y: float) -> float:
-        """Line 1: name, plan (and reserve) in small text, state at the right. Then the weekly bar (Team seats
-        add a thin 5-hour bar under it), then '49% used' / 'Resets in 6d 12h'. Blocked seats get a detail line, and
-        so do seats that still serve after OpenAI ended their sign-in ('Re-login soon'). Returns the y below the row."""
+        """Line 1: name, plan (and reserve) in small text, state at the right. Then the weekly bar (seats with a
+        5-hour window add a thin bar for it, and one per scoped cap), then '49% used' / 'Resets in 6d 12h'. Extra
+        lines: the problem of a blocked seat or one whose sign-in ended ('Re-login soon'), then an add-on pool's
+        own (PoolUI.seat_lines: why it parked the seat, its credits), with its tooltip (PoolUI.seat_tip). Returns
+        the y below the row."""
         m = self.m
         stale = not m.reporting
         dim = stale or seat.unavailable
+        ui = m.ui
         name_f, small_f = font(13, NSFontWeightSemibold), font(11)
         lh, sh = line_height(name_f), SMALL_LH
-        bars = [(seat.week, 5.0)] + ([(seat.short, 3.0)] if seat.short else [])
+        bars = [(seat.week, 5.0)] + ([(seat.short, 3.0)] if seat.short else []) + \
+            [(Window(sc.used, sc.reset_at, None), 3.0) for sc in seat.scoped]
         bars_h = sum(h for _, h in bars) + 3.0 * (len(bars) - 1)
         blocked, soon = seat.state == 'blocked', seat.sign_in_soon
-        detail = (seat.detail or 'Needs attention') if blocked else (SIGN_IN_ENDED if soon else '')
-        row_h = ROW_PAD + lh + 4 + bars_h + 4 + sh + (sh + 1 if detail else 0) + ROW_PAD
+        ended = ui.sign_in_ended_text if ui else SIGN_IN_ENDED
+        detail = (seat.detail or 'Needs attention') if blocked else (ended if soon else '')
+        extra = []   # (SF Symbol, its colour, text, text colour)
+        if detail:
+            extra.append(('exclamationmark.circle.fill' if blocked else 'exclamationmark.triangle.fill',
+                          C.secondary() if stale else C.red() if blocked else C.orange(), detail, C.secondary()))
+        if ui is not None:
+            extra += ui.seat_lines(seat, m, stale, bool(detail))
+        row_h = ROW_PAD + lh + 4 + bars_h + 4 + sh + (sh + 1) * len(extra) + ROW_PAD
         key = ('seat', seat.name or seat.label)
         reset_tip = ''
         if seat.resets:
@@ -1429,7 +2168,7 @@ class PopoverLayout:
             reset_tip = f'{seat.resets} banked reset{"s" if seat.resets != 1 else ""}{exp}. Click to use one.'
         self.region(((PAD - 8, y), (INNER + 16, row_h)), key, radius=9,
                     tint=C.row_tint() if seat.serving and m.serving_now else None,
-                    tip='  '.join(t for t in (detail, reset_tip) if t) or None)
+                    tip='  '.join(t for t in (detail, reset_tip, ui.seat_tip(seat) if ui else '') if t) or None)
 
         # line 1
         top = y + ROW_PAD
@@ -1468,43 +2207,58 @@ class PopoverLayout:
         y3 = top + lh + 4 + bars_h + 4
 
         # line 3
-        lw = self.usage_text(seat, PAD, y3, small_f, dim, stale)
         if blocked or soon:
             f = font(11, NSFontWeightMedium)
-            self.text('Re-login needed' if blocked else 'Re-login soon', PAD + lw + 12, y3, f,
-                      C.secondary() if stale else C.red_text() if blocked else C.orange_text(),
-                      width=INNER - lw - 12, align='right')
-            dy = y3 + sh + 1
-            self.add(draw_symbol, 'exclamationmark.circle.fill' if blocked else 'exclamationmark.triangle.fill',
-                     PAD + 5, dy + sh / 2, 10, C.secondary() if stale else C.red() if blocked else C.orange(),
-                     NSFontWeightRegular, (10, 10))
-            self.text(detail, PAD + 14, dy, small_f, C.secondary(), width=INNER - 14, truncate='middle')
+            right, rf, rc = ('Re-login needed' if blocked else 'Re-login soon'), f, \
+                C.secondary() if stale else C.red_text() if blocked else C.orange_text()
         else:
             right = seat_right_text(seat, m.now)
             if seat.resets and seat.unavailable and not stale and seat.state != 'disabled':
                 right = f'{right} · reset available' if right else 'Reset available'
-            self.text(right, PAD + lw + 12, y3, small_f, C.secondary(), width=INNER - lw - 12, align='right')
+            rf, rc = small_f, C.secondary()
+        rw = text_width(right, rf) if right else 0
+        lw = self.usage_text(seat, PAD, y3, small_f, dim, stale, room=INNER - rw - 12)
+        self.text(right, PAD + lw + 12, y3, rf, rc, width=INNER - lw - 12, align='right')
+        dy = y3 + sh + 1
+        for symbol, sc, text, tc in extra:
+            self.add(draw_symbol, symbol, PAD + 5, dy + sh / 2, 10, sc, NSFontWeightRegular, (10.5, 10))
+            self.text(text[:1].upper() + text[1:], PAD + 14, dy, small_f, tc, width=INNER - 14, truncate='middle')
+            dy += sh + 1
         return y + row_h
 
-    def usage_text(self, seat: Seat, x: float, y: float, f, dim: bool, stale: bool) -> float:
-        """'49% used' / '51% left', or for Team seats 'Week 64% · 5h 100%' / 'Week 36% left · 5h 0% left' with the
-        window that binds in the label colour. Returns the width drawn."""
+    def usage_text(self, seat: Seat, x: float, y: float, f, dim: bool, stale: bool, room: float | None = None) -> float:
+        """'49% used' / '51% left', or for seats with more limits 'Week 64% · 5h 100%' / 'Week 36% left · 5h 0% left'
+        (a scoped cap: '· Fable 64% left' too), the limit that binds in the label colour. With room, a line that
+        would not fit drops ' left' from all but the last figure, then from that too (an add-on's pool with
+        PoolUI.compact_usage never tries ' left' on every figure). Returns the width drawn."""
         m = self.m
-        week = seat.week.used if seat.week else None
-        if not seat.short:
+        wins = seat_windows(seat)
+        if len(wins) == 1:
+            week = wins[0][1]
             text = f'{fmt_pct(m.shown(week))} {m.word}'
             self.text(text, x, y, f, C.secondary() if dim else C.label())
             return text_width(text, f)
-        short = seat.short.used
-        binding = 'short' if (short or 0) > (week or 0) else 'week'
-        tail = ' left' if m.left else ''
+        binding = binding_window(seat)
+        sep = ' · '
+
+        def texts(tails):
+            return [f'{label} {fmt_pct(m.shown(used))}{tail}' for (label, used, _), tail in zip(wins, tails)]
+        n = len(wins)
+        options = [[' left'] * n, [''] * (n - 1) + [' left'], [''] * n] if m.left else [[''] * n]
+        if m.left and getattr(m.ui, 'compact_usage', False):
+            options = options[1:]
+        parts = texts(options[-1])
+        for tails in options:
+            parts = texts(tails)
+            if room is None or sum(text_width(t, f) for t in parts) + (n - 1) * text_width(sep, f) <= room:
+                break
         x0 = x
-        for i, (which, text, pct) in enumerate((('week', f'Week {fmt_pct(m.shown(week))}{tail}', week),
-                                                 ('short', f'5h {fmt_pct(m.shown(short))}{tail}', short))):
+        for i, text in enumerate(parts):
             if i:
-                self.text(' · ', x, y, f, C.secondary())
-                x += text_width(' · ', f)
-            strong = which == binding and not stale and (not dim or (pct or 0) >= 99.5)
+                self.text(sep, x, y, f, C.secondary())
+                x += text_width(sep, f)
+            pct = wins[i][1]
+            strong = i == binding and not stale and (not dim or (pct or 0) >= 99.5)
             self.text(text, x, y, f, C.label() if strong else C.secondary())
             x += text_width(text, f)
         return x - x0
@@ -1513,18 +2267,49 @@ class PopoverLayout:
     def footer(self, y: float) -> float:
         f = font(13)
         row_h = 22.0
+        ui = self.m.ui
         for symbol, title, action in FOOTER_ROWS:
             y = self.footer_row(y, row_h, symbol, title, action, f)
+        if ui is not None:   # the add-on pool's own rows (a route control, its desktop app)
+            y = ui.footer_rows(self, y, row_h, f)
         y = self.rule(y, 5, 5)
         for symbol, title, action, hint in APP_ROWS:
+            if ui is not None and action == 'addaccount':
+                title = ui.add_account_title
             y = self.footer_row(y, row_h, symbol, title, action, f, hint)
         y = self.footer_row(y, row_h, None, 'Quit', 'quit', f)
         version = self.m.version.split('-gate')[0].split('+gate')[0]
-        if version:
+        text = ' · '.join(t for t in (f'CLIProxyAPI {version}' if version else '',
+                                      ui.version_text(self.m) if ui else '') if t)
+        if text:
             vf = font(10.5)
-            self.text(f'CLIProxyAPI {version}', PAD, y - row_h + (row_h - line_height(vf)) / 2, vf, C.tertiary(),
+            self.text(text, PAD, y - row_h + (row_h - line_height(vf)) / 2, vf, C.tertiary(),
                       width=INNER - 2, align='right')
         return y
+
+    def segmented(self, y, row_h, kind, items, selected, tips: dict, enabled: bool = True) -> float:
+        """A small two-segment control at the row's right edge: (label, value) items, the selected value's segment
+        filled. Each segment is a click region (kind, value) with its tooltip. Greyed when not enabled (then the
+        segments only carry their tooltips). Returns its left edge."""
+        seg_f, seg_h = font(11, NSFontWeightMedium), 20.0
+        widths = [text_width(t, seg_f) + 16 for t, _ in items]
+        x = WIDTH - PAD - sum(widths) - 4
+        left = x
+        sy = y + (row_h - seg_h) / 2
+        self.add(fill_rounded, ((x, sy), (sum(widths) + 4, seg_h)), 6, C.wash(0.06))
+        x += 2
+        for (label, value), w in zip(items, widths):
+            rect = ((x, sy + 2), (w, seg_h - 4))
+            on = enabled and selected == value
+            self.regions.append((rect, (kind, value)))
+            if tips.get(value):
+                self.tips[(kind, value)] = tips[value]
+            if on:
+                self.add(fill_rounded, rect, 4.5, C.wash(0.13))
+            self.text(label, x, sy + 2 + (seg_h - 4 - line_height(seg_f)) / 2, seg_f,
+                      C.tertiary() if not enabled else C.label() if on else C.secondary(), width=w, align='center')
+            x += w
+        return left
 
     def footer_row(self, y, row_h, symbol, title, action, f, hint: str = '') -> float:
         self.region(((PAD - 8, y), (INNER + 16, row_h)), ('action', action), radius=6)
@@ -1612,7 +2397,7 @@ class PopoverView(NSView):
 
     def mouseMoved_(self, event):
         key, _ = self.region_at(event)
-        self.set_hover(key if key and key[0] != 'range' else None)
+        self.set_hover(key if key and key[0] != 'range' else None)   # route segments: a tooltip, no highlight
 
     def mouseExited_(self, event):
         self.set_hover(None)
@@ -1745,14 +2530,17 @@ def spawn(argv: list[str]) -> bool:
     return True
 
 
-def open_settings(pane: str | None = None) -> bool:
-    """Starts the Settings window (codexpool_settings.py) on `pane`, without blocking. It runs with this app's own
+def open_settings(pane: str | None = None, pool: str | None = None) -> bool:
+    """Starts the Settings window (codexpool_settings.py) on `pane` and, with `pool` (one of POOLS), on that
+    pool's side of the panes that have both, without blocking. It runs with this app's own
     interpreter, which has PyObjC (codexpool's own Python may not), given explicitly as for every action: never
     through PATH. A Settings window that is already open comes forward and shows the pane (it is single instance).
-    Its output goes to logs/settings.log, as with `codexpool gui`, so a traceback is never lost."""
+    Its output goes to logs/settings.log, as with `codexpool gui`, so a traceback is never lost. The window draws
+    the pools' marks as this app does (--marks), so `--marks drawn` here is drawn there too."""
     if not SETTINGS_SCRIPT.exists():
         return False
-    argv = [sys.executable, str(SETTINGS_SCRIPT)] + (['--pane', pane] if pane else [])
+    argv = [sys.executable, str(SETTINGS_SCRIPT)] + (['--pane', pane] if pane else []) + \
+        (['--pool', pool] if pool in POOLS else []) + ['--marks', MARKS]
     try:
         logs = POOL_DIR / 'logs'
         logs.mkdir(parents=True, exist_ok=True)
@@ -1799,22 +2587,28 @@ def wrapper_is_ours() -> bool:
         return False
 
 
-def run_codexpool(args: list[str], on_done=None):
+def run_codexpool(args: list[str], on_done=None, want_out: bool = False):
     """Runs `codexpool <args>` without blocking. on_done(returncode, last stderr line) runs on the main thread
-    when it exits. codexpool never prints tokens; its errors go to stderr."""
+    when it exits; with want_out, on_done(returncode, last stderr line, stdout) (the desktop commands print their
+    closing line there). codexpool never prints tokens; its errors go to stderr."""
     try:
         p = subprocess.Popen([*codexpool_argv(), *args], cwd=str(POOL_DIR), stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+                             stdout=subprocess.PIPE if want_out else subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             start_new_session=True)
     except OSError as e:
         if on_done:
-            on_done(127, e.strerror or str(e))
+            on_done(127, e.strerror or str(e), '') if want_out else on_done(127, e.strerror or str(e))
         return
 
     def wait():
-        _, err = p.communicate()
+        out, err = p.communicate()
         lines = [ln.strip() for ln in err.decode('utf-8', 'replace').splitlines() if ln.strip()]
         if on_done:
-            AppHelper.callAfter(on_done, p.returncode, lines[-1] if lines else '')
+            last = lines[-1] if lines else ''
+            if want_out:
+                AppHelper.callAfter(on_done, p.returncode, last, (out or b'').decode('utf-8', 'replace'))
+            else:
+                AppHelper.callAfter(on_done, p.returncode, last)
     threading.Thread(target=wait, daemon=True).start()
 
 
@@ -1876,9 +2670,17 @@ class Controller(NSObject):
         if self is None:
             return None
         self.source = DataSource()
-        self.model: Model | None = None
+        self.sources = {'codex': self.source}   # + the add-on pool's, from its PoolUI's files
+        for pool, ui in POOL_UI.items():
+            self.sources[pool] = DataSource(ui.status_file, ui.history_file, pool=pool)
+        self.model: Model | None = None      # the pool the popover shows (self.tab)
+        self.models: dict = {}               # {'codex': Model, <add-on pool>: Model or None (not installed)}
+        self.tab = 'codex'                   # one of POOLS
+        self.closed_tab = None               # the tab the popover showed when it last started closing
+        self.two = False                     # the item shows both pools
         self.range_key = '24h'
         self.toast: tuple[str, float] | None = None
+        self.busy: str | None = None         # an add-on's command runs (its caption): its control is greyed
         self.item = None
         self.popover = None
         self.content = None
@@ -1928,24 +2730,36 @@ class Controller(NSObject):
 
     # -- refresh ---------------------------------------------------------------------------------------
     @objc.python_method
-    def current_model(self) -> Model:
-        return self.source.model(wake_grace=time.monotonic() - self.woke_at < WAKE_GRACE_S)
+    def current_model(self, pool: str = 'codex') -> Model | None:
+        """The pool's model now; None for an add-on's pool when it is not installed."""
+        grace = time.monotonic() - self.woke_at < WAKE_GRACE_S
+        src = self.sources[pool]
+        return src.model(wake_grace=grace) if pool == 'codex' or src.installed else None
+
+    @objc.python_method
+    def current_models(self) -> dict:
+        return {p: self.current_model(p) for p in POOLS}
 
     @objc.python_method
     def refresh(self, force: bool = False):
-        self.source.poll(force=force)
-        self.apply(self.current_model())
+        for src in self.sources.values():
+            src.poll(force=force)
+        self.apply(self.current_models())
 
     def tick_(self, timer):
-        changed = self.source.poll()
-        model = self.current_model()
-        crossed = self.model is None or model.status != self.model.status  # e.g. went stale without a write
+        changed = False
+        for src in self.sources.values():
+            changed = src.poll() or changed
+        models = self.current_models()
+        old = self.models or {}
+        crossed = any((models[p] is None) != (old.get(p) is None) or
+                      (models[p] is not None and models[p].status != old[p].status) for p in POOLS)
         toast_expired = self.toast is not None and time.time() > self.toast[1]
         if toast_expired:
             self.toast = None
         due = self.popover.isShown() and time.time() - self.last_render >= COUNTDOWN_EVERY_S
         if changed or crossed or toast_expired or due:
-            self.apply(model)
+            self.apply(models)
 
     def didWake_(self, note):
         """After sleep status.json is old until the guard's next pass: hold off 'not reporting' for a bit."""
@@ -1957,16 +2771,41 @@ class Controller(NSObject):
         self.refresh(force=True)
 
     @objc.python_method
-    def apply(self, model: Model):
-        self.model = model
-        self.first_run(model)
-        sig = menubar_signature(model)
+    def apply(self, models: dict):
+        """models: current_models(). Without an add-on's pool (none, or not installed) the item is the Codex meter
+        and number as before; with it, one strip with both pools' numbers."""
+        if isinstance(models, Model):   # an older caller: the Codex pool alone
+            models = {'codex': models}
+        self.models = models
+        codex = models['codex']
+        second = models.get(POOLS[1]) if len(POOLS) > 1 else None
+        if second is None:
+            self.tab = 'codex'
+        self.model = models.get(self.tab) or codex
+        self.first_run(codex)
+        sig = (menubar_signature(codex), menubar_signature(second) if second else None,
+               mark_keys() if second else None)   # a newly installed or updated app redraws the strip's marks
         if sig != self.bar_signature:
             self.bar_signature = sig
             button = self.item.button()
-            button.setImage_(menubar_image(model))
-            button.setAttributedTitle_(menubar_title(model))
-            button.setToolTip_(fresh(menubar_tooltip(model)))
+            if second is not None:
+                if not self.two:
+                    self.two = True
+                    self.item.setLength_(strip_length())
+                    button.setImagePosition_(NSImageOnly)
+                    button.setTitle_('')
+                button.setImage_(strip_image(codex, second))
+                button.setToolTip_(fresh(strip_tooltip(codex, second)))
+                button.setAccessibilityLabel_(fresh(strip_accessibility(codex, second)))
+            else:
+                if self.two:
+                    self.two = False
+                    self.item.setLength_(menubar_length())
+                    button.setImagePosition_(NSImageLeft)
+                    button.setAccessibilityLabel_(None)
+                button.setImage_(menubar_image(codex))
+                button.setAttributedTitle_(menubar_title(codex))
+                button.setToolTip_(fresh(menubar_tooltip(codex)))
         if self.popover.isShown():
             self.render()
 
@@ -1996,8 +2835,10 @@ class Controller(NSObject):
     @objc.python_method
     def render(self, reset_scroll: bool = False):
         toast = self.toast[0] if self.toast and time.time() <= self.toast[1] else None
-        model, range_key = self.model, self.range_key
-        self.content.show(lambda: PopoverLayout(model, range_key, toast).build(), self.max_height(), reset_scroll)
+        tiles = dict(self.models) if len(POOLS) > 1 and self.models.get(POOLS[1]) is not None else None
+        model, range_key, busy = self.model, self.range_key, self.busy
+        self.content.show(lambda: PopoverLayout(model, range_key, toast, tiles=tiles, busy=busy).build(),
+                          self.max_height(), reset_scroll)
         self.popover.setContentSize_((WIDTH, self.content.height()))
         self.last_render = time.time()
 
@@ -2007,13 +2848,44 @@ class Controller(NSObject):
         if self.popover.isShown():
             self.render()
 
+    @objc.python_method
+    def clicked_pool(self) -> str:
+        """Which pool a click on the item means: with both pools, the half under the pointer (the click's x
+        against the middle of the gap between the halves); a keyboard or VoiceOver press opens the pool in the
+        worse state (down > all out > paid use > reserve > regular)."""
+        codex = self.models.get('codex')
+        second = self.models.get(POOLS[1]) if len(POOLS) > 1 else None
+        if not self.two or codex is None or second is None:
+            return 'codex'
+        button = self.item.button()
+        event = NSApplication.sharedApplication().currentEvent()
+        mouse = (NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp, NSEventTypeRightMouseDown, NSEventTypeRightMouseUp)
+        if event is not None and event.type() in mouse and event.window() is not None and \
+                event.window() == button.window():
+            x = button.convertPoint_fromView_(event.locationInWindow(), None).x
+            _, split = strip_layout(codex, second)
+            offset = (button.bounds().size.width - strip_length()) / 2   # the image is centred in the button
+            return 'codex' if x < offset + split else second.pool
+        return max(POOLS, key=lambda p: (pool_severity(self.models[p]), p == 'codex'))
+
     def togglePopover_(self, sender):
+        pool = self.clicked_pool()
         if self.popover.isShown():
-            self.popover.performClose_(sender)
+            if pool != self.tab:          # the other half: switch, keep it open
+                self.show_popover(pool)
+            else:
+                self.popover.performClose_(sender)
             return
-        if time.monotonic() - self.closed_at < REOPEN_GUARD_S:
+        if time.monotonic() - self.closed_at < REOPEN_GUARD_S and pool == self.closed_tab:
             return   # this is the click that just closed the (transient) popover
+        self.show_popover(pool)
+
+    @objc.python_method
+    def show_popover(self, pool: str = 'codex'):
         self.refresh()                   # also brings the menu bar item up to date
+        if self.models.get(pool) is not None:
+            self.tab = pool
+            self.model = self.models[pool]
         self.content.set_hover(None)     # no mouseExited arrives when the popover closes
         self.render(reset_scroll=True)
         button = self.item.button()
@@ -2024,6 +2896,7 @@ class Controller(NSObject):
     def popoverWillClose_(self, note):
         if not self.closing_elsewhere:   # it may be the transient close on the status item's own mouse-down
             self.closed_at = time.monotonic()
+            self.closed_tab = self.tab
         self.unwatch_outside()
 
     def popoverDidClose_(self, note):
@@ -2109,6 +2982,11 @@ class Controller(NSObject):
         if kind == 'range':
             self.range_key = value
             self.render()
+        elif kind == 'pool':
+            if value != self.tab and self.models.get(value) is not None:
+                self.tab, self.model = value, self.models[value]
+                self.content.set_hover(None)
+                self.render(reset_scroll=True)
         elif kind == 'seat':
             seat = next((s for s in self.model.seats if (s.name or s.label) == value), None)
             if seat:
@@ -2119,15 +2997,26 @@ class Controller(NSObject):
                     self.menu_open = False
         elif kind == 'action':
             self.run_action(value)
+        elif self.model is not None and self.model.ui is not None:   # the add-on pool's own controls
+            self.model.ui.handle_region(kind, value, self)
 
     @objc.python_method
     def run_action(self, action: str):
-        terminal = {'status': cp_command('status', '--live'), 'doctor': cp_command('doctor'),
-                    'log': cp_command('logs', '-f'), 'addseat': cp_command('login')}
+        """A footer or banner action, for the pool the popover shows (an add-on pool's tab has its own Status…,
+        Pool log, Docs and Add account…, through its command prefix; Doctor covers both)."""
+        ui = POOL_UI.get(self.tab) if self.models.get(self.tab) is not None else None
+        pre = list(ui.command_prefix) if ui else []
+        terminal = {'status': cp_command(*pre, 'status', '--live'), 'doctor': cp_command('doctor'),
+                    'log': cp_command(*pre, 'logs', '-f')}
+        if ui is None:
+            terminal['addseat'] = cp_command('login')
         if action in ('settings', 'addaccount'):
             self.popover.performClose_(None)
-            if not open_settings(None if action == 'settings' else 'setup-accounts'):
-                if action == 'addaccount':   # no Settings window installed: the Terminal sign-in, as before
+            # the pool of the tab you are on (with the add-on's pool installed; else Settings has only the Codex side)
+            second = len(POOLS) > 1 and self.models.get(POOLS[1]) is not None
+            pool = (ui.id if ui else 'codex') if second else None
+            if not open_settings(None if action == 'settings' else 'setup-accounts', pool):
+                if action == 'addaccount' and ui is None:   # no Settings window: the Terminal sign-in, as before
                     open_in_terminal(terminal['addseat'])
                 else:
                     self.say('Settings aren\u2019t installed; run codexpool install')
@@ -2136,7 +3025,8 @@ class Controller(NSObject):
             open_in_terminal(terminal[action])
         elif action == 'docs':
             self.popover.performClose_(None)
-            spawn(['/usr/bin/open', str(DOCS) if DOCS.exists() else DOCS_URL])
+            docs, url = (ui.docs_path, ui.docs_url) if ui else (DOCS, DOCS_URL)
+            spawn(['/usr/bin/open', str(docs) if docs.exists() else url])
         elif action == 'refresh':
             self.say('Refreshing…')
             run_codexpool(['guard'], self.refreshed)
@@ -2166,11 +3056,16 @@ class Controller(NSObject):
         top = max((s.priority for s in self.model.seats if s.priority is not None), default=0)
         priority = '' if seat.priority is None else str(int(seat.priority))
 
-        def add(title, symbol, verb, enabled=True, extra=''):
-            item = menu.addItemWithTitle_action_keyEquivalent_(title, 'seatAction:', '')
-            item.setTarget_(self)
-            item.setEnabled_(enabled and bool(seat.name))
-            item.setRepresentedObject_([verb, fresh(seat.name), fresh(seat.label), extra, priority])
+        pool = seat.provider
+        ui = POOL_UI.get(pool)
+
+        def add(title, symbol, verb=None, enabled=True, extra=''):
+            """An action; with no verb, a line that only says something (disabled, its tooltip the reason)."""
+            item = menu.addItemWithTitle_action_keyEquivalent_(title, 'seatAction:' if verb else None, '')
+            if verb:
+                item.setTarget_(self)
+                item.setRepresentedObject_([verb, fresh(seat.name), fresh(seat.label), extra, priority, pool])
+            item.setEnabled_(bool(verb) and enabled and bool(seat.name))
             img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, None)
             if img is not None:
                 item.setImage_(img)
@@ -2182,7 +3077,13 @@ class Controller(NSObject):
         relogin_first = seat.state == 'blocked' or seat.sign_in_soon
         if relogin_first:   # the fix comes first
             add('Re-login…', 'person.badge.key', 'login')
-        if seat.state == 'parked':
+        own = ui.seat_rotation_item(seat) if ui else None   # the add-on's own line in place of Enable/Disable
+        if own is not None:
+            title, symbol, verb, tip = own
+            item = add(title, symbol, verb)
+            if tip:
+                item.setToolTip_(fresh(tip))
+        elif seat.state == 'parked':   # a credits-off park: enable overrides it until the limit resets
             add('Enable (spends credits)…', 'play.circle', 'enable-parked')
         elif seat.state == 'disabled':
             add('Enable', 'play.circle', 'enable')
@@ -2199,21 +3100,32 @@ class Controller(NSObject):
             item.setToolTip_(fresh('Soonest reset first sets the order. Change it in Settings \u2192 Balancing.'))
         if not relogin_first:
             add('Re-login…', 'person.badge.key', 'login')
+        extras = ui.seat_menu_extra(seat) if ui else []   # e.g. the pool's usage page in the browser
+        if extras:
+            menu.addItem_(NSMenuItem.separatorItem())
+            for title, symbol, verb in extras:
+                add(title, symbol, verb)
         return menu
 
     def seatAction_(self, item):
-        verb, name, label, extra, priority = [str(x) for x in item.representedObject()]
+        verb, name, label, extra, priority, *rest = [str(x) for x in item.representedObject()]
+        pool = rest[0] if rest else 'codex'
+        ui = POOL_UI.get(pool)
+        pre = list(ui.command_prefix) if ui else []
         seat = next((s for s in (self.model.seats if self.model else []) if s.name == name), None)
+        if ui is not None and ui.seat_action(verb, seat, self):
+            return
         if verb == 'login':
             # --no-open: the sign-in URL is printed, to open in a private window signed in to the right account
             # (the default browser is usually signed in to another one). --priority: a re-login rewrites the
             # seat file, which holds the priority, so pass the current one back.
             self.popover.performClose_(None)
-            args = ['login', label, '--no-open'] + (['--priority', priority] if priority else [])
+            args = [*pre, 'login', label, '--no-open'] + (['--priority', priority] if priority else [])
             who = seat.email if seat and seat.email else label
+            site = f' at {ui.sign_in_site}' if ui else ''
             open_in_terminal(cp_command(*args), intro=(
                 f'Re-login {label}: open the sign-in URL below in a private browser window',
-                f'and sign in as {who}.'))
+                f'and sign in{site} as {who}.'))
             return
         if verb == 'enable-parked' and not self.confirm_spend(seat, label):
             return
@@ -2231,7 +3143,7 @@ class Controller(NSObject):
             'first': (['priority', name, extra], f'Moving {label} to the front…', f'{label} is now first'),
         }[verb]
         self.say(doing)
-        run_codexpool(args, lambda code, err: self.after_action(done, args[0], code, err))
+        run_codexpool([*pre, *args], lambda code, err: self.after_action(done, args[0], code, err))
 
     @objc.python_method
     def confirm_reset(self, seat: Seat | None, label: str) -> bool:
@@ -2255,9 +3167,13 @@ class Controller(NSObject):
         when = f' in {fmt_span((until - utcnow()).total_seconds())}' if until and until > utcnow() else ''
         alert = NSAlert.alloc().init()
         alert.setMessageText_(fresh(f'Enable {label} and spend credits?'))
-        alert.setInformativeText_(fresh(
-            f'The credit guard parked {label} because its plan limit is used up and further requests would '
-            f'spend credits. Enabling it overrides the guard until the limit resets{when}.'))
+        ui = POOL_UI.get(seat.provider) if seat is not None else None
+        if ui is not None:
+            alert.setInformativeText_(fresh(ui.enable_parked_text(label, when)))
+        else:
+            alert.setInformativeText_(fresh(
+                f'The credit guard parked {label} because its plan limit is used up and further requests would '
+                f'spend credits. Enabling it overrides the guard until the limit resets{when}.'))
         alert.addButtonWithTitle_('Enable')
         alert.addButtonWithTitle_('Cancel')
         self.popover.performClose_(None)
@@ -2315,19 +3231,35 @@ def rgb(r, g, b, a=1.0):
 
 
 def snapshot(out: str, appearance_name: str, status_path: Path, history_path: Path | None,
-             now: dt.datetime | None, range_key: str, max_height: float | None = None, hover: tuple | None = None):
+             now: dt.datetime | None, range_key: str, max_height: float | None = None, hover: tuple | None = None,
+             pool_status: Path | None = None, pool_history: Path | None = None, pool: str = 'codex',
+             marks: str = 'drawn'):
+    """pool_status: the add-on pool's status file, which makes that pool installed (both numbers in the item, the
+    switcher in the popover; ignored without an add-on); pool: the tab the popover shows; marks: 'drawn' (plain
+    shapes, nothing read from /Applications, so the output is reproducible) or 'app' (the logos from the apps on
+    this Mac, as live)."""
+    global MARKS
+    MARKS = marks
     NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyProhibited)
     dark = appearance_name == 'dark'
     appearance = NSAppearance.appearanceNamed_(NSAppearanceNameDarkAqua if dark else NSAppearanceNameAqua)
     source = DataSource(status_path, history_path)
     source.poll(force=True)
-    model = source.model(now)
+    model = codex = source.model(now)
+    tiles = None
+    if pool_status is not None and len(POOLS) > 1:
+        second = POOLS[1]
+        csource = DataSource(pool_status, pool_history, pool=second)
+        csource.poll(force=True)
+        if csource.is_installed(now):
+            tiles = {'codex': codex, second: csource.model(now)}
+            model = tiles.get(pool, codex)
 
     # Popover: the real PopoverContent, cached offscreen at 2x, then set on an opaque stand-in for the
     # popover material (vibrancy needs a window).
     content = PopoverContent.alloc().initWithFrame_(((0, 0), (WIDTH, 400)))
     content.setAppearance_(appearance)
-    content.show(lambda: PopoverLayout(model, range_key).build(), max_height)
+    content.show(lambda: PopoverLayout(model, range_key, tiles=tiles).build(), max_height)
     if hover:
         content.set_hover(hover)
         tip = content.lay.tips.get(hover)
@@ -2362,20 +3294,29 @@ def snapshot(out: str, appearance_name: str, status_path: Path, history_path: Pa
 
     write_png(render_offscreen(compose, W, H, appearance), out)
 
-    # Menu bar item at 2x on a menu-bar-like strip: the item's fixed-width box, content left-aligned,
-    # then the clock for scale.
-    image, title = menubar_image(model), menubar_title(model)
-    item_w = menubar_length()
+    # Menu bar item at 2x on a menu-bar-like strip: the item's fixed-width box, content left-aligned (both
+    # pools: centred), then the clock for scale.
     clock = attributed('Sat 26 Sep  1:07', font(NSFont.menuBarFontOfSize_(0).pointSize()), C.label())
+    if tiles:
+        image, title = strip_image(tiles['codex'], tiles[POOLS[1]]), None
+        item_w = strip_length()
+    else:
+        image, title = menubar_image(model), menubar_title(model)
+        item_w = menubar_length()
     x0, gap = 10.0, 10.0
     bw, bh = x0 + item_w + gap + math.ceil(clock.size().width) + 12, 24.0
 
     def compose_bar():
         fill_rect(((0, 0), (bw, bh)), rgb(0.13, 0.13, 0.15) if dark else rgb(0.93, 0.93, 0.95))
-        image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
-            ((x0, (bh - METER_H) / 2), (METER_W, METER_H)), ((0, 0), (0, 0)), NSCompositingOperationSourceOver,
-            1.0, True, None)
-        title.drawAtPoint_((x0 + METER_W + 1, (bh - title.size().height) / 2))
+        if title is None:
+            image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+                ((x0, (bh - STRIP_H) / 2), (item_w, STRIP_H)), ((0, 0), (0, 0)), NSCompositingOperationSourceOver,
+                1.0, True, None)
+        else:
+            image.drawInRect_fromRect_operation_fraction_respectFlipped_hints_(
+                ((x0, (bh - METER_H) / 2), (METER_W, METER_H)), ((0, 0), (0, 0)), NSCompositingOperationSourceOver,
+                1.0, True, None)
+            title.drawAtPoint_((x0 + METER_W + 1, (bh - title.size().height) / 2))
         clock.drawAtPoint_((x0 + item_w + gap, (bh - clock.size().height) / 2))
 
     base = out[:-4] if out.lower().endswith('.png') else out
@@ -2384,7 +3325,9 @@ def snapshot(out: str, appearance_name: str, status_path: Path, history_path: Pa
     print(f'{base}-menubar.png')
 
 
-def run_app():
+def run_app(marks: str = 'app'):
+    global MARKS
+    MARKS = marks
     patch_bundle_identity()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -2405,9 +3348,18 @@ def main(argv=None):
     p.add_argument('--max-height', type=float, help='cap the popover height, in pt (snapshot)')
     p.add_argument('--hover', metavar='KIND:VALUE',
                    help='highlight a region, e.g. action:doctor, and print its tooltip, e.g. tip:headline (snapshot)')
+    p.add_argument('--pool-status', type=Path, metavar='PATH',
+                   help="an add-on pool's status file: that pool is installed (snapshot; default: none)")
+    p.add_argument('--pool-history', type=Path, metavar='PATH',
+                   help='its history (snapshot; default: the history file named like --pool-status, if any)')
+    p.add_argument('--pool', choices=POOLS + pool_aliases(), default='codex',
+                   help='the tab the popover shows (snapshot)')
+    p.add_argument('--marks', choices=('drawn', 'app'),
+                   help="the pools' marks: plain drawn shapes, or the logos from the pools' apps on this Mac "
+                        "(default: drawn for a snapshot, app for the live app)")
     args = p.parse_args(argv)
     if not args.snapshot:
-        run_app()
+        run_app(args.marks or 'app')
         return
     history = args.history
     if history is None:
@@ -2417,7 +3369,72 @@ def main(argv=None):
     if args.now and now is None:
         p.error(f'--now: not an ISO-8601 time: {args.now}')
     hover = tuple(args.hover.split(':', 1)) if args.hover and ':' in args.hover else None
-    snapshot(args.snapshot, args.appearance, args.status, history, now, args.range_key, args.max_height, hover)
+    pool_history = args.pool_history
+    if args.pool_status is not None and pool_history is None:
+        sibling = args.pool_status.with_name(args.pool_status.name.replace('status', 'history')
+                                             .replace('.json', '.jsonl'))
+        pool_history = sibling if sibling != args.pool_status and sibling.exists() else None
+    snapshot(args.snapshot, args.appearance, args.status, history, now, args.range_key, args.max_height, hover,
+             args.pool_status, pool_history, pool_id(args.pool), args.marks or 'drawn')
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# 11. Add-ons: a second pool's PoolUI (addons/<id>/menubar_ext.py; docs/ADDONS.md)
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+
+def pool_aliases() -> tuple:
+    """Other names --pool takes for an add-on's pool (the add-on's own id, say)."""
+    return tuple(a for ui in POOL_UI.values() for a in getattr(ui, 'aliases', ()))
+
+
+def pool_id(name: str | None) -> str | None:
+    """A pool id, from its id or one of its aliases (None when it is neither)."""
+    if name in POOLS:
+        return name
+    return next((ui.id for ui in POOL_UI.values() if name in getattr(ui, 'aliases', ())), None)
+
+
+def register_pool_ui(ui):
+    """Adds the add-on's pool to POOLS and the tables the drawing reads. One add-on pool at most: the item has two
+    halves and the popover two tiles."""
+    global POOLS
+    if not isinstance(ui.id, str) or ui.id in POOLS or ui.id in POOL_UI:
+        raise ValueError(f'pool id {ui.id!r} is taken or not a string')
+    if POOL_UI:
+        raise ValueError(f'a second add-on pool ({ui.id!r}): the menu bar shows at most two pools')
+    POOL_UI[ui.id] = ui
+    POOLS += (ui.id,)
+    POOL_NAME[ui.id] = ui.title
+    POOL_COLORS[ui.id] = tuple(ui.colors)
+    if getattr(ui, 'mark', None):
+        MARK_APPS[ui.id] = (ui.mark[0], tuple(ui.mark[1]))
+    MARK_SCALE[ui.id] = float(getattr(ui, 'mark_scale', 1.0))
+
+
+def load_pool_extensions(addons_dir: Path = ADDONS_DIR):
+    """One PoolUI per addons/<id>/menubar_ext.py, loaded as codexpool_menubar_ext_<id> with this module as the
+    argument of its load(). Ordered by id; a broken one is noted on stderr and skipped, and the app runs with the
+    Codex pool alone (an add-on's failure never takes the menu bar down)."""
+    import importlib.util
+    try:
+        dirs = sorted(d for d in addons_dir.iterdir() if d.is_dir() and (d / 'menubar_ext.py').is_file())
+    except OSError:
+        return
+    for d in dirs:
+        name = f'codexpool_menubar_ext_{d.name}'
+        try:
+            spec = importlib.util.spec_from_file_location(name, d / 'menubar_ext.py')
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[name] = mod
+            spec.loader.exec_module(mod)
+            register_pool_ui(mod.load(sys.modules[__name__]))
+        except Exception as e:  # noqa: BLE001 - an add-on must not take the menu bar down
+            sys.modules.pop(name, None)
+            print(f'codexpool-menubar: add-on {d.name}: menubar_ext.py failed to load ({e}); running without it',
+                  file=sys.stderr)
+
+
+load_pool_extensions()
 
 
 if __name__ == '__main__':

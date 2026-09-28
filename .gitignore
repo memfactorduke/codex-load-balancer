@@ -15,6 +15,9 @@
 /lanes/bridge.json
 /lanes/secrets/
 
+# Add-ons are private and never part of the public repository (docs/ADDONS.md)
+/addons/
+
 # Python
 .venv/
 __pycache__/

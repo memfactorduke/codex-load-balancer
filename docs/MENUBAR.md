@@ -8,10 +8,10 @@ keeps the menu bar item running. The design spec, for anyone changing them, is
 [`menubar/SPEC.md`](../menubar/SPEC.md).
 
 - [What it can touch](#what-it-can-touch)
-- [The item next to the clock](#the-item-next-to-the-clock), [the popover](#the-popover) and
-  [seat actions](#seat-actions)
-- [The Settings window](#the-settings-window): [Balancing](#balancing), [editing lanes](#editing-lanes); and
-  [the Setup assistant](#the-setup-assistant)
+- [The item next to the clock](#the-item-next-to-the-clock), [the popover](#the-popover),
+  [seat actions](#seat-actions) and [add-on pools](#add-on-pools)
+- [The Settings window](#the-settings-window): [Balancing](#balancing), [editing lanes](#editing-lanes),
+  and [the Setup assistant](#the-setup-assistant)
 - [Running it](#running-it), [snapshots](#snapshots), [SwiftBar or xbar instead](#swiftbar-or-xbar-instead)
 
 <p>
@@ -22,7 +22,8 @@ keeps the menu bar item running. The design spec, for anyone changing them, is
 ## What it can touch
 
 It reads `~/.codexpool/state/status.json` (the guard rewrites it every 60 seconds), `state/history.jsonl` for the
-chart, and `settings.json` only to find the Python that runs codexpool. The `headline` and `display` settings reach
+chart, and `settings.json` only to find the Python that runs codexpool. With an [add-on's pool](ADDONS.md) installed
+it also reads that pool's status and history files, which the guard writes the same way. The `headline` and `display` settings reach
 it through `status.json`, where the guard copies them. It never touches the Keychain, never
 calls the network and never talks to the pool's management API. Actions run the `codexpool` command in the
 background, or open Terminal for commands that need one. The Settings window and the Setup assistant follow the
@@ -94,9 +95,9 @@ close it; it also closes when you switch to another app.
 If the popover is taller than the screen, only the seat list scrolls.
 
 **When the reserve takes over** everything turns red: the pill, the headline number and its bar, the meter's top
-bar and the reserve's `Serving` capsule. The chart shows red stretches where the reserve served. In this example
-Work A and Work B are out, Team has hit its 5-hour limit, Personal is parked by the credit guard, and Work B has a
-banked reset that would bring it back now.
+bar and the reserve's `Serving` capsule. The chart shows red stretches where the reserve served (and where every
+seat was out). In this example Work A and Work B are out, Team has hit its
+5-hour limit, Personal is parked by the credit guard, and Work B has a banked reset that would bring it back now.
 
 <img src="images/popover-reserve-light.png" width="340" alt="The popover while the reserve serves: red 34% left, every regular seat out or parked, Pro 20x serving">
 
@@ -133,17 +134,27 @@ rewrites the seat file that holds it.
 
 After any action the app runs one guard pass, so the popover shows the effect at once.
 
+## Add-on pools
+
+With an [add-on](ADDONS.md) that provides a second pool installed, one item shows both: two numbers, each after its
+pool's mark and in its pool's colour, by the same rules; click the left half for the Codex pool, the right half for the
+other. The popover opens with a tile per pool at the top, and the rest of the popover is the selected pool's. The
+Settings window's Overview, Seats and Balancing panes get a pool switcher, and `codexpool gui PANE --pool ID` opens
+them on that pool. Without an add-on, the item and the window are exactly as described here. What the second pool's
+tab and panes show is the add-on's own documentation.
+
 ## The Settings window
 
 A window in the style of System Settings: a sidebar with the pool's number and serving seat, and seven panes. It
 shows the same data as the popover, in the same colours, and every change it makes is a `codexpool` command run
-in the background, the same one you could type in a terminal.
+in the background, the same one you could type in a terminal. With an [add-on's pool](#add-on-pools) installed, Overview, Seats and
+Balancing have a pool switcher at the top (it remembers your choice) and the sidebar shows a line for each pool.
 
 ![The Settings window, Seats pane: the five seats in fill order with Work A selected, and its Name and Size, its place in the fill order with a link to Balancing, its In rotation switch, its banked reset, and buttons to sign in again or remove it](images/settings-seats-light.png)
 
 **Open it** with **Settings…** (⌘,) in the popover, or with `codexpool gui` from a terminal
-(`codexpool gui seats` opens it on a pane). Only one runs at a time: opening it again brings the open window
-forward on the pane you asked for. While it is open it has a Dock icon and a menu bar of its own, with ⌘1 to ⌘7
+(`codexpool gui seats` opens it on a pane, `codexpool gui seats --pool ID` on an add-on pool's side of it). Only one
+runs at a time: opening it again brings the open window forward on the pane you asked for. While it is open it has a Dock icon and a menu bar of its own, with ⌘1 to ⌘7
 for the panes. Closing the window quits it.
 
 | Pane | Shows | You can |
@@ -203,7 +214,9 @@ field is cleared as soon as it is sent, or when you cancel. Apply the lanes afte
 
 ## The Setup assistant
 
-A three-step window for adding ChatGPT accounts. It opens:
+A three-step window for adding ChatGPT accounts (and, with an add-on's pool, its accounts: the switcher on its second
+step). It
+opens:
 
 - by itself at the end of a first install with the one-liner, when it runs in Terminal on the Mac itself;
 - once by itself from the menu bar app, the first time it sees the pool running with no seats (it records that in
@@ -222,7 +235,7 @@ A three-step window for adding ChatGPT accounts. It opens:
    assistant shows the seat's plan and size, and offers **Mark as Reserve** and **Add Another…**. If the browser
    signed in to an account that is already a seat, nothing is added: it says so and gives that seat its old name
    back.
-3. **Done**: **Quit and Reopen Codex…**, so the app goes through the pool, and where to find Settings later.
+
 
 `codexpool setup` is the same flow in a terminal. The README shows the Add accounts step
 ([Install](../README.md#install)).
@@ -266,6 +279,8 @@ Options: `--status PATH` and `--history PATH` (default: the live files), `--now 
 (`--hover tip:headline` prints the headline's breakdown tooltip, which can't be drawn offscreen). It writes
 `OUT.png` (the popover) and `OUT-menubar.png` (the item), both at 2×. The headline and display modes come from the
 status file, as in the running app; `docs/images/demo/status-used.json` is the demo pool with `"display": "used"`.
+`--marks app` draws the pools' logos from the apps on your Mac, as the running app does; the default, `drawn`, uses
+the plain marks and reads nothing from `/Applications`, so snapshots come out the same on every Mac.
 
 The Settings window and the Setup assistant do the same, and run no command while they do:
 
@@ -275,14 +290,20 @@ The Settings window and the Setup assistant do the same, and run no command whil
 ```
 
 `--pane` takes any pane, a Setup assistant step (`setup-welcome`, `setup-accounts`, `setup-signin`,
-`setup-added`, `setup-again`, `setup-done`), or one of the Lanes pane's sheets over the pane: `lanes-edit` (the
-lane editor on the first lane), `lanes-new`, `lanes-model` and `lanes-model-key` (Add Model on a provider that is
-ready, and on one that needs a key), `lanes-key` (Add Key) and `lanes-signin` (the xAI sign-in, with a made-up
-link). Add `--doctor PATH`, `--lanes PATH`, `--providers PATH` and `--models PATH` (the JSON that
+`setup-added`, `setup-again`, `setup-done`, and an add-on's own panes), or one of the Lanes pane's sheets over the pane: `lanes-edit` (the
+lane editor on the first lane, or on `--lane NAME`), `lanes-new`, `lanes-model`, `lanes-model-key` and
+`lanes-model-engine` (Add Model on a provider that is ready, on one that needs a key, and on an engine provider), `lanes-key`
+(Add Key) and `lanes-signin` (the xAI sign-in, with a made-up link). Add `--doctor PATH`, `--lanes PATH`, `--providers PATH` and `--models PATH` (the JSON that
 `codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json` and
 `codexpool lane models PROVIDER --json` print; demo files are in `docs/images/demo/`), `--history PATH` for the
-pace line, `--now ISO-8601` and `--height PT`. Without `--status` it renders the live `status.json`;
-`docs/images/demo/status-reset.json` is the demo pool with `"balancing": "reset"`.
+pace line, `--now ISO-8601`, `--height PT` and `--marks drawn|app` (the switcher's marks, as above). Without
+`--status` it renders the live `status.json`;
+`docs/images/demo/status-reset.json` is the demo pool with `"balancing": "reset"`. For an add-on's pool add
+`--pool ID` (the switcher's side; the Setup assistant's too), `--pool-status PATH` and `--pool-history PATH` (its own
+demo files). Without `--pool-status` a snapshot has no second pool, so that side reads as not installed; it never
+reads a live add-on file.
+
+Outside snapshots, `--pool codex|ID` opens the window, or the Setup assistant, on that pool.
 
 To rebuild every image in `docs/images/`:
 

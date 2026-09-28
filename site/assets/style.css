@@ -32,6 +32,9 @@
   --red-text: #c80014;
   --blue: #007aff;
   --blue-text: #0060c7;
+  /* The pools' own colours, as in the menu bar app: its number and glyph while a regular seat serves. */
+  --codex: #1a7bc7;
+  --codex-text: #0a6fb5;
   --focus: #0a6cff;
   --string: #0b6a8f;
 
@@ -85,6 +88,8 @@
     --red-text: #ff6259;
     --blue: #0a84ff;
     --blue-text: #4da3ff;
+    --codex: #6cc4ff;
+    --codex-text: #6cc4ff;
     --focus: #4da3ff;
     --string: #6cc4e8;
     --menubar-bg: rgba(12, 13, 18, 0.64);
@@ -132,6 +137,8 @@
   --red-text: #ff6259;
   --blue: #0a84ff;
   --blue-text: #4da3ff;
+  --codex: #6cc4ff;
+  --codex-text: #6cc4ff;
   --focus: #4da3ff;
   --string: #6cc4e8;
   --menubar-bg: rgba(12, 13, 18, 0.64);
@@ -925,7 +932,7 @@ code {
 .shots-windows {
   grid-column: span 12;
   display: grid;
-  grid-template-columns: minmax(0, 1197fr) minmax(0, 1052fr); /* 1776/1484 and 1416/1346 */
+  grid-template-columns: minmax(0, 1175fr) minmax(0, 1052fr); /* 1776/1512 and 1416/1346 */
   gap: 20px;
 }
 .shot-window img {
@@ -1225,6 +1232,10 @@ code {
   line-height: 1.55;
 }
 .footer-fine a { color: var(--text-2); }
+
+/* ── The menu bar number in the diagram ─────────────────────────────────────────────────────────── */
+
+.mb-codex { color: var(--codex-text); }
 
 /* ── Responsive ─────────────────────────────────────────────────────────────────────────────────── */
 

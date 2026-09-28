@@ -7,7 +7,8 @@ codexpool doctor
 ```
 
 It checks the pool process, the running build and its gate, the management key, the Codex config, every seat,
-the guard, the menu bar app, the last 24 hours of pool errors and, if you use them, your lanes. Every failed
+the guard, the menu bar app, the last 24 hours of pool errors and, if you use them, your lanes and any
+[add-on](ADDONS.md). Every failed
 check prints the fix on the line below it, and a healthy setup ends with `OK`.
 
 Logs, all in `~/.codexpool/logs/`:
@@ -19,6 +20,8 @@ Logs, all in `~/.codexpool/logs/`:
 | `launchd.log`, `guard.launchd.log` | crashes and output of the pool and guard processes | `tail -f` |
 | `menubar.log` | the menu bar app | `tail -f` |
 | `bridge.log` | the lane bridge, if a lane uses it: one line per request (status, model, seconds, notes), never content | `tail -f` |
+
+An add-on's pool logs to its own folder; see the add-on's documentation.
 
 The launchd labels below are the defaults; yours are in `~/.codexpool/settings.json`.
 
@@ -534,3 +537,4 @@ same call.
 stops it at start. `codexpool lane apply` re-renders its launchd job and restarts it when its code, `bridge.json`
 or a key file changed. To restart it by hand: `launchctl kickstart -k gui/$(id -u)/com.codexpool.bridge`
 (`com.codexpool.bridge` is the default `bridge_label`).
+

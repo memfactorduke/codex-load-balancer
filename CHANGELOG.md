@@ -6,6 +6,39 @@ All notable changes to codexpool are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-28
+
+### Fixed
+
+- **Login files are private.** CLIProxyAPI writes a new sign-in's file readable by other users; codexpool now
+  makes it mode 600 right after every sign-in (seats and the xAI login), and the guard tightens any login file it
+  finds open. `codexpool doctor` flags one it can't fix.
+
+### Added
+
+- **Add-ons.** A directory `~/.codexpool/addons/<id>/` with an `addon.py` can register a second pool instance, its
+  guard pass, doctor and status sections, a gate profile, a lane provider and a menu bar tab through the hooks in
+  `docs/ADDONS.md`; `codexpool addon list|install|remove`. None ship with codexpool. With an add-on's pool
+  installed the menu bar item shows both numbers and the Settings window gets a pool switcher
+  (`codexpool gui PANE --pool ID`).
+- **The pool's size in the status header:** `Codex pool  36× total  ·  …` (every seat's size added up, seats
+  turned off aside), as in the menu bar's summary line.
+- `codexpool set` with no arguments prints the settings it changes.
+
+### Changed
+
+- **The menu bar shows the real Codex logo, taken from the app on your Mac.** The popover's tiles and the
+  Settings switcher show the same. codexpool bundles no logo: without the app, the pool keeps the plain drawn
+  mark, and `--snapshot` keeps the drawn marks unless given `--marks app`, so the docs' images stay reproducible.
+- **The menu bar number is Codex blue** while a regular seat serves (it was green), and red, not grey, while every
+  seat is out. Bars keep their green, orange and red.
+- Each pool instance has its own guard lock (`state/guard.lock`): a selftest in one pool pauses only that pool's
+  guard pass, never another's.
+- `build/codexpool_gate.go` gained a profile registry (`CODEXPOOL_GATE_PROFILE`: unset is the Codex pool; any
+  profile no add-on registers refuses every request), so its hash changed. The Codex pool keeps running its build
+  until its next `codexpool upgrade`, which picks the new gate up; nothing forces one, and `codexpool doctor` says
+  when a pool runs an older gate.
+
 ## [1.2.0] - 2026-09-27
 
 ### Added
@@ -71,7 +104,7 @@ All notable changes to codexpool are recorded here. The format follows
   and `lane list --json` has it as `"display"`. The role files and the `~/.codex/AGENTS.md` block still name the
   members in full.
 - **Set it up with your coding agent.** The README ("Set it up with your coding agent") and the website have a
-  prompt to paste into Codex, Claude Code or another coding agent on the Mac you are setting up. The agent runs
+  prompt to paste into your coding agent (Codex or another) on the Mac you are setting up. The agent runs
   the installer, asks what to call each ChatGPT account, hands you a sign-in link for each one and checks the
   result; all you do is sign in. It works when you are not at that Mac's screen too: through Screen Sharing, an
   SSH tunnel, or by sending the agent the address the sign-in ends on.
@@ -207,7 +240,8 @@ keep it; codexpool 1.0.0 and later are licensed under the PolyForm Noncommercial
   syntax, checks, dry-runs and shellchecks `install.sh`, runs the unit tests and scans for secrets and personal
   data.
 
-[Unreleased]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/memfactorduke/codex-load-balancer/releases/tag/v1.0.0

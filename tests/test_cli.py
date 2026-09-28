@@ -15,10 +15,14 @@ from _helpers import HOME, REPO, ROOT, TEST_KEY, FakePool, cp, fake_seat_file, p
 
 
 def subcommands(parser, path=()):
-    """(path, parser) for every subcommand, nested ones (lane list, ...) included."""
+    """Every command once, under its canonical name; argparse aliases share a parser."""
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
+            seen = set()
             for name, sub in action.choices.items():
+                if id(sub) in seen:
+                    continue
+                seen.add(id(sub))
                 yield path + (name,), sub
                 yield from subcommands(sub, path + (name,))
 
@@ -31,24 +35,26 @@ class Version(unittest.TestCase):
         self.assertEqual(cp.VERSION, released[0], 'VERSION in bin/codexpool and the newest CHANGELOG.md release differ')
 
     def test_command(self):
-        self.assertEqual(run(cp.cmd_version), (0, f'codexpool {cp.VERSION}\n', ''))
+        self.assertEqual(run(cp.cmd_version), (0, (f'codexpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS)), ''))
 
     def test_script(self):
         for args in (['version'], ['--version']):
             r = run_script(*args)
-            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, f'codexpool {cp.VERSION}\n', ''), args)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, (f'codexpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS) if args == ['version'] else f'codexpool {cp.VERSION}\n'), ''), args)
 
 
 class Help(unittest.TestCase):
-    EXPECTED = {('status',), ('doctor',), ('setup',), ('gui',), ('set',), ('version',), ('login',), ('enable',),
+    EXPECTED = {('addon',), ('addon', 'list'), ('addon', 'install'), ('addon', 'remove'), ('status',), ('doctor',), ('setup',), ('gui',), ('set',), ('version',), ('login',), ('enable',),
                 ('disable',), ('priority',), ('label',), ('weight',), ('reset',), ('reserve',), ('remove',),
                 ('refresh',), ('restart',), ('logs',), ('selftest',), ('build',), ('upgrade',), ('install',),
                 ('uninstall',), ('lane',), ('lane', 'list'), ('lane', 'apply'), ('lane', 'add'), ('lane', 'remove'),
                 ('lane', 'key'), ('lane', 'login'), ('lane', 'test'), ('lane', 'edit'), ('lane', 'providers'),
                 ('lane', 'models'), ('order',), ('guard',), ('menubar',)}
+    # an add-on's subcommands are checked by its own suite
+    EXTRA = frozenset(a.id for a in cp.ADDONS)
 
     def test_every_subcommand_has_help(self):
-        found = dict(subcommands(cp.build_parser()))
+        found = {p: v for p, v in subcommands(cp.build_parser()) if p[0] not in self.EXTRA}
         self.assertEqual(set(found), self.EXPECTED)
         for path in sorted(found):
             out = io.StringIO()
@@ -64,10 +70,12 @@ class Help(unittest.TestCase):
                 if isinstance(action, argparse._SubParsersAction):
                     for choice in action._choices_actions:
                         yield choice
-                    for sub in action.choices.values():
+                    for sub in dict.fromkeys(action.choices.values()):
                         yield from summaries(sub)
         choices = list(summaries(cp.build_parser()))
-        self.assertEqual(len(choices), len(self.EXPECTED))
+        # Step 1 deliberately keeps the root help unchanged; addon is available by explicit name.
+        if not self.EXTRA:
+            self.assertEqual(len(choices), len(self.EXPECTED) - 1)
         for choice in choices:
             self.assertTrue((choice.help or '').strip(), choice.dest)
 
@@ -161,6 +169,20 @@ class Gui(unittest.TestCase):
         self.assertEqual(kwargs['cwd'], ROOT)
         popen.return_value.wait.assert_not_called()
 
+    def test_opens_on_the_pool_asked_for(self):
+        script, python = self.launchable()
+        with mock.patch.object(cp.subprocess, 'Popen') as popen:
+            code, _, _ = run(cp.cmd_gui, pane='seats', pool='codex')
+        self.assertEqual(code, 0)
+        self.assertEqual(popen.call_args[0][0], [str(python), str(script), '--pane', 'seats', '--pool', 'codex'])
+        args = cp.build_parser().parse_args(['gui', 'overview', '--pool', 'codex'])
+        self.assertEqual((args.pane, args.pool), ('overview', 'codex'))
+        self.assertIsNone(cp.build_parser().parse_args(['gui']).pool)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            cp.build_parser().parse_args(['gui', '--pool', 'gemini'])
+        with self.assertRaises(ValueError):
+            cp.gui_argv('overview', 'gemini')
+
     def test_missing_interpreter(self):
         _, python = self.launchable()
         python.unlink()
@@ -169,6 +191,23 @@ class Gui(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('the interpreter with PyObjC', err)
         popen.assert_not_called()
+
+
+class StatusHeader(unittest.TestCase):
+    def test_the_header_gives_the_pools_total_size(self):
+        """Every seat's × added up, seats turned off and lane logins aside, as the menu bar's summary line has it."""
+        def row(label, weight, state='ready', provider='codex'):
+            return {'label': label, 'provider': provider, 'weight': weight, 'state': state, 'priority': 1,
+                    'plan': 'pro', 'detail': '', 'until': None, 'usage': None, 'reserve': False, 'week_used': 10.0}
+        st = {'pool': {'running': True, 'used_pct': 40.0, 'headline': 'all', 'available': 3, 'seats': 3},
+              'active': 'A', 'next_back': None,
+              'seats': [row('A', 20), row('B', 1, 'exhausted'), row('C', 15), row('D', 5, 'disabled'),
+                        row('xAI', 1, provider='xai')]}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cp.print_status(st)
+        self.assertTrue(out.getvalue().startswith('Codex pool  36× total  ·  '), out.getvalue().splitlines()[0])
+        self.assertEqual(cp.total_size_text([]), '')
 
 
 class DoctorJson(unittest.TestCase):
@@ -206,7 +245,7 @@ class DoctorJson(unittest.TestCase):
         self.assertFalse(data['ok'])
         self.assertEqual([s['title'] for s in data['sections']],
                          ['Pool process', 'Codex app', 'Seats', 'Guard and visibility', 'Lanes',
-                          'Recent pool errors (last 24h of logs)'])
+                          'Recent pool errors (last 24h of logs)'] + (['Add-ons'] if cp.ADDONS else []))
         by_text = {c['text']: c for c in checks}
         listening = by_text[f'listening on 127.0.0.1:{cp.PORT}']
         self.assertEqual((listening['status'], listening['fix']), ('fail', 'codexpool restart ; codexpool logs'))
@@ -241,7 +280,7 @@ class DoctorJson(unittest.TestCase):
         data = json.loads(out)
         self.assertShape(data)
         self.assertEqual(code, 1)
-        self.assertEqual([s['title'] for s in data['sections']], ['Install'])
+        self.assertEqual([s['title'] for s in data['sections']], ['Install'] + (['Add-ons'] if cp.ADDONS else []))
         self.assertIn('not installed yet', data['sections'][0]['checks'][0]['text'])
         self.assertEqual((code_text, out_text), (1, ''))
         self.assertIn('not installed yet', err_text)

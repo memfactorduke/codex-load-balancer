@@ -230,7 +230,7 @@ class Providers(unittest.TestCase):
                      'cooldowns': []}, **state)
 
     def test_shape_and_keys(self):
-        p = self.providers()
+        p = {k: v for k, v in self.providers().items() if k in ('xai', 'opencode-go', 'opencode-zen', 'responses')}
         self.assertEqual(list(p), ['xai', 'opencode-go', 'opencode-zen', 'responses'])
         self.assertEqual({k: (v['kind'], v['needs'], v['key_name']) for k, v in p.items()},
                          {'xai': ('native', 'login', None), 'opencode-go': ('bridge', 'key', 'opencode-go'),

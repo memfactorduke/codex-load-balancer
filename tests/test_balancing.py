@@ -160,7 +160,8 @@ class Balancer(unittest.TestCase):
             self.usage[name] = usage(week=window(week_in, now=self.now), now=self.now)
         cp.update_meta(name, reserve=True if reserve else None)
 
-    def seats(self):
+    def seats(self, pool=None):
+        assert pool is None or pool.name == 'codex', pool
         rows = [dict(s) for s in self.pool.values()]
         rows.sort(key=lambda s: (-s['priority'], s['id']))
         return rows
@@ -282,7 +283,7 @@ class Balancer(unittest.TestCase):
         held = []
 
         @contextlib.contextmanager
-        def lock(wait=True, timeout=240):
+        def lock(wait=True, timeout=240, pool=None):
             held.append(True)
             yield True
             held.pop()

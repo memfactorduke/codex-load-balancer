@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/m
 ```
 
 <a name="set-it-up-with-your-coding-agent"></a>**Or set it up with your coding agent.** Paste the prompt below into
-Codex, Claude Code or any other coding agent running on the Mac you are setting up. It runs the installer, asks what
+your coding agent (Codex or another) running on the Mac you are setting up. It runs the installer, asks what
 to call each ChatGPT account, hands you a sign-in link for each one and checks the result: all you do is sign in.
 It also works when you are not at that Mac's screen: through Screen Sharing, an SSH tunnel, or by sending the
 agent the address the sign-in ends on, from any device.
@@ -134,7 +134,7 @@ Once `~/.local/bin` is on your `PATH`, plain `codexpool` works.
   working. Or let the guard put the seat whose weekly quota resets soonest first, so none of it goes to waste.
 - **One thread history.** Codex keeps its built-in provider, so every thread stays where it was. Encrypted
   reasoning and native compactions carry across seats, and `codexpool selftest` checks any pair of yours.
-- **Menu bar meter.** One number for the week across every seat, weighted by seat size: green while a regular
+- **Menu bar meter.** One number for the week across every seat, weighted by seat size: blue while a regular
   seat serves, red once the reserve has taken over, grey when the pool is down. It can count used instead, or
   leave the reserve out.
 - **Settings window and Setup assistant.** Native macOS windows to add accounts and to rename, resize, reorder,
@@ -142,13 +142,15 @@ Once `~/.local/bin` is on your `PATH`, plain `codexpool` works.
   terminal.
 - **Banked resets.** Free resets banked on an account show on its seat, and one click redeems one. codexpool
   never buys a reset.
+- **Add-ons.** A second pool for another tool can be added as an add-on ([docs/ADDONS.md](docs/ADDONS.md)); none
+  ship here.
 - **Subagent lanes** (optional). Token-heavy subagent work, such as codebase sweeps and bulk edits, can run on
   models from other providers, with fallback between them. The main agent stays on your seats.
 - **Secure by design.** Loopback only, an origin gate compiled into the pool that refuses browser requests, a
   management key in the Keychain, and seat tokens that only the pool holds. No telemetry.
 - **A doctor.** `codexpool doctor` checks the whole setup and says how to fix every problem it finds.
 
-Also: a credit guard that parks a seat before it would spend credits, automatic refresh of seats blocked by auth
+Also: a credit guard that parks seats to limit further spending, automatic refresh of seats blocked by auth
 errors, notifications when the pool changes seat, pool upgrades that are tested before use and rolled back on
 failure, and an uninstall that restores your Codex config.
 
@@ -166,7 +168,8 @@ failure, and an uninstall that restores your Codex config.
 
 More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (why it is built this way),
 [docs/MENUBAR.md](docs/MENUBAR.md) (the menu bar app, the Settings window and the Setup assistant),
-[docs/LANES.md](docs/LANES.md) (subagent lanes), [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md),
+[docs/LANES.md](docs/LANES.md) (subagent lanes), [docs/ADDONS.md](docs/ADDONS.md) (add-ons),
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md),
 [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and
 [AGENTS.md](AGENTS.md) (for coding agents).
 
@@ -345,7 +348,7 @@ Most of this is also in the menu bar popover and the [Settings window](docs/MENU
 | See seats, usage and resets | the menu bar, or `codexpool` (same as `codexpool status`; `--live` polls every seat now, `--json` for scripts) |
 | Add ChatGPT accounts, guided | `codexpool setup` in the terminal, or `codexpool gui setup-welcome` for the Setup assistant |
 | Check everything is healthy | `codexpool doctor` (must end with `OK`; `--json` prints the checks as JSON for scripts) |
-| Open the Settings window | `codexpool gui`, or `codexpool gui <pane>` for `overview`, `seats`, `balancing`, `lanes`, `general`, `health`, `about` |
+| Open the Settings window | `codexpool gui`, or `codexpool gui <pane>` for `overview`, `seats`, `balancing`, `lanes`, `general`, `health`, `about`; `--pool ID` picks the pool those panes show when an add-on provides a second one |
 | Change what the menu bar number shows | `codexpool set display left` or `used`, `codexpool set headline all` or `regular` (`codexpool set` alone prints every setting it changes) |
 | Use a banked free reset | click the seat in the menu bar → **Use reset now…**, or `codexpool reset <seat>` |
 | Take a seat out / put it back | `codexpool disable <seat>` / `codexpool enable <seat>` |
@@ -369,7 +372,7 @@ again. The menu bar's **Re-login…** and the Settings window's **Sign In Again�
 
 ## The headline number, weights and the reserve
 
-![Menu bar item in its three states, light and dark: green 54% left while a regular seat serves, red 34% left while the reserve serves, grey with a warning triangle when the pool is down](docs/images/menubar-strip.png)
+![Menu bar item in its three states, light and dark: 54% left while a regular seat serves, red 34% left while the reserve serves, grey with a warning triangle when the pool is down](docs/images/menubar-strip.png)
 
 The menu bar shows one percentage: how much of this week's quota is **left** across **all** your seats, as an
 average weighted by seat size. It counts down as you work and jumps back up when a seat's week resets.
@@ -405,9 +408,11 @@ shows it at once and the menu bar after the guard's next pass (within a minute).
 
 The colour tells you what is serving:
 
-- **Green**: a regular seat is serving.
-- **Red**: the reserve is serving, which means your regular seats are spent for now.
-- **Grey with a warning triangle**: the pool is down, the guard has not reported for 3 minutes, or every seat is out.
+- **Blue** (the Codex pool's colour): a regular seat is serving.
+- **Red**: the reserve is serving, which means your regular seats are spent for now, or every seat is out.
+- **Grey with a warning triangle**: the pool is down, the guard has not reported for 3 minutes, or it has no seats.
+
+With an add-on that provides a second pool, the item shows a second number for it, by the same rules.
 
 The small meter left of the number has two bars: the number itself on top (red, like the number, while the
 reserve serves), the serving seat's week below. Both drain as the quota is used (or fill, with
@@ -606,7 +611,7 @@ values.
 | `display` | `"left"` | how numbers read, in the menu bar and in `codexpool status`: `"left"` counts down from 100% and bars drain; `"used"` counts up from 0% and bars fill |
 | `balancing` | `"priority"` | which seat new threads get ([load balancing](#load-balancing-which-seat-new-threads-get)): `"priority"` = your fill order; `"reset"` = the regular seat whose weekly quota resets soonest, kept up to date by the guard, the reserve last |
 
-`codexpool set` changes `display`, `headline` and `balancing` and leaves the rest of the file as it is. A malformed file, an
+`codexpool set` changes `display`, `headline` and `balancing` (and an add-on's own settings) and leaves the rest of the file as it is. A malformed file, an
 unknown key or a bad value stops every command with a message rather than running with the wrong port or labels.
 Keys starting with `_` are ignored, for comments. `CODEXPOOL_SETTINGS` points to a different file.
 
@@ -637,6 +642,7 @@ write it.
   seats.json                 labels, weights, reserve, your fill order
   lanes.json                 subagent lanes, if you use them (docs/LANES.md)
   lanes/                     the lane bridge (bridge.py), its bridge.json and secrets/ with provider keys (mode 700)
+  addons/                    add-ons, if you use any (docs/ADDONS.md); each keeps its own config, logins and logs
   auth/                      one OAuth login per seat (mode 700), plus the xAI login if a lane uses xAI
   state/                     status.json, history.jsonl, guard.json, resets.jsonl, selftests.json, lane-tests.json,
                              install.json and dated backups of your Codex config
@@ -687,6 +693,10 @@ builds a new one. Older builds stay in `bin/versions/`; `codexpool upgrade <olde
 If upstream moves the line the gate hooks into, the build stops with "gate anchor not found" and nothing
 changes; stay on your current build until codexpool is updated.
 
+`codexpool upgrade` moves only the Codex pool; an add-on's pool has its own build and its own install command. 1.3.0
+changed the gate (the profile registry): the Codex pool keeps its build until its next `codexpool upgrade`, which
+picks the new gate up, and nothing forces one.
+
 ## Uninstall
 
 ```sh
@@ -698,11 +708,11 @@ It stops and removes the three launchd agents, removes `openai_base_url` (or put
 install; it leaves the line alone if you have changed it since), puts back any `model_provider` or
 `model_catalog_json` that `--fix-config` removed, and removes the `codexpool` command. With lanes, it also stops
 the lane bridge and removes the generated role files in `~/.codex/agents/` and the lanes block in
-`~/.codex/AGENTS.md`. Then quit and reopen the Codex app, which talks to OpenAI directly again. Your thread
-history is never touched.
+`~/.codex/AGENTS.md`. With add-ons, it takes their pools out too. Then quit and reopen the Codex app, which
+talks to OpenAI directly again. Your thread history is never touched.
 
-`~/.codexpool` (seat logins, config, history, builds, `lanes.json` and lane keys) and the Keychain key stay, so
-`codexpool install` brings everything back (then `codexpool lane apply` for lanes). To remove those too:
+`~/.codexpool` (seat logins, config, history, builds, `lanes.json` and lane keys, and add-ons' files) and the
+Keychain key stay, so `codexpool install` brings everything back (then `codexpool lane apply` for lanes). To remove those too:
 
 ```sh
 rm -rf ~/.codexpool && security delete-generic-password -s codexpool-management-key
@@ -719,6 +729,10 @@ continue through the pool.
 **Does the Codex CLI use the pool too?**
 Yes. `codex` reads the same `~/.codex/config.toml`, so anything that uses it (the CLI, other agents) goes through
 the pool.
+
+**Can it pool another tool's accounts?**
+Not out of the box: the Codex pool holds only ChatGPT seats. A second pool for another tool can be added as an
+[add-on](docs/ADDONS.md); none ship with codexpool.
 
 **Which ChatGPT plans work?**
 Any plan that includes Codex: Plus, Pro, Business, Team and others. Each seat is sized by its plan so the meter
@@ -804,5 +818,6 @@ time, is not part of this repository and keeps its own MIT license. Snapshots of
 1.0.0 were released under the MIT License, and copies of them keep it; codexpool 1.0.0 and later are licensed under
 the PolyForm Noncommercial License 1.0.0.
 
-codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of
-OpenAI. Use it only with accounts you own, and follow the terms that apply to them.
+codexpool is an independent project, not affiliated with or endorsed by OpenAI. It includes no OpenAI logos: the menu
+bar shows the one from the Codex app installed on your Mac. Codex and ChatGPT are trademarks of OpenAI. Use it only with accounts you own, and
+follow the terms that apply to them.

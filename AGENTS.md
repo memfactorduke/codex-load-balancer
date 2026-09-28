@@ -5,7 +5,9 @@ This file is for coding agents working on this repository or on a live install. 
 are the way they are.
 
 **On a live install, the Codex app, the Codex CLI and any other agent send their model traffic through the pool.
-If you break it, Codex stops working for the user, possibly including you.**
+If you break it, Codex stops working for the user, possibly including you.** An add-on's pool
+(`docs/ADDONS.md`) is a second pool of the same kind for another tool: the same care applies to it, and its own
+`AGENTS.md` says what.
 
 ## Two places
 
@@ -32,10 +34,11 @@ Labels are the defaults; the real ones are in `~/.codexpool/settings.json`.
 | Component | What | Where | launchd label |
 |---|---|---|---|
 | Pool | CLIProxyAPI built from upstream source + `build/codexpool_gate.go`, on `127.0.0.1:<port>` (8319) | `bin/current/cli-proxy-api`, `config.yaml` | `com.codexpool.pool` |
-| Guard | `codexpool guard` every 60 s: usage and reset polls, credit parking, healing, the fill order under `"balancing": "reset"`, notifications, `state/status.json`, `state/history.jsonl` | `bin/codexpool` | `com.codexpool.guard` |
-| Menu bar | Native PyObjC app; reads status and history files only | `menubar/codexpool_menubar.py`, `menubar/SPEC.md` | `com.codexpool.menubar` |
+| Guard | `codexpool guard` every 60 s: usage and reset polls, credit parking, healing, the fill order under `"balancing": "reset"`, notifications, `state/status.json`, `state/history.jsonl`; then each add-on's pass | `bin/codexpool` | `com.codexpool.guard` |
+| Menu bar | Native PyObjC app; reads the status and history files only (an add-on pool's too: one item, two numbers) | `menubar/codexpool_menubar.py`, `menubar/SPEC.md` | `com.codexpool.menubar` |
 | Settings window | Native PyObjC window (Overview, Seats, Balancing, Lanes, General, Health, About) and the Setup assistant, in a process of its own. Opened from the menu bar ("Settings…", "Add a ChatGPT account…"; the Setup assistant by itself on a first run with no seats), by `codexpool gui [PANE]` and by `install.sh` on a first install. Reads `state/status.json` and the JSON of `codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json`, `codexpool lane models PROVIDER --json` and `codexpool version`; every change it makes is a `codexpool …` command run in the background (a provider key goes to `codexpool lane key NAME -` on stdin) | `menubar/codexpool_settings.py`, the GUI section of `menubar/SPEC.md` | none |
 | CLI | `codexpool …`, standard-library Python | `bin/codexpool`, wrapper at `~/.local/bin/codexpool` | none |
+| Add-ons (optional) | `addons/<id>/addon.py`, loaded through the hooks in `docs/ADDONS.md`: a second pool instance, its guard pass, doctor and status sections, gate profile, lane provider and menu bar tab. None ship with codexpool; `codexpool addon list` names the installed ones | `addons/<id>/` | the add-on's own |
 | Lane bridge (optional) | Standard-library Python on `127.0.0.1:<bridge_port>` (8320): an upstream behind the pool that adapts requests for lane members on providers such as OpenCode; runs only when `lanes/bridge.json` exists | `lanes/bridge.py`, `lanes/bridge.json`, `lanes/secrets/` | `com.codexpool.bridge` |
 
 The Codex app points at the pool with one line in `~/.codex/config.toml`:
@@ -53,7 +56,8 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
    payload rules and the local bridge that `codexpool lane apply` generates. Seat traffic never touches either:
    every payload rule names a lane's own aliases only (apply refuses a lane name the pool already serves, and
    doctor checks it; `lane test` refuses a member alias the same way before it offers one), and the bridge is an
-   upstream behind the pool, never in front of it.
+   upstream behind the pool, never in front of it. The same holds for an add-on's pool: only its CLIProxyAPI sits between
+   its tool and its provider.
 2. **The Codex config stays minimal.** Never add `model_provider` (it hides every existing thread) or
    `model_catalog_json` (it freezes the model picker) to `~/.codex/config.toml`.
 3. **Never copy, print or move token material.** Seat files in `~/.codexpool/auth/` and `~/.codex/auth.json` hold
@@ -61,10 +65,15 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
    `codexpool login`. codexpool never prints tokens and reaches chatgpt.com only through the pool's `api-call`
    with `$TOKEN$`; keep it that way. (The single-seat refresh response embeds tokens: print only its status.)
    The same goes for lane credentials: the xAI login in `auth/` comes only from `codexpool lane login xai`, and
-   provider keys in `lanes/secrets/` only from `codexpool lane key`, which never prints them.
+   provider keys in `lanes/secrets/` only from `codexpool lane key`, which never prints them. An add-on's pool follows the same
+   rule with its own auth directory and `api-call`. **Never read, copy or import another tool's credentials** (its
+   Keychain item, its config directory): they rotate too, and reading another program's Keychain item is what makes
+   usage meters prompt for the password.
 4. **The pool stays loopback-only and gated.** `host: "127.0.0.1"`, `api-keys: []` and the origin gate go
-   together. Don't open the port, and don't remove or weaken the gate.
-5. **The menu bar app and the Settings window read files only.** No Keychain, no network, no management API. A
+   together, in `config.yaml` and in every add-on pool's config. Don't open a port, and don't remove or weaken the
+   gate or its profile registry.
+5. **The menu bar app and the Settings window read files only** (`status.json`, `history.jsonl`, and an add-on
+   pool's own status and history files). No Keychain, no network, no management API. A
    locked Keychain pops password dialogs. They change things only by running `codexpool …` commands in the
    background; the main thread never waits for one.
 6. **Resets are redeemed, never bought.** `codexpool reset` uses only the banked-credit `consume` endpoint with
@@ -77,7 +86,9 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
    first pass back on `"priority"` restores your order from `seats.json` (`manual_priority`). A fill order the
    user changes (`order`, `priority`, `reserve` leave `you_reordered` in guard.json) is treated like that step's
    reorder: no "Codex now on" while the previous seat still serves. With `"balancing": "priority"`, nothing to
-   restore and no reorder of yours, the guard behaves exactly as before.
+   restore and no reorder of yours, the guard behaves exactly as before. An add-on's guard pass runs after
+   the Codex pass, only while its pool is installed, with its own state; a failure in one pass never stops the
+   other, and the Codex pass and `status.json` stay behaviourally identical.
 8. **`bin/codexpool` keeps Python 3.9 syntax** so `install` and `uninstall` run on a fresh Mac's
    `/usr/bin/python3`. It also stays standard-library only.
 9. **Settings are explicit.** A new setting goes into `SETTINGS_DEFAULTS`, `examples/settings.json`, the README's
@@ -88,7 +99,11 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
     and the generated `~/.codex/AGENTS.md` block name models. No other doc or instruction does.
 11. **No personal data in the repository.** No emails, account or workspace ids, real seat names, company names,
     `/Users/<name>` paths or personal launchd labels, in code, docs, examples or screenshots. Screenshots come
-    from the synthetic data in `docs/images/demo/`.
+    from the synthetic data in `docs/images/demo/` (an add-on's from its own `docs/images/demo/`).
+12. **Add-ons load through `addons/<id>/addon.py` and the hooks in `docs/ADDONS.md` only.** The core names no
+    add-on and no other product: every hook site iterates `ADDONS`, a pool id it does not know is an error (never a
+    fallback to the Codex pool), and a broken add-on is reported by `doctor` and skipped. A broken add-on never
+    stops the Codex pool, the guard's Codex pass or the menu bar's Codex item.
 
 ## How to change things safely
 
@@ -101,13 +116,13 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
 | Fill order and balancing | `codexpool order SEAT [SEAT ...]` (priorities from 1000 down, reserve seats last; also recorded as `manual_priority` in `seats.json`, as `codexpool priority` does), `codexpool set balancing priority\|reset`. Under `reset` the guard owns the pool's priorities: change your order with `order`, never by hand, and expect it to take effect once you switch back | `codexpool status` (its first line names the mode); `codexpool logs --guard` for "guard: balancing" lines |
 | Hide or show models | `oauth-excluded-models: codex:` in `config.yaml` (exact names) | `curl -s http://127.0.0.1:8319/v1/models` |
 | Lanes | Edit `~/.codexpool/lanes.json` (or use `codexpool lane add` / `lane edit` / `lane remove`, each with `--dry-run` first), then `codexpool lane apply --dry-run` and `codexpool lane apply`. Never hand-edit what apply generates: the lanes block in `config.yaml`, `lanes/bridge.json`, the role files in `~/.codex/agents/`, the lanes block in `~/.codex/AGENTS.md`. Keys only through `codexpool lane key` (`-` reads stdin). `codexpool lane providers` and `lane models PROVIDER` are read-only (`lane models` for an OpenCode provider sends the stored key to that provider's `/models`). | `codexpool lane test` (with the user's go-ahead: it spends quota), then `codexpool doctor` |
-| Lane code in `bin/codexpool` | Test in a throwaway home, and only with `--dry-run` or pure render functions. `HOME=$(mktemp -d)` alone is not enough: launchd labels and loopback ports are shared with the live install, so first write a `settings.json` there that moves `port`, `bridge_port` and all four `*_label` settings off the live ones. | The diff shows the expected block, bridge config, role files and `AGENTS.md` block; nothing is written |
+| Lane code in `bin/codexpool` | Test in a throwaway home, and only with `--dry-run` or pure render functions. `HOME=$(mktemp -d)` alone is not enough: launchd labels and loopback ports are shared with the live install, so first write a `settings.json` there that moves `port`, `bridge_port`, an add-on's port and every `*_label` setting off the live ones. | The diff shows the expected block, bridge config, role files and `AGENTS.md` block; nothing is written |
 | Upgrade CLIProxyAPI | `codexpool upgrade <version\|latest>` (builds from source with the gate, self-tests, switches, rolls back on failure) | `codexpool doctor` shows `+gate.<hash>` and the gate probe 200/403 |
-| The gate (`build/codexpool_gate.go`) | Edit, run `./bin/codexpool install` to copy it, then `codexpool upgrade <current version>`; the build is keyed by the gate's hash, so a changed gate is a new build | The 11-case gate self-test in the upgrade output; `codexpool doctor` |
-| Menu bar app | Edit `menubar/codexpool_menubar.py`; render it with `~/.codexpool/.venv/bin/python menubar/codexpool_menubar.py --snapshot /tmp/mb.png --appearance dark` (add `--status docs/images/demo/status-regular.json --history docs/images/demo/history-regular.jsonl` for demo data, or `status-used.json` for the `"display": "used"` look); restart with `launchctl kickstart -k gui/$(id -u)/com.codexpool.menubar` | Look at the PNGs; the live item |
-| Settings window and Setup assistant | Edit `menubar/codexpool_settings.py` (spec: the GUI section of `menubar/SPEC.md`). Test it only through snapshots, which show no window and run no command: `~/.codexpool/.venv/bin/python menubar/codexpool_settings.py --snapshot /tmp/settings.png --pane overview --appearance dark --status docs/images/demo/status-regular.json --doctor docs/images/demo/doctor.json --lanes docs/images/demo/lanes.json` for each pane you touched (`overview`, `seats`, `balancing`, `lanes`, `general`, `health`, `about`, `setup-welcome`, `setup-accounts`, `setup-signin`, `setup-added`, `setup-again`, `setup-done`, and the Lanes sheets `lanes-edit`, `lanes-new`, `lanes-model`, `lanes-model-key`, `lanes-key`, `lanes-signin`), in both appearances. Never click its buttons to test: each runs a real `codexpool` command against the live install. The JSON of `doctor --json`, `lane list --json`, `lane providers --json`, `lane models PROVIDER --json` and `version`, and the `status.json` fields it reads (`pool.balancing`, each seat's `order_reason`), are its interface; change both sides together. | Look at the PNGs; on an install, after `./bin/codexpool install`, quit an open window (⌘Q) and run `codexpool gui` |
+| The gate (`build/codexpool_gate.go`) | Edit, run `./bin/codexpool install` to copy it, then `codexpool upgrade <current version>` for the Codex pool (an add-on's pool has its own install command); the build is keyed by the gate's hash, so a changed gate is a new build (nothing forces a pool onto it; doctor says which one runs an older gate). The default profile must keep passing unchanged, and an add-on's profile its own cases | The gate self-test in the output (11 codex cases, plus an add-on's); `codexpool doctor` (every pool's gate probe) |
+| Menu bar app | Edit `menubar/codexpool_menubar.py`; render it with `~/.codexpool/.venv/bin/python menubar/codexpool_menubar.py --snapshot /tmp/mb.png --appearance dark` (add `--status docs/images/demo/status-regular.json --history docs/images/demo/history-regular.jsonl` for demo data, or `status-used.json` for the `"display": "used"` look; for an add-on's pool add `--pool-status` and `--pool-history` with its demo files, and `--pool ID` for its tab); restart with `launchctl kickstart -k gui/$(id -u)/com.codexpool.menubar` | Look at the PNGs; the live item |
+| Settings window and Setup assistant | Edit `menubar/codexpool_settings.py` (spec: the GUI section of `menubar/SPEC.md`). Test it only through snapshots, which show no window and run no command: `~/.codexpool/.venv/bin/python menubar/codexpool_settings.py --snapshot /tmp/settings.png --pane overview --appearance dark --status docs/images/demo/status-regular.json --doctor docs/images/demo/doctor.json --lanes docs/images/demo/lanes.json` for each pane you touched (`overview`, `seats`, `balancing`, `lanes`, `general`, `health`, `about`, `setup-welcome`, `setup-accounts`, `setup-signin`, `setup-added`, `setup-again`, `setup-done`, and the Lanes sheets `lanes-edit`, `lanes-new`, `lanes-model`, `lanes-model-key`, `lanes-key`, `lanes-signin`), in both appearances. For an add-on's side add `--pool ID --pool-status … --pool-history …` with its demo files (without `--pool-status` that side reads as not installed), plus its own snapshot panes. Never click its buttons to test: each runs a real `codexpool` command against the live install. The JSON of `doctor --json`, `lane list --json`, `lane providers --json`, `lane models PROVIDER --json` and `version`, and the `status.json` fields it reads (`pool.balancing`, each seat's `order_reason`), and an add-on pool's status fields (its own spec), are its interface; change both sides together. | Look at the PNGs; on an install, after `./bin/codexpool install`, quit an open window (⌘Q) and run `codexpool gui` |
 | Screenshots | `~/.codexpool/.venv/bin/python docs/images/demo/render.py` rebuilds everything in `docs/images/` from `docs/images/demo/`; `site/assets/img/` holds copies (see `site/README.md`) | Look at every image |
-| Menu bar settings | `codexpool set display left\|used`, `codexpool set headline all\|regular`, `codexpool set balancing priority\|reset` (writes that key in `settings.json`, keeps the rest, rewrites `state/status.json`); `codexpool set` alone prints all three | The menu bar within seconds; a balancing change on the guard's next pass |
+| Menu bar settings | `codexpool set display left\|used`, `codexpool set headline all\|regular`, `codexpool set balancing priority\|reset` (writes that key in `settings.json`, keeps the rest, rewrites `state/status.json`) (an add-on registers its own settings); `codexpool set` alone prints the ones it changes | The menu bar within seconds; a balancing change on the guard's next pass |
 | `install.sh` | Edit, then `/bin/bash -n install.sh`, `shellcheck install.sh` (CI runs it) and `HOME=$(mktemp -d) /bin/bash install.sh --dry-run --no-gui`, which downloads and changes nothing. It must run on macOS's `/bin/bash` 3.2 under `set -euo pipefail`: no `mapfile`, no associative arrays, no `${var,,}`, and no expanding an array that can be empty. | The dry run prints every step; `python3 -m unittest discover -s tests` (it runs the Codex app check) |
 | The website (`site/`) | Static files, no build step: edit `site/index.html`, `site/assets/style.css`, `site/assets/site.js`; preview with `python3 -m http.server 8000 --directory site`. `.github/workflows/pages.yml` deploys `site/` to GitHub Pages on pushes to main that touch it once the repository variable `PAGES_ENABLED` is `true`, and whenever it is run by hand from the Actions tab (going live once: Settings → Pages → Source: GitHub Actions, then `gh variable set PAGES_ENABLED --body true`). Screenshots only from the demo data; the footer's disclaimers stay. | Headless Chrome at 1440 px and 390 px wide, light and dark (`?theme=light`, `?theme=dark`); look at each render |
 | Tests (`tests/`) | Standard-library `unittest`, Python 3.9+. Every module imports `tests/_helpers.py` first: it builds a throwaway home with stubbed `launchctl`, `security`, `osascript`, `mdfind` and `pbcopy` (sign-in links never reach the real clipboard), random free ports and test launchd labels, and refuses to run unless `bin/codexpool` points at it. New behaviour in `bin/codexpool` or `install.sh` gets a test there. | `python3 -m unittest discover -s tests` passes |
@@ -120,7 +135,7 @@ After any change to an install: **`codexpool doctor` must end with `OK`.**
 - `python3 -m unittest discover -s tests`, from the checkout: the unit tests (also under Python 3.9). They run in
   a throwaway home with stubbed macOS tools, so they touch nothing live and need no network.
 - `codexpool doctor`: whole-system health (pool process, running build, gate probe, key, Codex config, seats,
-  guard, menu bar, recent errors, and lanes when `lanes.json` exists). Read-only. `codexpool doctor --json`
+  guard, menu bar, recent errors, lanes when `lanes.json` exists, and each add-on's sections when its pool is installed). Read-only. `codexpool doctor --json`
   prints the same checks as JSON, which the Settings window reads; the exit status is the same.
 - `codexpool status --json`: the same data the menu bar reads.
 - `codexpool version`: the codexpool version (`VERSION` in `bin/codexpool`).
@@ -144,14 +159,15 @@ After any change to an install: **`codexpool doctor` must end with `OK`.**
 
 Commands that change a live install (`setup`, `login`, `set`, `label`, `weight`, `enable`, `disable`, `priority`,
 `order`, `reserve`, `reset`, `remove`, `refresh`, `restart`, `upgrade`, `install`, `uninstall`, `selftest`,
-`lane add`, `lane edit`, `lane remove`, `lane apply`, `lane test`, `lane login`, `lane key`) need the user's
+`lane add`, `lane edit`, `lane remove`, `lane apply`, `lane test`, `lane login`, `lane key`, and an add-on's commands that its own `AGENTS.md` lists) need the user's
 say-so, and so does every
 button in the Settings window, which runs one of them. `reset` spends one of their banked resets; `lane test`
 spends lane-provider quota.
 
 ## Undo
 
-- `codexpool uninstall --yes` stops the agents and restores the recorded Codex config keys; `~/.codexpool` stays.
+- `codexpool uninstall --yes` stops the agents (add-on pools' included) and restores the recorded Codex config
+  keys; `~/.codexpool` stays.
 - Previous CLIProxyAPI builds stay in `bin/versions/`; `codexpool upgrade <older version>` switches back.
 - `state/codex-config.pre-install-<date>.toml` is the user's Codex config as it was before each install that
   recorded it (`state/install.json` names the current one).
@@ -159,16 +175,19 @@ spends lane-provider quota.
   `codexpool lane remove <lane>` takes a lane out together with everything generated for it.
 - `codexpool set balancing priority` hands the fill order back to the user: the guard's next pass restores the
   order recorded in `seats.json` (`manual_priority`).
+- An add-on's pool: its own `AGENTS.md` says how to go direct and how to take it out.
 
 ## Before every commit
 
 The unit tests must pass:
 
 ```sh
-python3 -m unittest discover -s tests
+sh tests/run_all.sh      # the core suite, then every addons/*/tests; python3 -m unittest discover -s tests for the core alone
 ```
 
-The `.gitignore` keeps runtime state out even when the checkout is `~/.codexpool`. Still, scan what you stage.
+The core suite must also pass in a copy of the tree without `addons/` (that is what CI runs), and
+`tests/test_public_tree.py` fails on any core file or path that names an add-on's product: the public tree describes
+the Codex pool only. The `.gitignore` keeps runtime state out even when the checkout is `~/.codexpool`. Still, scan what you stage.
 Both commands must print nothing:
 
 ```sh
