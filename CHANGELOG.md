@@ -6,6 +6,17 @@ All notable changes to codexpool are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The popover's chart shows your use as bars.** Each bar is how much of the pool's quota went in one half hour
+  (four hours on the 7-day view), scaled so the busiest bucket fills the chart; the quota-left (or usage) line
+  stays on its 0–100 % scale on top, and a weekly reset is marked with a dashed line and a triangle instead of
+  counting as use. The caption under the chart says what the tallest bar is worth. The chart is 16 pt taller.
+  A `PoolUI.chart_area` is ignored now (there is no gradient under the line any more).
+- **A seat with more than one limit labels each bar.** A seat with a 5-hour window (Plus, Team) shows a "Week"
+  row and a "5h" row, each with its own bar and "% left", and the limit that binds the seat now reads first and
+  bolder. Before, the bars were stacked unlabelled at different thicknesses in the same colour.
+
 ## [1.3.0] - 2026-09-28
 
 ### Fixed

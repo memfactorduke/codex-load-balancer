@@ -76,14 +76,17 @@ close it; it also closes when you switch to another app.
    ```
 
    With `"headline": "regular"` the reserve's line reads "Pro 20x · reserve, not counted · 66% left".
-4. **Chart** ("Quota left", or "Usage" with `"display": "used"`): the headline over 24 hours or 7 days (toggle),
-   green where a regular seat served and red where the reserve did. It plots the same figure as the number, so
-   what is left falls as you work and jumps up at a weekly reset. It needs a few samples first and says
+4. **Chart** ("Quota left", or "Usage" with `"display": "used"`), over 24 hours or 7 days (toggle). The bars
+   are your use: how much of the pool's quota went in each half hour (each 4 hours over 7 days), the busiest one
+   reaching the top; the caption under the chart says what the tallest bar is worth ("peak 1.1%"). The line is the
+   same figure as the number, on a 0–100 % scale, so what is left falls as you work and jumps up at a weekly
+   reset; a reset is marked with a dashed line and a small triangle, and never counts as use. Both are blue where
+   a regular seat served and red where the reserve did. The chart needs a few samples first and says
    "Collecting history…" until then.
 5. **Seats**, in fill order. Each row has the seat's name, its plan and weight (`Business 5×`), a `· Reserve` tag,
-   and its state: `Serving`, `Ready`, `Out`, `Parked`, `Blocked` or `Off`. Below that is the weekly bar (and a thin
-   5-hour bar for seats that have one), how much is left ("56% left", or "Week 24% left · 5h 100% left"), and when
-   it resets or comes back. Bars drain as a seat is used: green above 30% left, orange at 30% or less, red at 10%
+   and its state: `Serving`, `Ready`, `Out`, `Parked`, `Blocked` or `Off`. Below that is the weekly bar and how much
+   is left ("56% left"); a seat with a 5-hour window has one labelled row per limit instead ("Week", "5h", each
+   with its own bar and "% left", the limit that binds the seat bolder), and when it resets or comes back. Bars drain as a seat is used: green above 30% left, orange at 30% or less, red at 10%
    or less, and grey for a seat that can't serve. A seat that needs a new sign-in says "Re-login needed" and shows
    the error. "Re-login soon" (orange) is a seat whose sign-in OpenAI ended but that still serves until its access
    runs out, within a day: sign in again before then.

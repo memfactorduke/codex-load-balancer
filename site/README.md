@@ -91,7 +91,7 @@ point the host's "not found" page at `/404.html` if it doesn't pick it up on its
 
 - `popover-light.webp`, `popover-dark.webp` and `popover-reserve-light.webp` are `docs/images/popover-light.png`,
   `popover-dark.png` and `popover-reserve-light.png` cropped to the popover card (from 56,56 to the outer edge of
-  its border: 680 × 1566 px, 1570 px for the reserve one), with the corners rounded at a 30 px radius and
+  its border: 680 × 1628 px, 1632 px for the reserve one), with the corners rounded at a 30 px radius and
   encoded with `cwebp -q 90`. They are 2× images shown 340 px wide, so each `<img>` has `width="340"` and half
   the pixel height; update the height when a new crop is taller.
 - The window screenshots are 2× renders from the synthetic data in `docs/images/demo/`, encoded as lossless

@@ -100,18 +100,25 @@ next click on the item opens the popover straight away.
      with `headline: regular` a reserve seat reads "Pro 20x · reserve, not counted · 66% left". Disabled seats:
      "Personal · off, not counted"; no weekly figure: "· usage unknown, not counted". Last line: "Weighted by size:
      54% left · all seats".
-4. **Chart**, titled "Quota left" (`left` mode) or "Usage" (`used` mode): the headline over 24 h or 7 d (toggle),
-   44 pt tall, fixed 0–100 % scale, 1.5 pt line over a soft gradient; the pool's colour where a regular seat
-   served, red where the reserve did, grey when nothing serves now. It plots what the hero shows: history's `all` or `used`
-   (regular seats) series, as left or as used, so in `left` mode it falls over time and jumps up at a reset. A
-   dashed stub carries the last value to "now". Fewer than 3 samples: "Collecting history…".
+4. **Chart**, titled "Quota left" (`left` mode) or "Usage" (`used` mode): 60 pt tall, over 24 h or 7 d (toggle),
+   two series on one x axis. **Bars**: the use per bucket (30 min over 24 h, 4 h over 7 d, buckets anchored at
+   "now"): the rise of the headline's used % between two samples, spread over the buckets the samples span; the
+   busiest bucket reaches the top and a bucket with any use is at least 1 pt tall (their own scale; the caption
+   under the chart says "bars: used per 30 min · peak 1.1%", or "no use in this range"). A drop of 0.5 % or more
+   is a **reset**: never use, marked by a dashed hairline with a small triangle on top. **Line**: the headline on
+   a fixed 0–100 % scale, 1.5 pt, what the hero shows: history's `all` or `used` (regular seats) series, as left
+   or as used, so in `left` mode it falls over time and jumps up at a reset; a dashed stub carries the last value
+   to "now", a dot marks the latest sample. Bars and line take the pool's colour where a regular seat served, red
+   where the reserve did (or every seat was out, or paid use was spent), all grey when nothing serves now. Fewer
+   than 3 samples in the range: "Collecting history…".
 5. **Seats**, in fill order (highest priority first). The header's right side names the order: "Your order"
    (`pool.balancing` `priority`) or "Soonest reset first" (`reset`), with a tooltip saying how the pool picks a
    seat ("… New threads follow; running threads stay on their seat. The reserve stays last."). One row per seat:
    - Line 1: **name**, plan badge in small text (`Team 1×`, `Business 5×`, `Pro 20×`), `· Reserve` tag, and at
      the right the state: capsules `Serving` (green; red for a reserve) / `Out` / `Parked` / `Blocked`, plain
      text `Ready` / `Off`. A seat with banked resets shows `↺ n` before it, blue when the seat is out.
-   - Bars: the weekly bar; seats with a 5-hour window get a thin 5 h bar under it. Green < 70 % used, orange
+   - Bars: the weekly bar; a seat with a 5-hour window gets one labelled row per limit ("Week", "5h": label left,
+     bar, "% left" right), the binding limit in the primary text colour and the others secondary. Green < 70 % used, orange
      70–90 %, red ≥ 90 % (the same colours in `left` mode, where the bars drain); grey for seats that cannot serve.
    - Line 3: "51% left" / "49% used" (or "Week 36% left · 5h 0% left" / "Week 64% · 5h 100%", the binding window
      emphasised) left; "Resets in 3d 20h", or

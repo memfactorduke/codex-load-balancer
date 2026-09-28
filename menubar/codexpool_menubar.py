@@ -186,7 +186,9 @@ INNER = WIDTH - 2 * PAD
 SCREEN_MARGIN = 40.0         # the popover is at most the screen's visible height minus this; the seats scroll
 MIN_LIST_H = 110.0           # ... but always shows at least this much of the seat list
 
-RANGES = {'24h': (24 * 3600, '24h'), '7d': (7 * 24 * 3600, '7d')}
+RANGES = {'24h': (24 * 3600, '24h', 30 * 60, '30 min'),      # (span, label, usage bucket, its words)
+          '7d': (7 * 24 * 3600, '7d', 4 * 3600, '4 h')}
+RESET_MIN_PCT = 0.5          # a drop of at least this much in the headline's used % between samples is a reset
 
 # What the headline covers and how numbers read: pool.headline and pool.display in status.json, which the guard
 # copies from settings.json. A file without them (an older guard) gets the defaults, the first of each.
@@ -776,20 +778,55 @@ class ChartData:
     in_range: int                         # samples inside [t0, t1]
     t0: float                             # the x axis always spans the whole range: now - 24 h (or 7 d) ...
     t1: float                             # ... to now
+    bars: list[tuple[float, float, float, bool]] = field(default_factory=list)
+    # (start, end, used %, red) per usage bucket with any use: how much of the headline's quota went in it
+    resets: list[float] = field(default_factory=list)   # when a seat's week reset (the headline's used % dropped)
+    bucket_s: float = 1800.0              # the bucket width
+    peak: float = 0.0                     # the biggest bucket's use, %; 0 with no use in range
 
 
 def chart_data(m: Model, range_key: str) -> ChartData:
     """The headline's history as the hero shows it: the same seats, as used or as left (falling, then jumping up
-    at a weekly reset)."""
-    span_s = RANGES.get(range_key, RANGES['24h'])[0]
+    at a weekly reset), plus the use per bucket: the headline's used % rising between two samples is use, spread
+    over the buckets the two samples span (a sleeping Mac skips samples, but the seats were still used); a drop of
+    RESET_MIN_PCT or more is a reset, which never counts as use but is marked. Bars end at `now`, so the buckets
+    are anchored there."""
+    span_s, _, bucket_s, _ = RANGES.get(range_key, RANGES['24h'])
     t1 = m.now.timestamp()
     t0 = t1 - span_s
-    rows = [(s.t, m.shown(v), s.alarm) for s in m.history
-            if (v := sample_value(s, m.headline_mode)) is not None and s.t <= t1 + 300]
+    series = [(s.t, v, s.alarm) for s in m.history
+              if (v := sample_value(s, m.headline_mode)) is not None and s.t <= t1 + 300]
+    rows = [(t, m.shown(v), a) for t, v, a in series]
     inside = [r for r in rows if r[0] >= t0]
     before = [r for r in rows if r[0] < t0][-1:]   # lets the line enter from the left edge
     pts = before + inside
-    return ChartData(pts, len(inside), t0, max([t1] + [p[0] for p in pts]))
+    end = max([t1] + [p[0] for p in pts])
+
+    n = int(math.ceil(span_s / bucket_s))
+    use = [0.0] * n
+    red = [False] * n
+    resets: list[float] = []
+    for (ta, va, alarm), (tb, vb, _) in pairwise(series):
+        if tb <= t0 or tb <= ta:
+            continue
+        d = vb - va
+        if d <= 0:
+            if -d >= RESET_MIN_PCT and tb <= end:
+                resets.append(tb)
+            continue
+        lo, hi = max(ta, t0), min(tb, end)
+        if hi <= lo:
+            continue
+        rate = d / (tb - ta)
+        k0, k1 = int((lo - t0) // bucket_s), min(n - 1, int((hi - t0 - 1e-9) // bucket_s))
+        for k in range(k0, k1 + 1):
+            ba, bb = t0 + k * bucket_s, t0 + (k + 1) * bucket_s
+            overlap = min(hi, bb) - max(lo, ba)
+            if overlap > 0:
+                use[k] += rate * overlap
+                red[k] = red[k] or alarm
+    bars = [(t0 + k * bucket_s, min(end, t0 + (k + 1) * bucket_s), u, red[k]) for k, u in enumerate(use) if u > 0]
+    return ChartData(pts, len(inside), t0, end, bars, resets, bucket_s, max([0.0] + [b[2] for b in bars]))
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1096,13 +1133,16 @@ def draw_symbol(name: str, cx: float, cy: float, size: float, color, weight=NSFo
         ((cx - w / 2, cy - h / 2), (w, h)), ((0, 0), (0, 0)), NSCompositingOperationSourceOver, 1.0, True, None)
 
 
-def draw_sparkline(rect, pts, t0, t1, grey: bool, regular=None, area: float = 0.28):
-    """The headline (as used or as left) on a fixed 0-100 % scale across [t0, t1]: a 1.5 pt line over a soft
-    gradient, in `regular` (the pool's colour; green if not given) while a regular seat served and red while the
-    reserve did, credits were spent or every seat was out (Sample.alarm; all grey when nothing is serving now).
-    A dashed stub carries the last value on to 'now' (t1); a dot marks the latest sample."""
+def draw_chart(rect, data: ChartData, grey: bool, regular=None):
+    """Use per bucket as bars from the baseline, scaled so the busiest bucket fills the chart, under the headline
+    (as used or as left) as a 1.5 pt line on a fixed 0-100 % scale across [t0, t1]. Both take `regular` (the
+    pool's colour; green if not given) while a regular seat served and red while the reserve did, credits were
+    spent or every seat was out (Sample.alarm; all grey when nothing is serving now). A reset (the headline's used
+    % dropped) is a dashed hairline with a small triangle on top. A dashed stub carries the last value on to 'now'
+    (t1); a dot marks the latest sample."""
     (x, y), (w, h) = rect
     top, bottom = y + 2.5, y + h - 0.5
+    t0, t1, pts = data.t0, data.t1, data.pts
     span = max(1.0, t1 - t0)
 
     def px(t):
@@ -1123,17 +1163,46 @@ def draw_sparkline(rect, pts, t0, t1, grey: bool, regular=None, area: float = 0.
     C.separator().setStroke()
     guide.stroke()
 
+    # Bars: each bucket's use, the busiest one reaching the top; a bucket with any use is at least 1 pt tall.
+    if data.peak > 0:
+        gap = 1.5 if w / (span / data.bucket_s) >= 5 else 1.0
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath.clipRect_(((x, top - 1), (w, bottom - top + 1)))
+        for ba, bb, u, reserve in data.bars:
+            xa, xb = px(ba) + gap / 2, px(bb) - gap / 2
+            if xb - xa < 1.0:
+                xa, xb = (xa + xb) / 2 - 0.5, (xa + xb) / 2 + 0.5
+            bh = max(1.0, u / data.peak * (bottom - top))
+            r = min(1.5, (xb - xa) / 2)
+            fill_rounded(((xa, bottom - bh), (xb - xa, bh + r)), r, colour(reserve).colorWithAlphaComponent_(0.42))
+        NSGraphicsContext.restoreGraphicsState()
+
+    # Resets: a dashed hairline the chart's height, with a small triangle at the top.
+    for t in data.resets:
+        rx = px(t)
+        if not x <= rx <= x + w:
+            continue
+        mark = NSBezierPath.bezierPath()
+        mark.moveToPoint_((rx, top + 4))
+        mark.lineToPoint_((rx, bottom))
+        mark.setLineWidth_(1.0)
+        mark.setLineDash_count_phase_([2.0, 2.0], 2, 0)
+        C.secondary().setStroke()
+        mark.stroke()
+        tri = NSBezierPath.bezierPath()
+        tri.moveToPoint_((rx, y))
+        tri.lineToPoint_((rx + 3, y + 4.5))
+        tri.lineToPoint_((rx - 3, y + 4.5))
+        tri.closePath()
+        C.secondary().setFill()
+        tri.fill()
+
     line = NSBezierPath.bezierPath()
     for i, (t, v, _) in enumerate(pts):
         (line.moveToPoint_ if i == 0 else line.lineToPoint_)((px(t), py(v)))
     line.setLineWidth_(1.5)
     line.setLineJoinStyle_(NSLineJoinStyleRound)
     line.setLineCapStyle_(NSLineCapStyleRound)
-    alpha = area
-    fill = line.copy()
-    fill.lineToPoint_((px(pts[-1][0]), bottom))
-    fill.lineToPoint_((px(pts[0][0]), bottom))
-    fill.closePath()
 
     # Colour runs: the segment from sample i to i+1 takes sample i's colour. Each run is drawn clipped to
     # its own x range (and everything to the chart's), so the colour changes exactly where serving changed.
@@ -1150,12 +1219,9 @@ def draw_sparkline(rect, pts, t0, t1, grey: bool, regular=None, area: float = 0.
         lo, hi = max(x, xa), min(x + w, xb)
         if hi <= lo:
             continue
-        c = colour(reserve)
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath.clipRect_(((lo, y - 2), (hi - lo, h + 3)))
-        NSGradient.alloc().initWithStartingColor_endingColor_(
-            c.colorWithAlphaComponent_(alpha), c.colorWithAlphaComponent_(0.0)).drawInBezierPath_angle_(fill, 90)
-        c.setStroke()
+        colour(reserve).setStroke()
         line.stroke()
         NSGraphicsContext.restoreGraphicsState()
 
@@ -2064,17 +2130,22 @@ class PopoverLayout:
         y += row_h + 5
 
         data = chart_data(m, self.range_key)
-        chart_h, af = 44.0, font(10)
+        chart_h, af = 60.0, font(10)
+        span_word, _, bucket_word = RANGES[self.range_key][1:]
         if data.in_range < MIN_CHART_SAMPLES:   # an empty chart of the same size, so nothing jumps later
             self.add(fill_rect, ((PAD, y + chart_h - 0.5), (INNER, 0.5)), C.separator())
             f = font(11)
             self.text('Collecting history…', PAD, y + (chart_h - line_height(f)) / 2, f, C.secondary(),
                       width=INNER, align='center')
+            legend = ''
         else:
-            self.add(draw_sparkline, ((PAD, y), (INNER, chart_h)), data.pts, data.t0, data.t1, not m.serving_now,
-                     C.pool_fill(m.pool), getattr(m.ui, 'chart_area', 0.28))
+            self.add(draw_chart, ((PAD, y), (INNER, chart_h)), data, not m.serving_now, C.pool_fill(m.pool))
+            peak = f'{data.peak:.1f}%' if data.peak < 10 else f'{data.peak:.0f}%'
+            legend = f'bars: used per {bucket_word} · peak {peak}' if data.peak > 0 else 'no use in this range'
         y += chart_h + 5
-        self.text(f'{RANGES[self.range_key][1]} ago', PAD, y, af, C.secondary())
+        self.text(f'{span_word} ago', PAD, y, af, C.secondary())
+        if legend:
+            self.text(legend, PAD, y, af, C.secondary(), width=INNER, align='center')
         self.text('now', PAD, y, af, C.secondary(), width=INNER, align='right')
         return y + line_height(af)
 
@@ -2148,9 +2219,9 @@ class PopoverLayout:
         ui = m.ui
         name_f, small_f = font(13, NSFontWeightSemibold), font(11)
         lh, sh = line_height(name_f), SMALL_LH
-        bars = [(seat.week, 5.0)] + ([(seat.short, 3.0)] if seat.short else []) + \
-            [(Window(sc.used, sc.reset_at, None), 3.0) for sc in seat.scoped]
-        bars_h = sum(h for _, h in bars) + 3.0 * (len(bars) - 1)
+        wins = seat_windows(seat)
+        labelled = len(wins) > 1      # each limit on its own line: 'Week ▬▬▬ 45%', the binding one emphasised
+        bars_h = SMALL_LH * len(wins) if labelled else 5.0
         blocked, soon = seat.state == 'blocked', seat.sign_in_soon
         ended = ui.sign_in_ended_text if ui else SIGN_IN_ENDED
         detail = (seat.detail or 'Needs attention') if blocked else (ended if soon else '')
@@ -2160,7 +2231,18 @@ class PopoverLayout:
                           C.secondary() if stale else C.red() if blocked else C.orange(), detail, C.secondary()))
         if ui is not None:
             extra += ui.seat_lines(seat, m, stale, bool(detail))
-        row_h = ROW_PAD + lh + 4 + bars_h + 4 + sh + (sh + 1) * len(extra) + ROW_PAD
+        # line 3's right text: the sign-in problem, or when the seat resets / comes back
+        if blocked or soon:
+            rf = font(11, NSFontWeightMedium)
+            right, rc = ('Re-login needed' if blocked else 'Re-login soon'), \
+                C.secondary() if stale else C.red_text() if blocked else C.orange_text()
+        else:
+            right = seat_right_text(seat, m.now)
+            if seat.resets and seat.unavailable and not stale and seat.state != 'disabled':
+                right = f'{right} · reset available' if right else 'Reset available'
+            rf, rc = small_f, C.secondary()
+        line3 = not labelled or bool(right)   # a labelled row's figures sit on the bars; no line without a right text
+        row_h = ROW_PAD + lh + 4 + bars_h + (4 + sh if line3 else 0) + (sh + 1) * len(extra) + ROW_PAD
         key = ('seat', seat.name or seat.label)
         reset_tip = ''
         if seat.resets:
@@ -2198,28 +2280,21 @@ class PopoverLayout:
             hot = seat.serving and m.serving_now   # red only while the reserve is actually serving
             self.text(tag, x, small_y, small_f, C.red_text() if hot else C.secondary(), width=PAD + room - x)
 
-        # bars
+        # bars: one full-width weekly bar, or for a seat with more limits one labelled line per limit
         by = top + lh + 4
-        for win, h in bars:
-            used = win.used if win else None
-            self.add(draw_bar, PAD, by, INNER, h, m.shown(used), bar_fill(used, dim))
-            by += h + 3
-        y3 = top + lh + 4 + bars_h + 4
-
-        # line 3
-        if blocked or soon:
-            f = font(11, NSFontWeightMedium)
-            right, rf, rc = ('Re-login needed' if blocked else 'Re-login soon'), f, \
-                C.secondary() if stale else C.red_text() if blocked else C.orange_text()
+        if not labelled:
+            used = wins[0][1]
+            self.add(draw_bar, PAD, by, INNER, 5.0, m.shown(used), bar_fill(used, dim))
         else:
-            right = seat_right_text(seat, m.now)
-            if seat.resets and seat.unavailable and not stale and seat.state != 'disabled':
-                right = f'{right} · reset available' if right else 'Reset available'
-            rf, rc = small_f, C.secondary()
-        rw = text_width(right, rf) if right else 0
-        lw = self.usage_text(seat, PAD, y3, small_f, dim, stale, room=INNER - rw - 12)
-        self.text(right, PAD + lw + 12, y3, rf, rc, width=INNER - lw - 12, align='right')
-        dy = y3 + sh + 1
+            self.window_bars(seat, wins, PAD, by, small_f, dim, stale)
+        y3 = by + bars_h + 4
+
+        # line 3: the figure ('56% left') left, the reset or return right; a labelled row has only the right
+        if line3:
+            rw = text_width(right, rf) if right else 0
+            lw = self.usage_text(seat, PAD, y3, small_f, dim, stale, room=INNER - rw - 12) if not labelled else 0
+            self.text(right, PAD + lw + 12, y3, rf, rc, width=INNER - lw - 12, align='right')
+        dy = y3 + sh + 1 if line3 else by + bars_h
         for symbol, sc, text, tc in extra:
             self.add(draw_symbol, symbol, PAD + 5, dy + sh / 2, 10, sc, NSFontWeightRegular, (10.5, 10))
             self.text(text[:1].upper() + text[1:], PAD + 14, dy, small_f, tc, width=INNER - 14, truncate='middle')
@@ -2227,41 +2302,33 @@ class PopoverLayout:
         return y + row_h
 
     def usage_text(self, seat: Seat, x: float, y: float, f, dim: bool, stale: bool, room: float | None = None) -> float:
-        """'49% used' / '51% left', or for seats with more limits 'Week 64% · 5h 100%' / 'Week 36% left · 5h 0% left'
-        (a scoped cap: '· Fable 64% left' too), the limit that binds in the label colour. With room, a line that
-        would not fit drops ' left' from all but the last figure, then from that too (an add-on's pool with
-        PoolUI.compact_usage never tries ' left' on every figure). Returns the width drawn."""
+        """'49% used' / '51% left' for a seat with one limit (a seat with more has its figures on its bar lines,
+        window_bars). Returns the width drawn."""
         m = self.m
-        wins = seat_windows(seat)
-        if len(wins) == 1:
-            week = wins[0][1]
-            text = f'{fmt_pct(m.shown(week))} {m.word}'
-            self.text(text, x, y, f, C.secondary() if dim else C.label())
-            return text_width(text, f)
-        binding = binding_window(seat)
-        sep = ' · '
+        week = seat_windows(seat)[0][1]
+        text = f'{fmt_pct(m.shown(week))} {m.word}'
+        self.text(text, x, y, f, C.secondary() if dim else C.label())
+        return text_width(text, f)
 
-        def texts(tails):
-            return [f'{label} {fmt_pct(m.shown(used))}{tail}' for (label, used, _), tail in zip(wins, tails)]
-        n = len(wins)
-        options = [[' left'] * n, [''] * (n - 1) + [' left'], [''] * n] if m.left else [[''] * n]
-        if m.left and getattr(m.ui, 'compact_usage', False):
-            options = options[1:]
-        parts = texts(options[-1])
-        for tails in options:
-            parts = texts(tails)
-            if room is None or sum(text_width(t, f) for t in parts) + (n - 1) * text_width(sep, f) <= room:
-                break
-        x0 = x
-        for i, text in enumerate(parts):
-            if i:
-                self.text(sep, x, y, f, C.secondary())
-                x += text_width(sep, f)
-            pct = wins[i][1]
-            strong = i == binding and not stale and (not dim or (pct or 0) >= 99.5)
-            self.text(text, x, y, f, C.label() if strong else C.secondary())
-            x += text_width(text, f)
-        return x - x0
+    def window_bars(self, seat: Seat, wins: list, x: float, y: float, f, dim: bool, stale: bool):
+        """One SMALL_LH line per limit: its name at the left ('Week', '5h', a scoped cap's model such as 'Fable'),
+        its bar, and its figure at the right ('45%', or '45% left' in left mode). The limit that binds is the
+        primary one: a 5 pt bar with its name and figure in the label colour; the others are 3 pt and secondary.
+        The names and figures sit in aligned columns, so the bars line up."""
+        m = self.m
+        binding = binding_window(seat)
+        vals = [f'{fmt_pct(m.shown(used))}{" left" if m.left else ""}' for _, used, _ in wins]
+        cap_w = max(text_width(label, f) for label, _, _ in wins) + 8
+        val_w = max(text_width(v, f) for v in vals) + 1
+        bx, bw = x + cap_w, INNER - cap_w - val_w - 8
+        for i, ((label, used, _), val) in enumerate(zip(wins, vals)):
+            strong = i == binding and not stale and (not dim or (used or 0) >= 99.5)
+            h = 5.0 if i == binding else 3.0
+            colour = C.label() if strong else C.secondary()
+            self.text(label, x, y, f, colour, width=cap_w - 4)
+            self.add(draw_bar, bx, y + (SMALL_LH - h) / 2, bw, h, m.shown(used), bar_fill(used, dim))
+            self.text(val, x + INNER - val_w, y, f, colour, width=val_w, align='right')
+            y += SMALL_LH
 
     # -- 6. footer -----------------------------------------------------------------------------------
     def footer(self, y: float) -> float:
