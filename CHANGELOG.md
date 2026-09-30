@@ -6,6 +6,9 @@ All notable changes to codexpool are recorded here. The format follows
 
 ## [Unreleased]
 
+- Publish the optional Claude integration, including its docs, tests, demo assets and patches; explicitly allow
+  it in the publication rules and validate both suites in CI. Credentials and runtime state remain local.
+
 ### Changed
 
 - **The popover's chart shows your use as bars.** Each bar is how much of the pool's quota went in one half hour

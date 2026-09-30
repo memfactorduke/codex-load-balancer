@@ -377,10 +377,15 @@ again. The menu bar's **Re-login…** and the Settings window's **Sign In Again�
 The menu bar shows one percentage: how much of this week's quota is **left** across **all** your seats, as an
 average weighted by seat size. It counts down as you work and jumps back up when a seat's week resets.
 
-- **Weight** is a seat's size relative to Plus. The default comes from the plan in its login: `plus` 1,
-  `prolite` and `self_serve_business_prolite` 5, `pro` 20, anything else (including `team`) 1. `codexpool status`
-  shows it in the `size` column and the popover as `5×`. Change it with `codexpool weight <seat> <n>` (any
-  positive number).
+- **Weight** is a seat's size relative to **Plus = 1×**, not relative to another Pro plan. The default comes
+  from the plan in its login: `plus` 1, `prolite` and `self_serve_business_prolite` 5, `pro` 20,
+  `promax` 25, and other legacy plans (including `team`) 1. The `promax` plan is shown as **Pro $500 25×**:
+  [OpenAI's announcement at 21:56](https://www.youtube.com/watch?v=Fls_onRviPM&t=1316s) specifies 25× the
+  usage of Plus. This multiplier comes from the announced usage allowance, not its price.
+  `codexpool status` shows the weight in the `size` column and the popover as `25×`.
+  Change it with `codexpool weight <seat> <n>` (any positive number); a valid explicit weight always wins.
+  If a status source explicitly marks capacity unknown, numerical totals exclude it and the affected pool
+  percentage and pace estimate are unavailable; each seat still shows its own reported usage.
 - **Reserve** seats (`codexpool reserve <seat>`) count like the others. The popover also shows the reserve's own
   figure on the line below the number ("reserve 66% left").
 - Seats you turned off are left out. A seat that is out or blocked and reports no numbers counts as spent (0% left).
@@ -731,8 +736,10 @@ Yes. `codex` reads the same `~/.codex/config.toml`, so anything that uses it (th
 the pool.
 
 **Can it pool another tool's accounts?**
-Not out of the box: the Codex pool holds only ChatGPT seats. A second pool for another tool can be added as an
-[add-on](docs/ADDONS.md); none ship with codexpool.
+Yes. The optional [Claude integration](addons/sienna/README.md) ships as source and pools Claude accounts
+behind Claude Code in a separate pool. Run `codexpool claude install` to set it up, then add accounts with
+`codexpool claude login`. Its implementation uses the [add-on interface](docs/ADDONS.md); credentials and
+runtime state stay local. See its docs for the desktop and engine-lane support and their current limits.
 
 **Which ChatGPT plans work?**
 Any plan that includes Codex: Plus, Pro, Business, Team and others. Each seat is sized by its plan so the meter

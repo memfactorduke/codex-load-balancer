@@ -42,9 +42,24 @@ that uses every seat automatically, with no account switching and nothing that b
 
 ## Design
 
-**The pool is stock CLIProxyAPI.** It is a maintained open-source proxy that tracks Codex releases closely. Codex
+**The pool uses CLIProxyAPI.** It is a maintained open-source proxy that tracks Codex releases closely. Codex
 reaches it through `openai_base_url` alone. The only custom code in the request path is the origin gate, and it
 only accepts or rejects.
+
+An owner-approved catalog-only supplement in `build/catalog/` supplies newly released model metadata missing
+from upstream. It merges missing entries at catalog load and refresh, without changing inference payloads or
+disabling remote updates. Upstream entries take precedence as soon as they arrive. Both the routing registry
+and native picker catalog are covered. The supplement is included in the build fingerprint, validated before
+the binary is built, and fails closed if upstream loader anchors change. Model exclusions still use the normal
+pool configuration; the Codex default model is independent of these catalog additions.
+
+An explicitly registered per-seat alias may have its own client-catalog presentation and preferred speed.
+The client projection prefers that exact alias template, falling back to the base model's template; it
+still uses the base identity for capability checks. Client-only alias metadata never registers a route:
+only seats with the native per-seat alias can serve it. A dedicated speed choice therefore fails when its
+eligible seats are unavailable, while the ordinary model keeps the normal pool order. Native chat or
+configuration speed selections override a catalog preference, so select the intended speed explicitly in
+the client's speed menu. No inference payload rules or bridge are used for these aliases.
 
 **Fill-first by priority, with 24-hour session affinity.** One seat is drained at a time, so reset times are
 staggered across seats. Each thread stays on its seat, which keeps prompt caching effective and makes account
@@ -278,7 +293,8 @@ its pool sections with top-level ones the user wrote, rather than guess.
 
 A second pool for another tool is an add-on: a directory `addons/<id>/` with an `addon.py` that registers its pool
 instance, guard pass, doctor and status sections, gate profile, lane provider and menu bar `PoolUI` through the hooks
-in [ADDONS.md](ADDONS.md). None ship with codexpool. The registry exists so the core never names another product:
+in [ADDONS.md](ADDONS.md). The optional [Claude add-on](../addons/sienna/README.md) ships as source.
+The registry keeps product-specific runtime behavior in the add-on:
 every hook site iterates `ADDONS`, and a broken add-on is reported by `doctor` and skipped, never a reason for the
 Codex pool to stop. The gate's profile registry is core for the same reason: an add-on's pool needs stricter
 admission rules than the Codex pool, and the gate must fail closed on any profile it does not know.

@@ -1,0 +1,27 @@
+--- a/internal/api/handlers/management/auth_files_fields.go
++++ b/internal/api/handlers/management/auth_files_fields.go
+@@ -387,6 +387,24 @@
+ 	}
+ 	if changed {
+ 		syncAuthFileMetadataFields(targetAuth, touchedRoots)
++		if _, ok := touchedRoots["excluded_models"]; ok {
++			// Registration consumes derived attributes, not metadata. Rebuild before the
++			// synchronous post-persist hook; clearing must also remove old attributes.
++			var excluded []string
++			switch values := targetAuth.Metadata["excluded_models"].(type) {
++			case []string:
++				excluded = values
++			case []any:
++				for _, value := range values {
++					if model, ok := value.(string); ok {
++						excluded = append(excluded, model)
++					}
++				}
++			}
++			delete(targetAuth.Attributes, "excluded_models")
++			delete(targetAuth.Attributes, "excluded_models_hash")
++			synthesizer.ApplyAuthExcludedModelsMeta(targetAuth, h.cfg, excluded, targetAuth.AuthKind())
++		}
+ 	}
+ 
+ 	if !changed {

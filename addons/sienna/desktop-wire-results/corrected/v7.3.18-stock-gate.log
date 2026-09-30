@@ -1,0 +1,179 @@
+=== RUN   TestCodexpoolGatePreservesUnrecognisedClaudeRequest
+=== RUN   TestCodexpoolGatePreservesUnrecognisedClaudeRequest/cli/v1/messages
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages              --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGatePreservesUnrecognisedClaudeRequest.func2.1 (2 handlers)
+[2026-09-28 06:31:16] [--------] [info ] [codexpool_gate.go:115] codexpool gate: first request from client user-agent="claude-cli/99.0.0 (external, cli)" x-app="cli"
+--- PASS: TestCodexpoolGatePreservesUnrecognisedClaudeRequest (0.00s)
+    --- PASS: TestCodexpoolGatePreservesUnrecognisedClaudeRequest/cli/v1/messages (0.00s)
+=== RUN   TestCodexpoolGateTokenCounter
+=== RUN   TestCodexpoolGateTokenCounter/native
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages/count_tokens --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGateTokenCounter.func2.1 (2 handlers)
+=== RUN   TestCodexpoolGateTokenCounter/background
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages/count_tokens --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGateTokenCounter.func2.1 (2 handlers)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "POST" "/v1/messages/count_tokens" profile="claude" user-agent="claude-cli/2.1.283 (external, cli)" x-app="cli-bg"
+=== RUN   TestCodexpoolGateTokenCounter/new_minor
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages/count_tokens --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGateTokenCounter.func2.1 (2 handlers)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:106] codexpool gate: rejected unrecognised token-count client user-agent="claude-cli/99.0.0 (external, cli)" x-app="cli"
+=== RUN   TestCodexpoolGateTokenCounter/desktop
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages/count_tokens --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGateTokenCounter.func2.1 (2 handlers)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:106] codexpool gate: rejected unrecognised token-count client user-agent="claude-cli/2.1.281 (external, claude-desktop-3p)" x-app="cli"
+=== RUN   TestCodexpoolGateTokenCounter/missing_beta
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages/count_tokens --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGateTokenCounter.func2.1 (2 handlers)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:106] codexpool gate: rejected unrecognised token-count client user-agent="claude-cli/2.1.283 (external, cli)" x-app="cli"
+--- PASS: TestCodexpoolGateTokenCounter (0.00s)
+    --- PASS: TestCodexpoolGateTokenCounter/native (0.00s)
+    --- PASS: TestCodexpoolGateTokenCounter/background (0.00s)
+    --- PASS: TestCodexpoolGateTokenCounter/new_minor (0.00s)
+    --- PASS: TestCodexpoolGateTokenCounter/desktop (0.00s)
+    --- PASS: TestCodexpoolGateTokenCounter/missing_beta (0.00s)
+=== RUN   TestCodexpoolGateClients
+=== RUN   TestCodexpoolGateClients/desktop_messages
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [codexpool_gate.go:115] codexpool gate: first request from client user-agent="claude-cli/2.1.281 (external, claude-desktop-3p)" x-app="cli"
+=== RUN   TestCodexpoolGateClients/foreground
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+=== RUN   TestCodexpoolGateClients/background
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1/models" profile="claude" user-agent="claude-cli/1.0" x-app="cli-bg"
+=== RUN   TestCodexpoolGateClients/background_missing_UA
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1/models" profile="claude" user-agent="" x-app="cli-bg"
+=== RUN   TestCodexpoolGateClients/background_other_UA
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1/models" profile="claude" user-agent="other/1.0" x-app="cli-bg"
+=== RUN   TestCodexpoolGateClients/missing_app
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1/models" profile="claude" user-agent="claude-cli/1.0" x-app=""
+=== RUN   TestCodexpoolGateClients/unknown_app
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1/models" profile="claude" user-agent="claude-cli/1.0" x-app="cli-other"
+=== RUN   TestCodexpoolGateClients/background_browser
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:86] codexpool gate: rejected "GET" "/v1/models" host="127.0.0.1" origin="https://example.invalid" sec-fetch-site=""
+=== RUN   TestCodexpoolGateClients/background_renderer
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:86] codexpool gate: rejected "GET" "/v1/models" host="127.0.0.1" origin="app://-" sec-fetch-site=""
+=== RUN   TestCodexpoolGateClients/background_cross_site
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:86] codexpool gate: rejected "GET" "/v1/models" host="127.0.0.1" origin="" sec-fetch-site="cross-site"
+=== RUN   TestCodexpoolGateClients/background_rebinding
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:86] codexpool gate: rejected "GET" "/v1/models" host="attacker.invalid" origin="" sec-fetch-site=""
+=== RUN   TestCodexpoolGateClients/management_exempt
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+=== RUN   TestCodexpoolGateClients/management_traversal
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v0/management/../v1/models" profile="claude" user-agent="" x-app=""
+=== RUN   TestCodexpoolGateClients/other_path
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1beta/models" profile="claude" user-agent="" x-app=""
+=== RUN   TestCodexpoolGateClients/codex_unchanged
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+=== RUN   TestCodexpoolGateClients/codex_renderer
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+=== RUN   TestCodexpoolGateClients/codex_browser
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:86] codexpool gate: rejected "GET" "/v1/models" host="127.0.0.1" origin="https://example.invalid" sec-fetch-site=""
+=== RUN   TestCodexpoolGateClients/unknown_profile
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [warn ] [codexpool_gate.go:94] codexpool gate: rejected client "GET" "/v1/models" profile="typo" user-agent="claude-cli/1.0" x-app="cli-bg"
+--- PASS: TestCodexpoolGateClients (0.00s)
+    --- PASS: TestCodexpoolGateClients/desktop_messages (0.00s)
+    --- PASS: TestCodexpoolGateClients/foreground (0.00s)
+    --- PASS: TestCodexpoolGateClients/background (0.00s)
+    --- PASS: TestCodexpoolGateClients/background_missing_UA (0.00s)
+    --- PASS: TestCodexpoolGateClients/background_other_UA (0.00s)
+    --- PASS: TestCodexpoolGateClients/missing_app (0.00s)
+    --- PASS: TestCodexpoolGateClients/unknown_app (0.00s)
+    --- PASS: TestCodexpoolGateClients/background_browser (0.00s)
+    --- PASS: TestCodexpoolGateClients/background_renderer (0.00s)
+    --- PASS: TestCodexpoolGateClients/background_cross_site (0.00s)
+    --- PASS: TestCodexpoolGateClients/background_rebinding (0.00s)
+    --- PASS: TestCodexpoolGateClients/management_exempt (0.00s)
+    --- PASS: TestCodexpoolGateClients/management_traversal (0.00s)
+    --- PASS: TestCodexpoolGateClients/other_path (0.00s)
+    --- PASS: TestCodexpoolGateClients/codex_unchanged (0.00s)
+    --- PASS: TestCodexpoolGateClients/codex_renderer (0.00s)
+    --- PASS: TestCodexpoolGateClients/codex_browser (0.00s)
+    --- PASS: TestCodexpoolGateClients/unknown_profile (0.00s)
+=== RUN   TestCodexpoolDesktopWireGateFixtures
+=== RUN   TestCodexpoolDesktopWireGateFixtures/desktop-initial.json
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages              --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolDesktopWireGateFixtures.func2.1 (2 handlers)
+=== RUN   TestCodexpoolDesktopWireGateFixtures/desktop-retry.json
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages              --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolDesktopWireGateFixtures.func2.1 (2 handlers)
+=== RUN   TestCodexpoolDesktopWireGateFixtures/cli.json
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages              --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolDesktopWireGateFixtures.func2.1 (2 handlers)
+--- PASS: TestCodexpoolDesktopWireGateFixtures (0.00s)
+    --- PASS: TestCodexpoolDesktopWireGateFixtures/desktop-initial.json (0.00s)
+    --- PASS: TestCodexpoolDesktopWireGateFixtures/desktop-retry.json (0.00s)
+    --- PASS: TestCodexpoolDesktopWireGateFixtures/cli.json (0.00s)
+=== RUN   TestCodexpoolGateClientClassesBounded
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+[2026-09-28 06:31:16] [--------] [info ] [global_logger.go:135] POST   /v1/messages              --> github.com/router-for-me/CLIProxyAPI/v7/cmd/server.TestCodexpoolGateClientClassesBounded.func2 (2 handlers)
+--- PASS: TestCodexpoolGateClientClassesBounded (0.00s)
+PASS
+ok  	github.com/router-for-me/CLIProxyAPI/v7/cmd/server	0.021s

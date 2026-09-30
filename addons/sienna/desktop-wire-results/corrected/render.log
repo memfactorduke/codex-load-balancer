@@ -1,0 +1,18 @@
+
+Fontconfig error: No writable cache directories
+	/opt/homebrew/var/cache/fontconfig
+	<home>/.cache/fontconfig
+	<home>/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/opt/homebrew/var/cache/fontconfig
+	<home>/.cache/fontconfig
+	<home>/.fontconfig
+
+Fontconfig error: No writable cache directories
+	/opt/homebrew/var/cache/fontconfig
+	<home>/.cache/fontconfig
+	<home>/.fontconfig
+WARNING: Ignored `overflow-x:auto` at 3:1639, unknown property.
+WARNING: Expected a media type, got '(max-width:700px)'
+WARNING: Invalid media type '(max-width:700px)' the whole @media rule was ignored at 3:1712.

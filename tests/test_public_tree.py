@@ -1,59 +1,53 @@
-"""The public tree describes the Codex pool only. An add-on's product, company and code names never appear in a core
-file's text or path: everything about an add-on lives under addons/<id>/, which the public repository ignores.
-The names are assembled at runtime so this file does not trip its own scan."""
+"""Public source includes Claude; logins and runtime state stay local."""
 import pathlib
-import re
+import importlib.util
+import tempfile
 import unittest
-
 from _helpers import REPO
 
-# Each name reversed, so no core file (this one included) spells one out.
-NAMES = tuple(word[::-1] for word in ('edualc', 'ciporhtna', 'anneis', 'krowoc'))
-PATTERN = re.compile('|'.join(map(re.escape, NAMES)).encode(), re.I)
-SKIP_DIRS = {'addons', '.git', '__pycache__', '.ruff_cache', '.venv', 'node_modules'}
-SKIP_FILES = {'LOCAL.md'}   # the owner's private notes, never committed (.gitignore)
-SKIP_SUFFIXES = {'.pyc'}
-# The generic add-on interface may name the add-on mechanism (addons/, add-ons), never a product: no exemptions.
-EXEMPT = frozenset()
-
-
-def core_files():
-    for path in sorted(REPO.rglob('*')):
-        rel = path.relative_to(REPO)
-        if any(part in SKIP_DIRS for part in rel.parts) or not path.is_file():
-            continue
-        if path.name in SKIP_FILES or path.suffix in SKIP_SUFFIXES:
-            continue
-        yield rel.as_posix(), path
-
+RUNTIME_PATHS = ('auth', 'auth-claude', 'state', 'logs', 'config.yaml', 'config-claude.yaml',
+                 'seats.json', 'claude-seats.json', 'settings.json', 'rollback')
 
 class PublicTree(unittest.TestCase):
-    def test_no_addon_names_in_core_paths_or_text(self):
-        hits = []
-        for rel, path in core_files():
-            if rel in EXEMPT:
-                continue
-            if PATTERN.search(rel.encode()):
-                hits.append(f'{rel}: (path)')
-                continue
-            data = path.read_bytes()
-            for number, line in enumerate(data.splitlines(), 1):
-                if PATTERN.search(line):
-                    hits.append(f'{rel}:{number}: {line[:120].decode("utf-8", "replace")!r}')
-        self.assertEqual(hits, [], 'an add-on name in the public tree:\n' + '\n'.join(hits))
+    def test_gitignore_allows_addon_source(self):
+        rules = (REPO / '.gitignore').read_text().splitlines()
+        self.assertNotIn('/addons/', rules)
+        self.assertNotIn('/addons/sienna/', rules)
 
-    def test_the_scan_sees_the_tree(self):
-        files = dict(core_files())
-        self.assertIn('bin/codexpool', files)
-        self.assertIn('README.md', files)
-        self.assertIn('docs/ADDONS.md', files)
-        self.assertFalse(any(rel.startswith('addons/') for rel in files))
-        for name in NAMES:
-            self.assertTrue(PATTERN.search(('x' + name.upper() + 'y').encode()), name)
+    def test_runtime_state_is_ignored(self):
+        rules = (REPO / '.gitignore').read_text().splitlines()
+        for path in RUNTIME_PATHS:
+            self.assertTrue('/' + path in rules or '/' + path + '/' in rules, path)
+        self.assertIn('LOCAL.md', rules)
 
-    def test_gitignore_keeps_addons_out(self):
-        self.assertIn('/addons/', (REPO / '.gitignore').read_text().splitlines())
+    def test_claude_publication_is_explicit(self):
+        policy = (REPO / 'AGENTS.md').read_text()
+        self.assertIn('Claude integration in `addons/sienna/` is expressly allowed', policy)
+        self.assertIn('Claude, Anthropic, sienna and Cowork may be named', policy)
 
+class PublicationScan(unittest.TestCase):
+    def scanner(self):
+        spec = importlib.util.spec_from_file_location('publication_scan', REPO / 'scripts/publish_tree.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_claude_source_and_synthetic_fixtures_can_publish(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / 'addons/sienna').mkdir(parents=True)
+            (root / 'addons/sienna/README.md').write_text('Claude Anthropic sienna Cowork; sample@example.com')
+            self.assertEqual(self.scanner().scan(root)[1], [])
+
+    def test_credentials_and_runtime_state_cannot_publish(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / 'auth-claude').mkdir()
+            (root / 'auth-claude/account.json').write_text('{}')
+            (root / 'README.md').write_text('account' + '@' + 'company.tld; ' + 'sk-' + 'a' * 32)
+            hits = self.scanner().scan(root)[1]
+            for kind in ('runtime:', 'secret:', 'personal:'):
+                self.assertTrue(any(hit.startswith(kind) for hit in hits), kind)
 
 if __name__ == '__main__':
     unittest.main()

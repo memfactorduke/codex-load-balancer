@@ -216,7 +216,7 @@ SIGN_IN_ENDED = 'OpenAI ended this sign-in'   # a seat that still serves on its 
 
 # Plan families, matched in order against the plan string ("self_serve_business_prolite" is Business).
 PLAN_NAMES = (('enterprise', 'Enterprise'), ('business', 'Business'), ('team', 'Team'), ('edu', 'Edu'),
-              ('pro', 'Pro'), ('plus', 'Plus'), ('free', 'Free'))   # an add-on's pool: PoolUI.plan_names
+              ('promax', 'Pro $500'), ('pro', 'Pro'), ('plus', 'Plus'), ('free', 'Free'))   # an add-on's pool: PoolUI.plan_names
 
 NO_FILE = 'No status file yet'
 INCOMPLETE = 'The status file is incomplete'
@@ -361,6 +361,7 @@ class Seat:
     reserve: bool
     week: Window | None
     short: Window | None         # the 5-hour window (Team seats)
+    capacity_known: bool = True
     resets: int = 0              # banked free resets (codexpool reset uses one)
     reset_expiry: dt.datetime | None = None   # when the soonest banked reset expires
     sign_in_ended: bool = False  # the provider ended its sign-in: only a new one helps
@@ -527,7 +528,8 @@ def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat |
         short = None
     if short is not None and short.minutes is None and short_key:
         short.minutes = 300
-    weight = as_num(d.get('weight'))
+    capacity_known = d.get('capacity_known') is not False
+    weight = as_num(d.get('weight')) if capacity_known else None
     plan = as_str(d.get('plan')) or as_str(as_dict(d.get('usage')).get('plan'))
     noun = ui.noun if ui else 'seat'
     label = as_str(d.get('label')) or as_str(d.get('email')) or as_str(d.get('name')) or noun.title()
@@ -535,7 +537,7 @@ def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat |
                 plan=plan_badge(plan, weight, ui.plan_names if ui else PLAN_NAMES),
                 state=as_str(d.get('state')).lower() or 'unknown',
                 detail=as_str(d.get('detail')).strip(), until=parse_time(d.get('until')),
-                priority=as_num(d.get('priority')), weight=weight, reserve=d.get('reserve') is True,
+                priority=as_num(d.get('priority')), weight=weight, capacity_known=capacity_known, reserve=d.get('reserve') is True,
                 week=week, short=short, resets=int(as_num(as_dict(d.get('resets')).get('available'), 0) or 0),
                 reset_expiry=parse_time(as_dict(d.get('resets')).get('next_expiry')),
                 sign_in_ended=d.get('sign_in_ended') is True, provider=pool)
@@ -546,6 +548,8 @@ def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat |
 
 def weighted_used(seats: list[Seat]) -> float | None:
     # Weights are relative sizes (Plus = 1, Pro = 20); cap absurd values so the maths stays finite.
+    if any(not s.capacity_known for s in seats):
+        return None
     rows = [(min(max(s.weight or 1.0, 0.0), 1e6), s.week.used) for s in seats if s.week and s.week.used is not None]
     total = sum(w for w, _ in rows)
     v = sum(w * u for w, u in rows) / total if total else None
@@ -595,6 +599,10 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
         headline = clamp_pct(as_num(pool.get('used_pct_all')))
     if headline is None:
         headline = weighted_used([s for s in seats if s.state != 'disabled'] if headline_mode == 'all' else regular)
+
+    selected = [s for s in seats if s.state != 'disabled' and (headline_mode == 'all' or not s.reserve)]
+    if any(not s.capacity_known for s in selected):
+        headline = None
 
     nb = as_dict(raw.get('next_back'))
     nb_at = parse_time(nb.get('at'))
@@ -737,7 +745,9 @@ def load_history(path: Path | None, alarm_key: str | None = None) -> list[Sample
 def total_text(m: Model) -> str:
     """'36× total': the pool's size, every seat's × added up as the headline weighs them (seats turned off aside;
     as `codexpool status` has it); '' with no seats."""
-    total = sum(min(max(s.weight or 1.0, 0.0), 1e6) for s in m.seats if s.state != 'disabled')
+    total = sum(min(max(s.weight or 1.0, 0.0), 1e6) for s in m.seats if s.state != 'disabled' and s.capacity_known)
+    if any(not s.capacity_known for s in m.seats if s.state != 'disabled'):
+        return f'{round(total, 2):g}× known + unknown capacity' if total else 'Unknown capacity'
     return f'{round(total, 2):g}× total' if total else ''
 
 
@@ -1860,7 +1870,7 @@ def headline_breakdown(m: Model) -> str:
         if s.reserve and m.headline_mode != 'all':
             lines.append(' · '.join([s.label, 'reserve, not counted', figure] + serving))
             continue
-        size = f'{min(max(s.weight or 1.0, 0.0), 1e6):g}×'   # the weight, as weighted_used() counts it
+        size = 'capacity unknown' if not s.capacity_known else f'{min(max(s.weight or 1.0, 0.0), 1e6):g}×'   # the weight, as weighted_used() counts it
         parts = [s.label, f'{size} reserve' if s.reserve else size, figure] + serving
         when = seat_right_text(s, m.now)   # 'Back in 2d 7h' for out and parked seats, else 'Resets in 6d 13h'
         if when:
@@ -1927,7 +1937,16 @@ class PopoverLayout:
                 y = self.banner(y) + (16 if hero else 0)
             if hero:
                 y = self.hero(y)
-        if m.status not in ('missing', 'empty') or self.samples >= MIN_CHART_SAMPLES:
+        if any(not s.capacity_known for s in m.seats if s.state != 'disabled'):
+            y = self.rule(y)
+            self.text(total_text(m), PAD, y, font(12), C.secondary(), width=INNER)
+            y += line_height(font(12)) + 4
+            if m.headline is None:
+                self.text('Pool percentage unavailable; see each seat below.', PAD, y, font(11), C.secondary(), width=INNER)
+                y += line_height(font(11))
+        unknown_headline = any(not s.capacity_known for s in m.seats
+                               if s.state != 'disabled' and (m.headline_mode == 'all' or not s.reserve))
+        if not unknown_headline and (m.status not in ('missing', 'empty') or self.samples >= MIN_CHART_SAMPLES):
             y = self.chart(self.rule(y))
         if m.seats:
             y = self.seats(self.rule(y, below=8))

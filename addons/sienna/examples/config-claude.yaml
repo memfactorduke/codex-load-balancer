@@ -1,0 +1,72 @@
+# codexpool: the Claude pool, a second CLIProxyAPI instance of Claude accounts behind Claude Code.
+# `codexpool claude install` writes ~/.codexpool/config-claude.yaml from this file (port from claude_port in
+# settings.json, the same management key as config.yaml). Owned by ~/.codexpool (see README.md): never point another
+# tool at it or at auth-claude/. The Codex pool (config.yaml, auth/) is separate and unchanged.
+# Claude Code reaches it through the claude-pool launcher: ANTHROPIC_BASE_URL=http://127.0.0.1:8321 and nothing
+# else; it keeps its own claude.ai login (no ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY).
+
+host: "127.0.0.1" # loopback only
+port: 8321
+remote-management:
+  allow-remote: false
+  secret-key: "<set by codexpool claude install>" # the Codex pool's key (Keychain: codexpool-management-key)
+  disable-control-panel: true # no web panel downloaded from GitHub at runtime
+auth-dir: "~/.codexpool/auth-claude" # one OAuth login per Claude account (-claude-login); only this process refreshes them
+# Empty = no client auth on loopback. Claude Code sends its own claude.ai credentials; the pool ignores them and
+# substitutes the serving account's token. The origin gate (build/codexpool_gate.go, profile "claude", set in the
+# launchd plist) keeps browsers out and admits only foreground Claude Code (User-Agent claude-cli/..., x-app: cli).
+# Background sessions (x-app: cli-bg) run direct with CLAUDEPOOL=off.
+api-keys: []
+debug: false
+discovery:
+  enabled: false
+plugins:
+  enabled: false
+logging-to-file: true
+logs-max-total-size-mb: 200
+error-logs-max-files: 20
+usage-statistics-enabled: true
+proxy-url: ""
+# Forward the serving account's anthropic-ratelimit-unified-* headers to Claude Code.
+passthrough-headers: true
+# Account failover: an account at its limit (429, before any output) is cooled down until its reset and the
+# identical request is replayed on the next account.
+request-retry: 3
+max-retry-credentials: 0
+max-retry-interval: 30
+disable-cooling: false
+save-cooldown-status: false # a restart is a clean slate
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: false # never silently swap the model you picked
+  antigravity-credits: false
+routing:
+  strategy: "fill-first" # drain accounts in priority order (auth file "priority", higher first)
+  session-affinity: true # a conversation stays on its account until that account is unavailable
+  session-affinity-ttl: "24h"
+  session-affinity-subagents: true # subagents ride their parent's account
+# Never cloak a request, including a newer Claude Code CPA's native detector does not recognise.
+# Keep credential-level cloak settings absent too: they override this default and disable the direct
+# Messages passthrough. The token-count gate also requires CPA's native detector to confirm the client.
+disable-claude-cloak-mode: true
+claude:
+  model-level-cooling: false # 5-hour and weekly limits are per account, not per model
+claude-code:
+  disable-cloaking-model-list: true # the model list shows the real model IDs
+
+# Models hidden from Claude Code (and refused if requested). Exact names; hot-reloaded. None by default:
+# oauth-excluded-models:
+#   claude:
+#     - "<model name>"
+
+# Entitlement refusals concern this request, not ordinary model or account capacity.
+# Stop preserves Anthropic's error and prevents walking/cooling every credits-off seat for fast/long context.
+# Do not match credits_required alone: a Fable quota refusal must still fall through to the next account.
+# Nonempty per-auth request_scoped_errors override these provider rules in CPA.
+oauth-request-scoped-errors:
+  claude:
+    - status: 429
+      match-regexr:
+        - '(?i)(^\s*usage credits are required for (fast mode|long context)\.?\s*$|"message"\s*:\s*"usage credits are required for (fast mode|long context)\.?")'
+        - '(?i)(^\s*fast request rejected\.?\s*$|"message"\s*:\s*"fast request rejected\.?")'
+      action: stop

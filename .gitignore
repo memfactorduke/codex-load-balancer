@@ -15,8 +15,15 @@
 /lanes/bridge.json
 /lanes/secrets/
 
-# Add-ons are private and never part of the public repository (docs/ADDONS.md)
-/addons/
+# Claude runtime state stays local; add-on source is published.
+/auth-claude/
+/config-claude.yaml
+/claude-seats.json
+/claude/
+/shims/
+/bin/claude-current
+/bin/.claude-current.tmp
+/rollback/
 
 # Python
 .venv/
