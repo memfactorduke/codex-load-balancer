@@ -3,7 +3,8 @@
 
 The request path is the Codex app (or CLI) -> CLIProxyAPI (127.0.0.1:8319 by default) -> chatgpt.com,
 with one OAuth login per seat in ~/.codexpool/auth. CLIProxyAPI is built from its upstream release
-source plus one file, build/codexpool_gate.go, which refuses browser and non-loopback requests. This
+source plus build/codexpool_gate.go, which refuses browser and non-loopback requests, and a catalog-only
+supplement for newly released models missing upstream. This
 tool never sits in the request path: it reads and nudges the pool through the management API (key in
 the macOS Keychain) and never prints tokens. `codexpool guard` runs every minute from launchd.
 
@@ -35,6 +36,7 @@ import pathlib
 import platform
 import random
 import re
+import runpy
 import secrets
 import shlex
 import shutil
@@ -905,7 +907,7 @@ def file_claims(path):
     }
 
 
-PLAN_WEIGHTS = {'pro': 20, 'prolite': 5, 'self_serve_business_prolite': 5, 'plus': 1}
+PLAN_WEIGHTS = {'promax': 25, 'pro': 20, 'prolite': 5, 'self_serve_business_prolite': 5, 'plus': 1}
 
 
 def default_weight(plan):
@@ -996,6 +998,7 @@ def load_seats(pool=None, listing=None, response_headers=None):
             'auth_index': f.get('auth_index'),
             'label': entry.get('label') or default_label(claims.get('email') or f.get('email'), claims.get('plan')),
             'weight': weight,
+            'capacity_known': valid_weight(weight),
             'reserve': bool(entry.get('reserve')),
             'email': claims.get('email') or f.get('email'),
             'plan': claims.get('plan'),
@@ -1330,6 +1333,8 @@ def headline_rows(codex):
 
 
 def _weighted(rows):
+    if any(r.get('capacity_known') is False for r in rows):
+        return None
     tw = sum(r['weight'] for r in rows)
     return round(sum(r['weight'] * r['week_used'] for r in rows) / tw, 1) if tw else None
 
@@ -1340,6 +1345,15 @@ def set_headline(pool, codex):
     `headline` selects. `display` tells readers (the menu bar) whether to show it as used or as left."""
     counted = headline_rows(codex)
     every, regular = _weighted(counted), _weighted([r for r in counted if not r['reserve']])
+    enabled = [r for r in codex if r['state'] != 'disabled']
+    for scope in ('all', 'regular'):
+        known = all(r.get('capacity_known') is not False for r in enabled if scope == 'all' or not r['reserve'])
+        pool['capacity_known_' + scope] = known
+        if not known:
+            if scope == 'all':
+                every = None
+            else:
+                regular = None
     pool['used_pct'] = every if SETTINGS['headline'] == 'all' else regular
     pool['used_pct_all'] = every
     pool['used_pct_regular'] = regular
@@ -1365,7 +1379,8 @@ def build_status(seats, guard, extra_pool=None, pool_only=False):
         rows.append({
             'label': s['label'], 'name': s['name'], 'provider': s['provider'], 'email': s['email'],
             'plan': (usage or {}).get('plan') or s['plan'], 'priority': s['priority'], 'state': state,
-            'detail': detail, 'until': until, 'usage': usage, 'weight': s.get('weight', 1.0),
+            'detail': detail, 'until': until, 'usage': usage, 'weight': s.get('weight', 1.0) if s.get('capacity_known') is not False else None,
+            'capacity_known': s.get('capacity_known', True),
             'reserve': s.get('reserve', False),
             'week': week, 'short': short_w, 'week_used': min(week_used, 100.0) if week_used is not None else None,
             'poll_error': cache.get(s['name'], {}).get('poll_error'),
@@ -1392,7 +1407,10 @@ def build_status(seats, guard, extra_pool=None, pool_only=False):
     pool['reserve_in_use'] = bool(serving and serving['reserve'])
     pool['regular_available'] = len([r for r in codex if r['state'] in ('active', 'ready') and not r['reserve']])
     pool['left_weight'] = round(sum(r['weight'] * (100 - r['week_used']) / 100 for r in counted
-                                    if r['state'] in ('active', 'ready')), 2)
+                                    if r['state'] in ('active', 'ready') and r.get('capacity_known') is not False), 2)
+    if not pool['capacity_known_all']:
+        pool['known_left_weight'] = pool['left_weight']
+        pool['left_weight'] = None
     pool['counted'] = len(counted)
     pool['seats'] = len([r for r in codex if r['state'] != 'disabled'])
     pool['available'] = len([r for r in codex if r['state'] in ('active', 'ready')])
@@ -1525,8 +1543,8 @@ def print_status(st):
         rs = r.get('resets') or {}
         if rs.get('available'):
             note = (note + '; ' if note else '') + f'{rs["available"]} reset{"s" if rs["available"] != 1 else ""} banked'
-        plan = 'business' if 'business' in (r['plan'] or '') else (r['plan'] or '')
-        size = '' if r['provider'] != 'codex' else f'{r.get("weight") or 1:g}×' + ('R' if r.get('reserve') else '')
+        plan = 'Pro $500' if r['plan'] == 'promax' else 'business' if 'business' in (r['plan'] or '') else (r['plan'] or '')
+        size = '' if r['provider'] != 'codex' else ('?' if r.get('capacity_known') is False else f'{r.get("weight") or 1:g}×') + ('R' if r.get('reserve') else '')
         print(f'{STATE_ICON.get(r["state"], "?")} {r["label"]:<22} {plan:<10} {size:>5} {r["priority"]:>4}  '
               f'{r["state"]:<10} {first:<9} {second:<9} {cred:<12} {note}')
     footnote = headline_footnote(st, left)
@@ -1539,7 +1557,10 @@ def total_size_text(rows):
     """'36× total  ·  ' for a status header: every seat's size (×) added up, seats turned off aside, as the menu bar's
     summary line has it; '' when there are none."""
     total = sum(min(max(_num(r.get('weight')) or 1.0, 0.0), 1e6) for r in rows
-                if isinstance(r, dict) and r.get('state') != 'disabled')
+                if isinstance(r, dict) and r.get('state') != 'disabled' and r.get('capacity_known') is not False)
+    unknown = any(isinstance(r, dict) and r.get('state') != 'disabled' and r.get('capacity_known') is False for r in rows)
+    if unknown:
+        return (f'{round(total, 2):g}× known + unknown capacity' if total else 'Unknown capacity') + '  ·  '
     return f'{round(total, 2):g}× total  ·  ' if total else ''
 
 
@@ -3563,9 +3584,13 @@ def gate_contributions(profile=None):
 
 
 def gate_id(gate_src=None, profile=None):
-    """Hash the core hook and selected contribution files. Codex uses only the core hash."""
+    """Hash the core hook, catalog supplement and selected contribution files."""
     gate_src = GATE_SOURCE.read_bytes() if gate_src is None else gate_src
     h = hashlib.sha256(gate_src + b'\0' + GATE_ANCHOR.encode() + b'\0' + GATE_REPLACEMENT.encode())
+    if profile in (None, 'codex'):
+        for asset in sorted((CODE_DIR / 'build/catalog').glob('*')):
+            if asset.is_file():
+                h.update(b'\0catalog/' + asset.name.encode() + b'\0' + asset.read_bytes())
     for addon, _, _, sources, inputs in gate_contributions(profile):
         def fingerprint(a=addon, paths=sources + inputs):
             return b''.join(b'\0' + (a.id + '/' + path.relative_to(a.path).as_posix()).encode() +
@@ -3616,10 +3641,19 @@ def build(version, profile=None):
                      'Move the gate to api.WithMiddleware before upgrading. Nothing was changed.')
         main_go.write_text(text.replace(GATE_ANCHOR, GATE_REPLACEMENT))
         (tree / 'cmd/server/codexpool_gate.go').write_bytes(gate_src)
+        if profile in (None, 'codex'):
+            runpy.run_path(str(CODE_DIR / 'build/catalog/apply.py'))['apply'](tree)
         env = {**os.environ, 'GOROOT': str(TOOLCHAIN / 'current'), 'GOPATH': str(TOOLCHAIN / 'gopath'),
                'GOTOOLCHAIN': 'local', 'CGO_ENABLED': '0', 'GOFLAGS': '-mod=mod',
                'PATH': f'{TOOLCHAIN / "current" / "bin"}:{os.environ.get("PATH", "")}'}
         build_results = {}
+        if profile in (None, 'codex'):
+            check = subprocess.run([str(go), 'test', './internal/registry', './internal/client/codex/models',
+                                    '-run', '^TestCodexpoolCatalog'],
+                                   cwd=tree, env=env, capture_output=True, text=True)
+            if check.returncode:
+                sys.exit('catalog supplement tests failed:\n' + check.stdout[-2000:] + check.stderr[-2000:])
+            print('catalog supplement tests passed')
         for addon, gate, _, sources, _ in contributions:
             for asset in sources:
                 shutil.copy2(asset, tree / 'cmd/server' / asset.name)
@@ -3649,6 +3683,10 @@ def build(version, profile=None):
         (staging / 'BUILD-INFO').write_text(f'upstream v{version} commit {commit}\n+ build/codexpool_gate.go gate {gid}\n'
                                             f'built {stamp} with {subprocess.run([str(go), "version"], capture_output=True, text=True, env=env).stdout.strip()}\n')
         with (staging / 'BUILD-INFO').open('a') as info:
+            if profile in (None, 'codex'):
+                for asset in sorted((CODE_DIR / 'build/catalog').glob('*')):
+                    if asset.is_file():
+                        info.write(f'catalog {asset.name} sha256 {hashlib.sha256(asset.read_bytes()).hexdigest()}\n')
             for addon, _, _, sources, inputs in gate_contributions(profile):
                 for asset in sorted(set(sources + inputs)):
                     info.write(f'add-on {addon.id}/{asset.relative_to(addon.path)} sha256 '
@@ -3781,6 +3819,7 @@ CONFIG_WARNINGS = {'model_provider': 'a custom provider hides every existing Cod
 WRAPPER = HOME / '.local' / 'bin' / 'codexpool'
 WRAPPER_MARK = '# codexpool wrapper, written by `codexpool install`'
 CODE_FILES = ('bin/codexpool', 'build/codexpool_gate.go',
+              'build/catalog',
               'menubar/codexpool_menubar.py',
               'menubar/codexpool_settings.py', 'menubar/SPEC.md', 'lanes/bridge.py', 'launchd', 'examples', 'docs',
               'README.md', 'AGENTS.md', 'LICENSE', 'NOTICE')

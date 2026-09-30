@@ -1,0 +1,5 @@
+patching file 'internal/runtime/executor/helps/claude_client_detection.go'
+patching file 'internal/runtime/executor/helps/claude_client_detection_test.go'
+patching file 'internal/runtime/executor/claude_executor_request.go'
+patching file 'internal/runtime/executor/claude_executor_execute.go'
+patching file 'internal/runtime/executor/claude_executor_stream.go'

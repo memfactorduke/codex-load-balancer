@@ -1,0 +1,181 @@
+{
+ "generated_at": "2026-09-24T16:40:48+00:00",
+ "pool": {
+  "running": true,
+  "installed": true,
+  "version": "7.3.18-gate-9f8e7d6c5b",
+  "port": 8321,
+  "used_pct": 28.4,
+  "used_pct_all": 28.4,
+  "used_pct_regular": 43.5,
+  "headline": "all",
+  "display": "left",
+  "balancing": "priority",
+  "route": "pool",
+  "claude_code": "2.1.283",
+  "reserve_in_use": false,
+  "regular_available": 2,
+  "counted": 4,
+  "seats": 4,
+  "available": 3,
+  "spending": null
+ },
+ "active": "Max A",
+ "active_name": "claude-max-a.json",
+ "next_back": {
+  "label": "Pro C",
+  "at": "2026-09-24T17:52:48+00:00"
+ },
+ "seats": [
+  {
+   "label": "Max A",
+   "name": "claude-max-a.json",
+   "provider": "claude",
+   "email": "",
+   "plan": "max_5x",
+   "priority": 300,
+   "state": "active",
+   "detail": "",
+   "until": null,
+   "weight": 5.0,
+   "reserve": false,
+   "week": {
+    "used": 55.0,
+    "reset_at": "2026-09-27T20:40:48+00:00",
+    "window_min": 10080
+   },
+   "five_hour": {
+    "used": 62.0,
+    "reset_at": "2026-09-24T18:50:48+00:00"
+   },
+   "scoped": [
+    {
+     "name": "Fable",
+     "used": 36.0,
+     "reset_at": "2026-09-27T20:40:48+00:00"
+    }
+   ],
+   "credits": {
+    "enabled": false,
+    "used": 0.0,
+    "limit": null,
+    "policy": "off",
+    "cap": null,
+    "spending": false
+   },
+   "week_used": 55.0,
+   "poll_error": null
+  },
+  {
+   "label": "Max B",
+   "name": "claude-max-b.json",
+   "provider": "claude",
+   "email": "",
+   "plan": "max_5x",
+   "priority": 250,
+   "state": "ready",
+   "detail": "",
+   "until": null,
+   "weight": 5.0,
+   "reserve": false,
+   "week": {
+    "used": 26.0,
+    "reset_at": "2026-09-29T23:40:48+00:00",
+    "window_min": 10080
+   },
+   "five_hour": {
+    "used": 0.0,
+    "reset_at": "2026-09-24T21:40:48+00:00"
+   },
+   "scoped": [
+    {
+     "name": "Fable",
+     "used": 19.0,
+     "reset_at": "2026-09-29T23:40:48+00:00"
+    }
+   ],
+   "credits": {
+    "enabled": true,
+    "used": 31.0,
+    "limit": 200.0,
+    "policy": "last-resort",
+    "cap": 150.0,
+    "spending": false
+   },
+   "week_used": 26.0,
+   "poll_error": null
+  },
+  {
+   "label": "Pro C",
+   "name": "claude-pro-c.json",
+   "provider": "claude",
+   "email": "",
+   "plan": "pro",
+   "priority": 200,
+   "state": "cooldown",
+   "detail": "5-hour limit reached",
+   "until": "2026-09-24T17:52:48+00:00",
+   "weight": 1.0,
+   "reserve": false,
+   "week": {
+    "used": 74.0,
+    "reset_at": "2026-09-30T12:40:48+00:00",
+    "window_min": 10080
+   },
+   "five_hour": {
+    "used": 100.0,
+    "reset_at": "2026-09-24T17:52:48+00:00"
+   },
+   "scoped": [],
+   "credits": {
+    "enabled": false,
+    "used": 0.0,
+    "limit": null,
+    "policy": "off",
+    "cap": null,
+    "spending": false
+   },
+   "week_used": 74.0,
+   "poll_error": null
+  },
+  {
+   "label": "Max 20x",
+   "name": "claude-max-20x.json",
+   "provider": "claude",
+   "email": "",
+   "plan": "max_20x",
+   "priority": 100,
+   "state": "ready",
+   "detail": "",
+   "until": null,
+   "weight": 20.0,
+   "reserve": true,
+   "week": {
+    "used": 20.0,
+    "reset_at": "2026-09-29T01:40:48+00:00",
+    "window_min": 10080
+   },
+   "five_hour": {
+    "used": 0.0,
+    "reset_at": "2026-09-24T21:40:48+00:00"
+   },
+   "scoped": [
+    {
+     "name": "Fable",
+     "used": 14.0,
+     "reset_at": "2026-09-29T01:40:48+00:00"
+    }
+   ],
+   "credits": {
+    "enabled": true,
+    "used": 12.0,
+    "limit": 500.0,
+    "policy": "off",
+    "cap": null,
+    "spending": false
+   },
+   "week_used": 20.0,
+   "poll_error": null
+  }
+ ]
+}

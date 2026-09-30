@@ -1,0 +1,318 @@
+=== RUN   TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas
+=== PAUSE TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas
+=== RUN   TestApplyClaudeHeaders_StillGatesManagedCallerBetas
+=== PAUSE TestApplyClaudeHeaders_StillGatesManagedCallerBetas
+=== RUN   TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly
+=== RUN   TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly/confirmed_main
+=== RUN   TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly/confirmed_auxiliary
+=== RUN   TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly/unconfirmed_caller
+--- PASS: TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly (0.00s)
+    --- PASS: TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly/confirmed_main (0.00s)
+    --- PASS: TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly/confirmed_auxiliary (0.00s)
+    --- PASS: TestApplyClaudeHeaders_PreservesNativeGatewayHintsOnly/unconfirmed_caller (0.00s)
+=== RUN   TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth
+=== PAUSE TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth
+=== RUN   TestApplyClaudeHeaders_ConfirmedClientKeepsOAuthCredentialBetas
+--- PASS: TestApplyClaudeHeaders_ConfirmedClientKeepsOAuthCredentialBetas (0.00s)
+=== RUN   TestApplyClaudeHeaders_ConfirmedAPIKeyClientKeepsPurePassthrough
+--- PASS: TestApplyClaudeHeaders_ConfirmedAPIKeyClientKeepsPurePassthrough (0.00s)
+=== RUN   TestApplyClaudeHeaders_UnknownBodyBetaPreservedOnAnthropic
+--- PASS: TestApplyClaudeHeaders_UnknownBodyBetaPreservedOnAnthropic (0.00s)
+=== RUN   TestApplyClaudeHeaders_KnownBodyBetaStillPlacedOnAnthropic
+--- PASS: TestApplyClaudeHeaders_KnownBodyBetaStillPlacedOnAnthropic (0.00s)
+=== RUN   TestApplyClaudeHeaders_CustomHeadersCannotOverrideAnthropicIdentity
+--- PASS: TestApplyClaudeHeaders_CustomHeadersCannotOverrideAnthropicIdentity (0.00s)
+=== RUN   TestApplyClaudeHeaders_FastModeBetaMatchesAcrossStreamModes
+--- PASS: TestApplyClaudeHeaders_FastModeBetaMatchesAcrossStreamModes (0.00s)
+=== RUN   TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer
+--- PASS: TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer (0.00s)
+=== RUN   TestApplyClaudeHeaders_DiagnosticsBetaFollowsBodyInNativeOrder
+--- PASS: TestApplyClaudeHeaders_DiagnosticsBetaFollowsBodyInNativeOrder (0.00s)
+=== RUN   TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenRequested
+--- PASS: TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenRequested (0.00s)
+=== RUN   TestApplyClaudeHeaders_AdvisorToolBetaInjectedWhenBodyHasTool_ConfirmedClient
+--- PASS: TestApplyClaudeHeaders_AdvisorToolBetaInjectedWhenBodyHasTool_ConfirmedClient (0.00s)
+=== RUN   TestApplyClaudeHeaders_AdvisorToolBetaInjectedWhenBodyHasTool_APIKeyPassthrough
+--- PASS: TestApplyClaudeHeaders_AdvisorToolBetaInjectedWhenBodyHasTool_APIKeyPassthrough (0.00s)
+=== RUN   TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenLiftedFromBodyBetas_ConfirmedClient
+--- PASS: TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenLiftedFromBodyBetas_ConfirmedClient (0.00s)
+=== RUN   TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenCountTokens
+--- PASS: TestApplyClaudeHeaders_AdvisorToolBetaPreservedWhenCountTokens (0.00s)
+=== RUN   TestApplyClaudeHeaders_AdvisorToolBetaRepositionedWhenOutOfOrder
+--- PASS: TestApplyClaudeHeaders_AdvisorToolBetaRepositionedWhenOutOfOrder (0.00s)
+=== RUN   TestApplyClaudeHeaders_StructuredHelperBetaOrderPreservedWithAdvisor
+--- PASS: TestApplyClaudeHeaders_StructuredHelperBetaOrderPreservedWithAdvisor (0.00s)
+=== RUN   TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn
+=== RUN   TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn/confirmed_native
+=== RUN   TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn/unconfirmed_caller_default
+=== RUN   TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn/unconfirmed_caller_profile
+--- PASS: TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn (0.00s)
+    --- PASS: TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn/confirmed_native (0.00s)
+    --- PASS: TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn/unconfirmed_caller_default (0.00s)
+    --- PASS: TestApplyClaudeHeadersPreservesCallerAsyncWithoutFingerprintOptIn/unconfirmed_caller_profile (0.00s)
+=== RUN   TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase
+=== RUN   TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase/first_party_base_without_caller_id
+=== RUN   TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase/custom_base_without_caller_id
+=== RUN   TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase/custom_base_keeps_caller_id
+--- PASS: TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase (0.00s)
+    --- PASS: TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase/first_party_base_without_caller_id (0.00s)
+    --- PASS: TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase/custom_base_without_caller_id (0.00s)
+    --- PASS: TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase/custom_base_keeps_caller_id (0.00s)
+=== RUN   TestApplyClaudeHeaders_FastModeBetaIsConditional
+=== RUN   TestApplyClaudeHeaders_FastModeBetaIsConditional/omitted_speed_excludes_fast_mode_beta
+=== RUN   TestApplyClaudeHeaders_FastModeBetaIsConditional/fast_speed_appends_fast_mode_beta
+=== RUN   TestApplyClaudeHeaders_FastModeBetaIsConditional/explicit_body_beta_appends_fast_mode_beta
+--- PASS: TestApplyClaudeHeaders_FastModeBetaIsConditional (0.00s)
+    --- PASS: TestApplyClaudeHeaders_FastModeBetaIsConditional/omitted_speed_excludes_fast_mode_beta (0.00s)
+    --- PASS: TestApplyClaudeHeaders_FastModeBetaIsConditional/fast_speed_appends_fast_mode_beta (0.00s)
+    --- PASS: TestApplyClaudeHeaders_FastModeBetaIsConditional/explicit_body_beta_appends_fast_mode_beta (0.00s)
+=== RUN   TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint
+--- PASS: TestApplyClaudeHeaders_UsesConfiguredBaselineFingerprint (0.00s)
+=== RUN   TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints
+--- PASS: TestApplyClaudeHeaders_RejectsUnmeasuredClaudeCLIFingerprints (0.00s)
+=== RUN   TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClient
+--- PASS: TestApplyClaudeHeaders_DoesNotDowngradeConfiguredBaselineOnFirstClaudeClient (0.00s)
+=== RUN   TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvances
+--- PASS: TestApplyClaudeHeaders_UpgradesCachedSoftwareFingerprintWhenBaselineAdvances (0.00s)
+=== RUN   TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback
+--- PASS: TestApplyClaudeHeaders_LearnsOfficialFingerprintAfterCustomBaselineFallback (0.00s)
+=== RUN   TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlatform
+--- PASS: TestApplyClaudeHeaders_ThirdPartyBaselineThenOfficialUpgradeKeepsPinnedPlatform (0.00s)
+=== RUN   TestApplyClaudeHeaders_DisableDeviceProfileStabilization
+--- PASS: TestApplyClaudeHeaders_DisableDeviceProfileStabilization (0.00s)
+=== RUN   TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients
+--- PASS: TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients (0.00s)
+=== RUN   TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch
+--- PASS: TestApplyClaudeHeaders_LegacyThirdPartyUsesStableConfiguredOSArch (0.00s)
+=== RUN   TestApplyClaudeHeaders_UnsetStabilizationUsesStableConfiguredOSArch
+--- PASS: TestApplyClaudeHeaders_UnsetStabilizationUsesStableConfiguredOSArch (0.00s)
+=== RUN   TestApplyClaudeHeaders_UsesOAuthAuthorizationAndBrowserFingerprint
+--- PASS: TestApplyClaudeHeaders_UsesOAuthAuthorizationAndBrowserFingerprint (0.00s)
+=== RUN   TestApplyClaudeHeaders_EmptyAPIKey_OmitsAuthHeaders
+--- PASS: TestApplyClaudeHeaders_EmptyAPIKey_OmitsAuthHeaders (0.00s)
+=== RUN   TestDecodeResponseBodyStackedRepeatedHeaders
+--- PASS: TestDecodeResponseBodyStackedRepeatedHeaders (0.00s)
+=== RUN   TestDecodeResponseBody_MagicByteGzipNoHeader
+--- PASS: TestDecodeResponseBody_MagicByteGzipNoHeader (0.00s)
+=== RUN   TestDecodeResponseBody_MagicByteZstdNoHeader
+--- PASS: TestDecodeResponseBody_MagicByteZstdNoHeader (0.00s)
+=== RUN   TestDecodeResponseBody_PlainTextNoHeader
+--- PASS: TestDecodeResponseBody_PlainTextNoHeader (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstream_RemovesTemperature
+--- PASS: TestNormalizeClaudeSamplingForUpstream_RemovesTemperature (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstream_RemovesTemperatureWithThinkingEnabled
+--- PASS: TestNormalizeClaudeSamplingForUpstream_RemovesTemperatureWithThinkingEnabled (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstream_RemovesTopPAndTopKForThinking
+--- PASS: TestNormalizeClaudeSamplingForUpstream_RemovesTopPAndTopKForThinking (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstream_NoThinkingRemovesTemperatureAndTopP
+--- PASS: TestNormalizeClaudeSamplingForUpstream_NoThinkingRemovesTemperatureAndTopP (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstream_AfterForcedToolChoiceRemovesTemperature
+--- PASS: TestNormalizeClaudeSamplingForUpstream_AfterForcedToolChoiceRemovesTemperature (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeKeepsMeasuredHelperTemperature
+--- PASS: TestNormalizeClaudeSamplingForUpstreamNativeKeepsMeasuredHelperTemperature (0.00s)
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_off_keeps_every_accepted_knob
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_off_drops_top_p_when_temperature_is_also_set
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_off_keeps_a_lone_top_p
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_disabled_is_not_thinking
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_keeps_temperature_1
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_drops_temperature_that_is_not_1
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_keeps_top_p_at_or_above_0.95
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_drops_top_p_below_0.95
+=== RUN   TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_always_drops_top_k
+--- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_off_keeps_every_accepted_knob (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_off_drops_top_p_when_temperature_is_also_set (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_off_keeps_a_lone_top_p (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_disabled_is_not_thinking (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_keeps_temperature_1 (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_drops_temperature_that_is_not_1 (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_keeps_top_p_at_or_above_0.95 (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_drops_top_p_below_0.95 (0.00s)
+    --- PASS: TestNormalizeClaudeSamplingForUpstreamNativeDropsOnlyRejectedCombinations/thinking_enabled_always_drops_top_k (0.00s)
+=== RUN   TestApplyClaudeHeaders_StreamTransportNegotiation
+--- PASS: TestApplyClaudeHeaders_StreamTransportNegotiation (0.00s)
+=== RUN   TestApplyClaudeHeaders_DefaultPreservesCallerBetas
+--- PASS: TestApplyClaudeHeaders_DefaultPreservesCallerBetas (0.00s)
+=== RUN   TestApplyClaudeHeaders_LeavesHeadersCanonicalForThePipeline
+--- PASS: TestApplyClaudeHeaders_LeavesHeadersCanonicalForThePipeline (0.00s)
+=== RUN   TestApplyClaudeHeaders_WireCasingMatchesRealClient
+--- PASS: TestApplyClaudeHeaders_WireCasingMatchesRealClient (0.00s)
+=== RUN   TestApplyClaudeHeaders_UserAgentStillHoistedByGo
+--- PASS: TestApplyClaudeHeaders_UserAgentStillHoistedByGo (0.00s)
+=== RUN   TestApplyClaudeHeaders_WireCasingIsAnthropicOnly
+--- PASS: TestApplyClaudeHeaders_WireCasingIsAnthropicOnly (0.00s)
+=== RUN   TestApplyClaudeHeaders_WireCasingPreservesValues
+--- PASS: TestApplyClaudeHeaders_WireCasingPreservesValues (0.00s)
+=== RUN   TestApplyClaudeHeaders_ClaudeCodeCLIProfileUsesOAuthBetasWithoutPretendingToken
+=== PAUSE TestApplyClaudeHeaders_ClaudeCodeCLIProfileUsesOAuthBetasWithoutPretendingToken
+=== RUN   TestApplyClaudeHeaders_OfficialAPIKeyDefaultRespectsClient
+=== PAUSE TestApplyClaudeHeaders_OfficialAPIKeyDefaultRespectsClient
+=== RUN   TestApplyClaudeHeaders_OfficialAPIKeyClaudeCodeCLIProfileUsesOAuthBetas
+=== PAUSE TestApplyClaudeHeaders_OfficialAPIKeyClaudeCodeCLIProfileUsesOAuthBetas
+=== RUN   TestApplyClaudeHeaders_CallerOwnedScopesOperatorHeaderOverrides
+--- PASS: TestApplyClaudeHeaders_CallerOwnedScopesOperatorHeaderOverrides (0.00s)
+=== RUN   TestApplyClaudeHeaders_CallerOwnedRestoreKeepsCallerAccept
+--- PASS: TestApplyClaudeHeaders_CallerOwnedRestoreKeepsCallerAccept (0.00s)
+=== RUN   TestApplyClaudeHeaders_DirectMessagesPreservesCallerFingerprint
+--- PASS: TestApplyClaudeHeaders_DirectMessagesPreservesCallerFingerprint (0.00s)
+=== RUN   TestApplyClaudeHeaders_DirectMessagesAPIKeyPreservesExactCallerBetas
+--- PASS: TestApplyClaudeHeaders_DirectMessagesAPIKeyPreservesExactCallerBetas (0.00s)
+=== RUN   TestApplyClaudeHeaders_DirectMessagesOAuthInjectsOAuthBetaWhenEmpty
+--- PASS: TestApplyClaudeHeaders_DirectMessagesOAuthInjectsOAuthBetaWhenEmpty (0.00s)
+=== CONT  TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas
+=== CONT  TestApplyClaudeHeaders_ClaudeCodeCLIProfileUsesOAuthBetasWithoutPretendingToken
+=== CONT  TestApplyClaudeHeaders_OfficialAPIKeyClaudeCodeCLIProfileUsesOAuthBetas
+--- PASS: TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas (0.00s)
+=== CONT  TestApplyClaudeHeaders_StillGatesManagedCallerBetas
+=== CONT  TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth
+=== CONT  TestApplyClaudeHeaders_OfficialAPIKeyDefaultRespectsClient
+--- PASS: TestApplyClaudeHeaders_StillGatesManagedCallerBetas (0.00s)
+--- PASS: TestApplyClaudeHeaders_ClaudeCodeCLIProfileUsesOAuthBetasWithoutPretendingToken (0.00s)
+--- PASS: TestApplyClaudeHeaders_OfficialAPIKeyClaudeCodeCLIProfileUsesOAuthBetas (0.00s)
+--- PASS: TestApplyClaudeHeaders_OfficialAPIKeyDefaultRespectsClient (0.00s)
+--- PASS: TestApplyClaudeHeaders_ForwardsUnmanagedCallerBetas_OAuth (0.00s)
+PASS
+ok  	github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor	0.033s
+=== RUN   TestDetectClaudeCodeRequestRequiresAllFourMessageSignals
+--- PASS: TestDetectClaudeCodeRequestRequiresAllFourMessageSignals (0.00s)
+=== RUN   TestDetectClaudeCodeRequestAcceptsNewerPatchInMeasuredReleaseLine
+--- PASS: TestDetectClaudeCodeRequestAcceptsNewerPatchInMeasuredReleaseLine (0.00s)
+=== RUN   TestDetectClaudeCodeRequestAcceptsConfiguredMeasuredBaseline
+--- PASS: TestDetectClaudeCodeRequestAcceptsConfiguredMeasuredBaseline (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal
+=== RUN   TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/x-app
+=== RUN   TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/user-agent
+=== RUN   TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/betas
+=== RUN   TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/metadata
+--- PASS: TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/x-app (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/user-agent (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/betas (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsEachMissingMessageSignal/metadata (0.00s)
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/cli
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/vscode-agent-sdk
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/sdk-cli
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/sdk-ts
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/sdk-py
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/desktop
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/desktop-third-party-inference
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/remote
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/github-action
+=== RUN   TestDetectClaudeCodeRequestClassifiesEntrypoints/unknown
+--- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/cli (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/vscode-agent-sdk (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/sdk-cli (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/sdk-ts (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/sdk-py (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/desktop (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/desktop-third-party-inference (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/remote (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/github-action (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestClassifiesEntrypoints/unknown (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/minimal_with_redact_thinking
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/minimal_without_redact_thinking
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_with_advisor
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_with_fallback_credit
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_with_lowercase_hex_CCH
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_without_redact_thinking
+=== RUN   TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_2.1.280
+--- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/minimal_with_redact_thinking (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/minimal_without_redact_thinking (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_with_advisor (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_with_fallback_credit (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_with_lowercase_hex_CCH (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_without_redact_thinking (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers/structured_title_helper_2.1.280 (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsExtendedHaikuHelperBetas
+--- PASS: TestDetectClaudeCodeRequestRejectsExtendedHaikuHelperBetas (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsCrossMismatchedHaikuHelperBetaAndBody
+--- PASS: TestDetectClaudeCodeRequestRejectsCrossMismatchedHaikuHelperBetaAndBody (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/non-hex_CCH
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/uppercase_CCH
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/wrong_token_cap
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/open_schema
+--- PASS: TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/non-hex_CCH (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/uppercase_CCH (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/wrong_token_cap (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedStructuredHaikuHelpers/open_schema (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/unexpected_beta_profile
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/missing_stainless_package
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/wrong_compression_profile
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/mismatched_session_header
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/invalid_request_id
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/unexpected_async_mode
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/wrong_helper_model
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/wrong_helper_token_cap
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/extra_root_key
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/cache_marker_content_shape
+=== RUN   TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/count_tokens_endpoint
+--- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/unexpected_beta_profile (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/missing_stainless_package (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/wrong_compression_profile (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/mismatched_session_header (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/invalid_request_id (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/unexpected_async_mode (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/wrong_helper_model (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/wrong_helper_token_cap (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/extra_root_key (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/cache_marker_content_shape (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsNearMissHaikuHelpers/count_tokens_endpoint (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/legacy_metadata
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/short_device
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/uppercase_device
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/invalid_session
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/malformed_user_agent
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/older_patch_user_agent
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/unmeasured_next-minor_user_agent
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/implausible_future_user_agent
+=== RUN   TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/unrelated_beta
+--- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/legacy_metadata (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/short_device (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/uppercase_device (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/invalid_session (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/malformed_user_agent (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/older_patch_user_agent (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/unmeasured_next-minor_user_agent (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/implausible_future_user_agent (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsMalformedNativeSignals/unrelated_beta (0.00s)
+=== RUN   TestDetectClaudeCodeRequestAcceptsHelperSubagentParentSessionID
+--- PASS: TestDetectClaudeCodeRequestAcceptsHelperSubagentParentSessionID (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperIdentityWithUnknownKeys
+--- PASS: TestDetectClaudeCodeRequestRejectsHelperIdentityWithUnknownKeys (0.00s)
+=== RUN   TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform
+=== RUN   TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform/Windows/x64
+=== RUN   TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform/Linux/x64
+=== RUN   TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform/MacOS/x64
+--- PASS: TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform/Windows/x64 (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform/Linux/x64 (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestAcceptsHelperFromNonBaselinePlatform/MacOS/x64 (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-OS
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-Arch
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-Package-Version
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-Runtime-Version
+--- PASS: TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-OS (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-Arch (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-Package-Version (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsHelperWithoutPlatformHeaders/missing_X-Stainless-Runtime-Version (0.00s)
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithForeignSoftwareTuple
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithForeignSoftwareTuple/X-Stainless-Package-Version
+=== RUN   TestDetectClaudeCodeRequestRejectsHelperWithForeignSoftwareTuple/X-Stainless-Runtime-Version
+--- PASS: TestDetectClaudeCodeRequestRejectsHelperWithForeignSoftwareTuple (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsHelperWithForeignSoftwareTuple/X-Stainless-Package-Version (0.00s)
+    --- PASS: TestDetectClaudeCodeRequestRejectsHelperWithForeignSoftwareTuple/X-Stainless-Runtime-Version (0.00s)
+PASS
+ok  	github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps	0.026s

@@ -69,7 +69,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Unit tests
-        run: python -m unittest discover -s tests -v
+        run: sh tests/run_all.sh
+
+      - name: Core tests without add-ons
+        run: |
+          optional_tree=$(mktemp -d)
+          git archive HEAD | tar -x -C "$optional_tree"
+          rm -rf "$optional_tree/addons"
+          (cd "$optional_tree" && python -m unittest discover -s tests)
 
   scan:
     name: Secrets and personal data
@@ -92,14 +99,23 @@ jobs:
             *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
           esac
 
-      - name: No add-ons in the public tree (they are private; docs/ADDONS.md)
-        run: test ! -d addons && echo "No addons/ directory."
+      - name: Public source scan (including Claude add-on)
+        run: |
+          python - <<'EOF'
+          import pathlib, sys
+          sys.path.insert(0, 'scripts')
+          from publish_tree import scan
+          paths, hits = scan(pathlib.Path('.'))
+          if hits:
+              raise SystemExit('Publication scan failed:\n' + '\n'.join(hits))
+          print('Publication scan clean over', len(paths), 'files')
+          EOF
 
-      - name: No home-directory paths or email addresses
+      - name: No home-directory paths
         run: |
           rc=0
           git grep -nIE \
-            '/Users/[A-Za-z]|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}' \
+            '/Users/[A-Za-z]' \
             -- . ':(exclude)docs/images/demo' || rc=$?
           case "$rc" in
             0) echo "::error::Home-directory path or email address above; remove it."; exit 1 ;;

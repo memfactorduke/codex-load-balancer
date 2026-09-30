@@ -1,0 +1,27 @@
+{
+ "generated_at": "2026-09-24T16:40:48+00:00",
+ "pool": {
+  "running": true,
+  "installed": true,
+  "version": "7.3.18-gate-9f8e7d6c5b",
+  "port": 8321,
+  "used_pct": null,
+  "used_pct_all": null,
+  "used_pct_regular": null,
+  "headline": "all",
+  "display": "left",
+  "balancing": "priority",
+  "route": "pool",
+  "claude_code": "2.1.283",
+  "reserve_in_use": false,
+  "regular_available": 0,
+  "counted": 0,
+  "seats": 0,
+  "available": 0,
+  "spending": null
+ },
+ "active": null,
+ "active_name": null,
+ "next_back": null,
+ "seats": []
+}

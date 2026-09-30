@@ -1,0 +1,9 @@
+test_fixtures_are_real_captures (test_desktop_wire.DesktopWire.test_fixtures_are_real_captures) ... ok
+test_ci_missing_prerequisite_is_failure (test_desktop_wire.DesktopWire.test_ci_missing_prerequisite_is_failure) ... ok
+test_wire_failure_does_not_abort_build_or_build_selection (test_desktop_build.DesktopBuildTests.test_wire_failure_does_not_abort_build_or_build_selection) ... ok
+test_build_cache_and_failure_gate (test_desktop.DesktopTests.test_build_cache_and_failure_gate) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.020s
+
+OK

@@ -1818,14 +1818,16 @@ class SeatsPane(Pane):
 
         # Size (weight)
         size = auto(NSPopUpButton.alloc().initWithFrame_pullsDown_(((0, 0), (90, 26)), False))
-        current = seat.weight or 1.0
-        values = sorted(set(SIZES) | {current})
-        size.addItemsWithTitles_([S(f'{v:g}×') for v in values])
+        current = (seat.weight or 1.0) if seat.capacity_known else None
+        values = sorted(set(SIZES) | ({current} if current is not None else set()))
+        if current is None:
+            values.insert(0, None)
+        size.addItemsWithTitles_([S('Unknown' if v is None else f'{v:g}×') for v in values])
         size.selectItemAtIndex_(values.index(current))
 
         def resize(sender):
             v = values[sender.indexOfSelectedItem()]
-            if v != current:
+            if v is not None and v != current:
                 self.run(['weight', name, f'{v:g}'], f'Resizing {seat.label}…', f'{seat.label} now counts {v:g}×')
         size.setTarget_(target(resize, k))
         size.setAction_('fire:')

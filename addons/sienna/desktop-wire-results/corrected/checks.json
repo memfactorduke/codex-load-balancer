@@ -1,0 +1,38 @@
+[
+  {
+    "variant": "v7.3.18-stock",
+    "wire": 1,
+    "upstream": 0,
+    "gate": 0
+  },
+  {
+    "variant": "v7.3.18-minimal",
+    "wire": 1,
+    "upstream": 0,
+    "gate": 1
+  },
+  {
+    "variant": "v7.3.18-full",
+    "wire": 1,
+    "upstream": 0,
+    "gate": 1
+  },
+  {
+    "variant": "v8.0.3-stock",
+    "wire": 1,
+    "upstream": 0,
+    "gate": 0
+  },
+  {
+    "variant": "v8.0.3-minimal",
+    "wire": 1,
+    "upstream": 0,
+    "gate": 1
+  },
+  {
+    "variant": "v8.0.3-full",
+    "wire": 1,
+    "upstream": 0,
+    "gate": 1
+  }
+]

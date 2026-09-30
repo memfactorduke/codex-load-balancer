@@ -1,0 +1,94 @@
+=== RUN   TestCodexpoolDesktopWireSessionConsistency
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/matching
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/header_differs
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/body_differs
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/both_wrong
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/missing_header
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/missing_session
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/invalid_identity
+=== RUN   TestCodexpoolDesktopWireSessionConsistency/empty
+--- PASS: TestCodexpoolDesktopWireSessionConsistency (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/matching (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/header_differs (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/body_differs (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/both_wrong (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/missing_header (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/missing_session (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/invalid_identity (0.00s)
+    --- PASS: TestCodexpoolDesktopWireSessionConsistency/empty (0.00s)
+=== RUN   TestCodexpoolDesktopWire
+=== RUN   TestCodexpoolDesktopWire/cli.json/stream=false
+    codexpool_desktop_wire_test.go:252: DERIVED: captured body with stream=false for Execute coverage
+    codexpool_desktop_wire_test.go:310: DETECTION confirmed=true entrypoint="sdk-cli"
+    codexpool_desktop_wire_test.go:311: BODY_DIFF [$.metadata.user_id $.system[0].text]
+    codexpool_desktop_wire_test.go:312: BILLING_BEFORE x-anthropic-billing-header: cc_version=2.1.283.79f; cc_entrypoint=sdk-cli;
+    codexpool_desktop_wire_test.go:313: BILLING_AFTER x-anthropic-billing-header: cc_version=2.1.283.79f; cc_entrypoint=sdk-cli; cch=b4667;
+    codexpool_desktop_wire_test.go:328: HEADER_DIFF [Anthropic-Beta Authorization Content-Length X-Client-Request-Id]
+    codexpool_desktop_wire_test.go:329: BETA_BEFORE claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24
+    codexpool_desktop_wire_test.go:330: BETA_AFTER claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11
+    codexpool_desktop_wire_test.go:331: $.system[0].text
+    codexpool_desktop_wire_test.go:331: $.headers.Anthropic-Beta
+    codexpool_desktop_wire_test.go:331: $.headers.X-Client-Request-Id
+=== RUN   TestCodexpoolDesktopWire/cli.json/stream=true
+    codexpool_desktop_wire_test.go:310: DETECTION confirmed=true entrypoint="sdk-cli"
+    codexpool_desktop_wire_test.go:311: BODY_DIFF [$.metadata.user_id $.system[0].text]
+    codexpool_desktop_wire_test.go:312: BILLING_BEFORE x-anthropic-billing-header: cc_version=2.1.283.79f; cc_entrypoint=sdk-cli;
+    codexpool_desktop_wire_test.go:313: BILLING_AFTER x-anthropic-billing-header: cc_version=2.1.283.79f; cc_entrypoint=sdk-cli; cch=b469e;
+    codexpool_desktop_wire_test.go:328: HEADER_DIFF [Anthropic-Beta Authorization Content-Length X-Client-Request-Id]
+    codexpool_desktop_wire_test.go:329: BETA_BEFORE claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24
+    codexpool_desktop_wire_test.go:330: BETA_AFTER claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11
+    codexpool_desktop_wire_test.go:331: $.system[0].text
+    codexpool_desktop_wire_test.go:331: $.headers.X-Client-Request-Id
+    codexpool_desktop_wire_test.go:331: $.headers.Anthropic-Beta
+=== RUN   TestCodexpoolDesktopWire/desktop-initial.json/stream=false
+    codexpool_desktop_wire_test.go:252: DERIVED: captured body with stream=false for Execute coverage
+    codexpool_desktop_wire_test.go:310: DETECTION confirmed=true entrypoint="claude-desktop-3p"
+    codexpool_desktop_wire_test.go:311: BODY_DIFF [$.metadata.user_id $.system[0].text]
+    codexpool_desktop_wire_test.go:312: BILLING_BEFORE x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p;
+    codexpool_desktop_wire_test.go:313: BILLING_AFTER x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p; cch=92816;
+    codexpool_desktop_wire_test.go:328: HEADER_DIFF [Anthropic-Beta Authorization Content-Length X-Client-Request-Id]
+    codexpool_desktop_wire_test.go:329: BETA_BEFORE claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,fallback-credit-2026-06-01
+    codexpool_desktop_wire_test.go:330: BETA_AFTER claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,fallback-credit-2026-06-01
+    codexpool_desktop_wire_test.go:331: $.system[0].text
+    codexpool_desktop_wire_test.go:331: $.headers.X-Client-Request-Id
+=== RUN   TestCodexpoolDesktopWire/desktop-initial.json/stream=true
+    codexpool_desktop_wire_test.go:310: DETECTION confirmed=true entrypoint="claude-desktop-3p"
+    codexpool_desktop_wire_test.go:311: BODY_DIFF [$.metadata.user_id $.system[0].text]
+    codexpool_desktop_wire_test.go:312: BILLING_BEFORE x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p;
+    codexpool_desktop_wire_test.go:313: BILLING_AFTER x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p; cch=c1045;
+    codexpool_desktop_wire_test.go:328: HEADER_DIFF [Anthropic-Beta Authorization Content-Length X-Client-Request-Id]
+    codexpool_desktop_wire_test.go:329: BETA_BEFORE claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,fallback-credit-2026-06-01
+    codexpool_desktop_wire_test.go:330: BETA_AFTER claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,fallback-credit-2026-06-01
+    codexpool_desktop_wire_test.go:331: $.system[0].text
+    codexpool_desktop_wire_test.go:331: $.headers.X-Client-Request-Id
+=== RUN   TestCodexpoolDesktopWire/desktop-retry.json/stream=false
+    codexpool_desktop_wire_test.go:252: DERIVED: captured body with stream=false for Execute coverage
+    codexpool_desktop_wire_test.go:310: DETECTION confirmed=true entrypoint="claude-desktop-3p"
+    codexpool_desktop_wire_test.go:311: BODY_DIFF [$.metadata.user_id $.system[0].text]
+    codexpool_desktop_wire_test.go:312: BILLING_BEFORE x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p;
+    codexpool_desktop_wire_test.go:313: BILLING_AFTER x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p; cch=92816;
+    codexpool_desktop_wire_test.go:328: HEADER_DIFF [Anthropic-Beta Authorization Content-Length X-Client-Request-Id]
+    codexpool_desktop_wire_test.go:329: BETA_BEFORE claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24
+    codexpool_desktop_wire_test.go:330: BETA_AFTER claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24
+    codexpool_desktop_wire_test.go:331: $.system[0].text
+    codexpool_desktop_wire_test.go:331: $.headers.X-Client-Request-Id
+=== RUN   TestCodexpoolDesktopWire/desktop-retry.json/stream=true
+    codexpool_desktop_wire_test.go:310: DETECTION confirmed=true entrypoint="claude-desktop-3p"
+    codexpool_desktop_wire_test.go:311: BODY_DIFF [$.metadata.user_id $.system[0].text]
+    codexpool_desktop_wire_test.go:312: BILLING_BEFORE x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p;
+    codexpool_desktop_wire_test.go:313: BILLING_AFTER x-anthropic-billing-header: cc_version=2.1.281.4a7; cc_entrypoint=claude-desktop-3p; cch=c1045;
+    codexpool_desktop_wire_test.go:328: HEADER_DIFF [Anthropic-Beta Authorization Content-Length X-Client-Request-Id]
+    codexpool_desktop_wire_test.go:329: BETA_BEFORE claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24
+    codexpool_desktop_wire_test.go:330: BETA_AFTER claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24
+    codexpool_desktop_wire_test.go:331: $.system[0].text
+    codexpool_desktop_wire_test.go:331: $.headers.X-Client-Request-Id
+--- FAIL: TestCodexpoolDesktopWire (0.03s)
+    --- FAIL: TestCodexpoolDesktopWire/cli.json/stream=false (0.00s)
+    --- FAIL: TestCodexpoolDesktopWire/cli.json/stream=true (0.00s)
+    --- FAIL: TestCodexpoolDesktopWire/desktop-initial.json/stream=false (0.00s)
+    --- FAIL: TestCodexpoolDesktopWire/desktop-initial.json/stream=true (0.00s)
+    --- FAIL: TestCodexpoolDesktopWire/desktop-retry.json/stream=false (0.00s)
+    --- FAIL: TestCodexpoolDesktopWire/desktop-retry.json/stream=true (0.00s)
+FAIL
+FAIL	github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor	0.052s
+FAIL
