@@ -1,0 +1,104 @@
+--- a/internal/runtime/executor/helps/claude_client_detection.go
++++ b/internal/runtime/executor/helps/claude_client_detection.go
+@@ -60,13 +60,14 @@
+ 	"claude-coworker-terminal":  "claude-coworker-terminal",
+ }
+ 
+-// Only product surfaces with verified 2.1.220 wire behavior are eligible for
+-// pass-through. Other first-party-looking entrypoints are cloaked until their
++// Native Claude Code surfaces, including the desktop third-party inference engine,
++// are eligible for pass-through. Other first-party-looking entrypoints are cloaked until their
+ // CPA-reachable request shape has been captured and reviewed.
+ var nativeClaudeEntrypoints = map[string]bool{
+-	"cli":           true,
+-	"sdk-cli":       true,
+-	"claude-vscode": true,
++	"cli":               true,
++	"sdk-cli":           true,
++	"claude-vscode":     true,
++	"claude-desktop-3p": true,
+ }
+ 
+ type claudeCodeHelperShape uint8
+--- a/internal/runtime/executor/helps/claude_client_detection_test.go
++++ b/internal/runtime/executor/helps/claude_client_detection_test.go
+@@ -147,7 +147,7 @@
+ 		{name: "sdk-ts", userAgent: "claude-cli/2.1.280 (external, sdk-ts, agent-sdk/0.3.220)", entrypoint: "sdk-ts", subclient: "claude-code-sdk-ts", agentSDKVersion: "0.3.220"},
+ 		{name: "sdk-py", userAgent: "claude-cli/2.1.280 (external, sdk-py, agent-sdk/0.1.0)", entrypoint: "sdk-py", subclient: "claude-code-sdk-py", agentSDKVersion: "0.1.0"},
+ 		{name: "desktop", userAgent: "claude-cli/2.1.280 (external, claude-desktop)", entrypoint: "claude-desktop", subclient: "claude-desktop"},
+-		{name: "desktop-third-party-inference", userAgent: "claude-cli/2.1.280 (external, claude-desktop-3p)", entrypoint: "claude-desktop-3p", subclient: "claude-desktop-3p"},
++		{name: "desktop-third-party-inference", userAgent: "claude-cli/2.1.280 (external, claude-desktop-3p)", entrypoint: "claude-desktop-3p", subclient: "claude-desktop-3p", native: true},
+ 		{name: "remote", userAgent: "claude-cli/2.1.280 (external, remote)", entrypoint: "remote", subclient: "claude-remote"},
+ 		{name: "github-action", userAgent: "claude-cli/2.1.280 (external, claude-code-github-action)", entrypoint: "claude-code-github-action", subclient: "claude-code-gh-action"},
+ 		{name: "unknown", userAgent: "claude-cli/2.1.280 (external, copied-client)", entrypoint: "copied-client"},
+@@ -589,3 +589,42 @@
+ 		}
+ 	})
+ }
++
++// Desktop uses the same engine protocol. Native recognition must retain its
++// session while still requiring the existing version and strong-signal checks.
++func TestDesktopThirdPartyNativeSession(t *testing.T) {
++	headers := confirmedClaudeCodeHeaders()
++	headers.Set("User-Agent", "claude-cli/2.1.281 (external, claude-desktop-3p)")
++	const session = "11111111-2222-4333-8444-555555555555"
++	headers.Set("X-Claude-Code-Session-Id", session)
++	payload := claudeCodeDetectionPayload(validClaudeCodeMetadataUserID)
++	detection := DetectClaudeCodeRequest(headers, payload, false)
++	if !detection.Confirmed || !detection.NativeClient {
++		t.Fatal("desktop third-party engine was not confirmed")
++	}
++	if got := ClaudeAgentSessionUUIDForRequest(headers, payload, payload, detection.Confirmed); got != session {
++		t.Fatal("native desktop session was not preserved")
++	}
++	if !DetectClaudeCodeRequest(headers, nil, true).Confirmed {
++		t.Fatal("desktop token-count headers were not confirmed")
++	}
++	for _, name := range []string{"X-App", "Anthropic-Beta", "User-Agent"} {
++		incomplete := headers.Clone()
++		incomplete.Del(name)
++		if DetectClaudeCodeRequest(incomplete, payload, false).Confirmed {
++			t.Fatalf("confirmed without %s", name)
++		}
++	}
++	if DetectClaudeCodeRequest(headers, []byte(`{"messages":[]}`), false).Confirmed {
++		t.Fatal("confirmed without message metadata")
++	}
++	headers.Set("X-App", "cli-bg")
++	if DetectClaudeCodeRequest(headers, payload, false).Confirmed {
++		t.Fatal("confirmed background caller")
++	}
++	headers.Set("X-App", "cli")
++	headers.Set("User-Agent", "claude-cli/99.0.0 (external, claude-desktop-3p)")
++	if DetectClaudeCodeRequest(headers, payload, false).Confirmed {
++		t.Fatal("confirmed unmeasured release line")
++	}
++}
+--- a/internal/runtime/executor/claude_executor_request.go
++++ b/internal/runtime/executor/claude_executor_request.go
+@@ -1128,6 +1128,8 @@
+ 
+ 	incomingBetas := strings.TrimSpace(strings.Join(helps.HeaderValuesCaseInsensitive(incomingHeaders, "Anthropic-Beta"), ","))
+ 	countTokens := r.URL != nil && strings.HasSuffix(r.URL.Path, "/count_tokens")
++	preserveDesktopIdentity := confirmedClaudeCode &&
++		helps.DetectClaudeCodeRequest(incomingHeaders, body, countTokens, cfg).Entrypoint == "claude-desktop-3p"
+ 	requestedMap := claudeRequestedBetas(incomingBetas, extraBetas)
+ 	advisorNeeded := requestedMap[claudeAdvisorToolBeta] || claudeBodyHasAdvisorTool(body)
+ 
+@@ -1228,6 +1230,16 @@
+ 		}
+ 	}
+ 	applyBetaHeader := func() {
++		// Desktop owns its feature negotiation. Only the selected credential's
++		// OAuth beta may be added; cache and model policies are caller-owned.
++		if preserveDesktopIdentity {
++			baseBetas = incomingBetas
++			if useOAuthBetas {
++				baseBetas = withClaudeOAuthCredentialBetas(baseBetas, false)
++			}
++			r.Header.Set("Anthropic-Beta", baseBetas)
++			return
++		}
+ 		// Enforce strict native Claude Code 2.1.280 model & turn beta gating:
+ 		if !claudeRequestSupportsEffort(body, nil) {
+ 			baseBetas = withoutClaudeBeta(baseBetas, claudeEffortBeta)

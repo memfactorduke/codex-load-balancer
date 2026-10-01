@@ -127,6 +127,12 @@ cd codex-load-balancer                # from the ZIP download: cd codex-load-bal
 
 Once `~/.local/bin` is on your `PATH`, plain `codexpool` works.
 
+## Products
+
+- **Codex Desktop/CLI:** the ChatGPT seat pool described below.
+- **Claude CLI:** a separate [cswap-powered account switcher](addons/sienna/README.md)
+  for Claude Code in Terminal. It does not configure the Claude desktop app.
+
 ## Features
 
 - **Automatic failover, mid-thread.** A seat that runs out is replaced on the same request after a pause of a
@@ -731,8 +737,10 @@ Yes. `codex` reads the same `~/.codex/config.toml`, so anything that uses it (th
 the pool.
 
 **Can it pool another tool's accounts?**
-Not out of the box: the Codex pool holds only ChatGPT seats. A second pool for another tool can be added as an
-[add-on](docs/ADDONS.md); none ship with codexpool.
+The optional [Claude CLI integration](addons/sienna/README.md) is a native UI over upstream cswap.
+It switches Claude Code CLI logins directly and is separate from Codex Desktop/CLI. It offers account
+usage, manual switching and opt-in automatic switching; Claude desktop and Claude Codex lanes are not
+supported. Run `codexpool claude install --dry-run` to preview setup. Existing proxy accounts are not imported.
 
 **Which ChatGPT plans work?**
 Any plan that includes Codex: Plus, Pro, Business, Team and others. Each seat is sized by its plan so the meter

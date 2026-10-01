@@ -1,0 +1,33 @@
+{
+  "credential_changes": {
+    "Authorization": "Bearer serving-account token; fixture: Bearer sk-ant-oat-desktop-wire",
+    "Anthropic-Beta": "Insert oauth-2025-04-20 exactly once after claude-code-20250219 if absent. Preserve every other token and its order.",
+    "metadata.user_id": "Only serving-account account_uuid and selected credential-pool device_id, plus JSON serialization; session_id must equal inbound header and body session.",
+    "system[0].text": "Insert cch when absent in a gateway capture, or replace its five hex digits; validate signature against final outgoing body. Keep cc_version, cc_entrypoint and all other text unchanged."
+  },
+  "framing_header_exclusions": [
+    "Content-Length",
+    "Connection",
+    "Transfer-Encoding",
+    "Keep-Alive",
+    "Proxy-Authenticate",
+    "Proxy-Authorization",
+    "Te",
+    "Trailer",
+    "Upgrade"
+  ],
+  "comparison_normalization": [
+    "Header names compared case-insensitively",
+    "Body JSON whitespace and object key order ignored"
+  ],
+  "explicitly_not_allowed": [
+    "Accept-Encoding",
+    "User-Agent",
+    "X-Client-Request-Id",
+    "X-Claude-Code-Session-Id",
+    "additional beta insertion/removal/reordering",
+    "temperature removal",
+    "top_k removal",
+    "other body content changes"
+  ]
+}

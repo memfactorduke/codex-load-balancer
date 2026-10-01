@@ -69,7 +69,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Unit tests
-        run: python -m unittest discover -s tests -v
+        run: sh tests/run_all.sh
+
+      - name: Core without optional add-ons
+        run: |
+          cp -R . "$RUNNER_TEMP/core-only"
+          rm -rf "$RUNNER_TEMP/core-only/addons"
+          cd "$RUNNER_TEMP/core-only"
+          python -m unittest discover -s tests -v
 
   scan:
     name: Secrets and personal data
@@ -77,35 +84,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The same two scans AGENTS.md asks for before every commit, over every tracked file. The synthetic
-      # demo data in docs/images/demo/ is left out.
-      - name: No tokens or password hashes
+      - name: Publication boundary
         run: |
-          rc=0
-          # shellcheck disable=SC2016  # the pattern matches a literal "$" (bcrypt hashes)
-          git grep -nIE \
-            'eyJ[A-Za-z0-9_-]{20,}|"(refresh|access|id)_token"[[:space:]]*:|\$2[aby]\$|sk-[A-Za-z0-9]{20,}' \
-            -- . ':(exclude)docs/images/demo' || rc=$?
-          case "$rc" in
-            0) echo "::error::Possible token or password hash above; remove it."; exit 1 ;;
-            1) echo "Nothing found." ;;
-            *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
-          esac
-
-      - name: No add-ons in the public tree (they are private; docs/ADDONS.md)
-        run: test ! -d addons && echo "No addons/ directory."
-
-      - name: No home-directory paths or email addresses
-        run: |
-          rc=0
-          git grep -nIE \
-            '/Users/[A-Za-z]|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}' \
-            -- . ':(exclude)docs/images/demo' || rc=$?
-          case "$rc" in
-            0) echo "::error::Home-directory path or email address above; remove it."; exit 1 ;;
-            1) echo "Nothing found." ;;
-            *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
-          esac
+          python3 - <<'PYSCAN'
+          import pathlib, sys
+          sys.path.insert(0, 'scripts')
+          from publish_tree import scan
+          paths, hits = scan(pathlib.Path('.'))
+          if hits:
+              raise SystemExit('Publication scan failed:\n' + '\n'.join(hits))
+          print('Publication scan clean:', len(paths), 'files')
+          PYSCAN
 
   shellcheck:
     name: shellcheck install.sh

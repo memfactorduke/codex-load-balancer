@@ -1,0 +1,64 @@
+{
+  "id": "sienna",
+  "version": "1.3.0",
+  "core_min": "1.3.0",
+  "settings_prefixes": [
+    "sienna_",
+    "claude_"
+  ],
+  "settings": {
+    "claude_label": "com.codexpool.claude",
+    "claude_port": 8321,
+    "claude_balancing": "priority",
+    "claude_cpa": null
+  },
+  "settable": {
+    "claude_balancing": [
+      "priority",
+      "reset"
+    ]
+  },
+  "code_files": [
+    "addon.py",
+    "pool.py",
+    "guard.py",
+    "selftest.py",
+    "desktop.py",
+    "desktop_build.py",
+    "gate/codexpool_desktop_wire_test.go",
+    "gate/desktop-wire/allowed-differences.json",
+    "gate/desktop-wire/cli.json",
+    "gate/desktop-wire/desktop-initial.json",
+    "gate/desktop-wire/desktop-retry.json",
+    "gate/patches/cpa-desktop-identity.patch",
+    "gate/patches/cpa-native-desktop-3p-rationale.md",
+    "gate/patches/cpa-native-desktop-3p.patch",
+    "gate/codexpool_desktop_gate_test.go",
+    "menubar_ext.py",
+    "lane_engine.py",
+    "bridge_engine.py",
+    "cpa_check.py",
+    "gate_build.py",
+    "gate/codexpool_gate_sienna.go",
+    "gate/codexpool_gate_sienna_test.go",
+    "gate/patches/claude-exclusions.patch",
+    "examples/config-claude.yaml",
+    "launchd/claude.plist.template",
+    "docs/SIENNA.md",
+    "docs/DESKTOP.md",
+    "docs/ENGINE-LANE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/MENUBAR.md",
+    "docs/SPEC.md",
+    "docs/TROUBLESHOOTING.md",
+    "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "cswap_backend.py",
+    "cswap_ui.py",
+    "docs/LEGACY-AGENTS.md"
+  ],
+  "auto_ports": [
+    "claude_port"
+  ]
+}

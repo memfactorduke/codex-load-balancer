@@ -6,7 +6,15 @@ All notable changes to codexpool are recorded here. The format follows
 
 ## [Unreleased]
 
+- Publish the optional Claude integration, including its docs, tests, demo assets and patches; explicitly allow
+  it in the publication rules and validate both suites in CI. Credentials and runtime state remain local.
+
 ### Changed
+
+- Replace the supported Claude proxy, desktop and engine-lane product with a native UI over upstream cswap.
+  Account switching and auto-rotation are delegated to cswap; live migration is explicit.
+- Label the product selectors Codex Desktop/CLI and Claude CLI, replace the normal-state “Regular” badge
+  with “Ready”, and remove Claude desktop setup controls from the normal interface.
 
 - **The popover's chart shows your use as bars.** Each bar is how much of the pool's quota went in one half hour
   (four hours on the 7-day view), scaled so the busiest bucket fills the chart; the quota-left (or usage) line

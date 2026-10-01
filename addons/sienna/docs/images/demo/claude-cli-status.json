@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-09-24T16:41:00Z",
+  "active": "Personal",
+  "seats": [
+    {
+      "name": "1",
+      "label": "Work",
+      "provider": "claude",
+      "state": "exhausted",
+      "priority": 9999,
+      "weight": 1,
+      "selected": false,
+      "week": {
+        "used": 80,
+        "reset_at": "2026-09-26T10:00:00Z"
+      },
+      "five_hour": {
+        "used": 100,
+        "reset_at": "2026-09-24T23:00:00Z"
+      },
+      "until": "2026-09-24T23:00:00Z"
+    },
+    {
+      "name": "2",
+      "label": "Personal",
+      "provider": "claude",
+      "state": "active",
+      "priority": 9998,
+      "weight": 1,
+      "selected": true,
+      "week": {
+        "used": 25,
+        "reset_at": "2026-09-28T10:00:00Z"
+      },
+      "five_hour": {
+        "used": 15,
+        "reset_at": "2026-09-25T00:00:00Z"
+      }
+    }
+  ],
+  "pool": {
+    "backend": "cswap",
+    "installed": true,
+    "running": true,
+    "headline": "all",
+    "display": "left",
+    "used_pct": 25,
+    "selected_number": 2,
+    "selected_usage_known": true,
+    "auto_switch": false,
+    "strategy": "best",
+    "threshold": 90
+  }
+}

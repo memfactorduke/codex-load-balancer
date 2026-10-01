@@ -1,0 +1,2 @@
+# Patch fixtures preserve upstream whitespace and context lines.
+*.patch -whitespace

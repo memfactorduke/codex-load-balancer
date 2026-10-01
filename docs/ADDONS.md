@@ -1,4 +1,7 @@
-# Local add-on interface (steps 1–2)
+# Add-on interface
+
+The optional [Claude add-on](../addons/sienna/README.md) is included in the public source tree.
+Its source, docs, tests, demo assets and patches may be published; credentials and runtime state stay local.
 
 Step 1 adds discovery and extension points. Existing pool code, runtime paths, settings keys, gate profiles,
 launchers and app code remain in place. There is no state migration. With no add-ons, existing help and version

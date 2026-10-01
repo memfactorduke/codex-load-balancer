@@ -9,6 +9,21 @@ If you break it, Codex stops working for the user, possibly including you.** An 
 (`docs/ADDONS.md`) is a second pool of the same kind for another tool: the same care applies to it, and its own
 `AGENTS.md` says what.
 
+## Publication
+
+The Claude integration in `addons/sienna/` is expressly allowed in the public repository, including its code,
+docs, tests, demo assets and patches. Claude, Anthropic, sienna and Cowork may be named in public documentation
+and tests. Keep runtime implementation behind the add-on hooks. When changing that integration, read
+[its AGENTS.md](addons/sienna/AGENTS.md). Publish source only: credentials, account state, logs, local configs,
+builds and `LOCAL.md` stay local.
+
+## Current Claude product
+
+Claude CLI is now a native UI over upstream cswap, separate from Codex Desktop/CLI.
+Read `addons/sienna/AGENTS.md` for its current contract. Older Claude proxy, desktop
+and engine-lane code is retained for explicit retirement/reference; do not register
+those as supported product features or copy their credentials into cswap.
+
 ## Two places
 
 - **The repository** (a git checkout anywhere). Code and docs only.
@@ -38,7 +53,7 @@ Labels are the defaults; the real ones are in `~/.codexpool/settings.json`.
 | Menu bar | Native PyObjC app; reads the status and history files only (an add-on pool's too: one item, two numbers) | `menubar/codexpool_menubar.py`, `menubar/SPEC.md` | `com.codexpool.menubar` |
 | Settings window | Native PyObjC window (Overview, Seats, Balancing, Lanes, General, Health, About) and the Setup assistant, in a process of its own. Opened from the menu bar ("Settings…", "Add a ChatGPT account…"; the Setup assistant by itself on a first run with no seats), by `codexpool gui [PANE]` and by `install.sh` on a first install. Reads `state/status.json` and the JSON of `codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json`, `codexpool lane models PROVIDER --json` and `codexpool version`; every change it makes is a `codexpool …` command run in the background (a provider key goes to `codexpool lane key NAME -` on stdin) | `menubar/codexpool_settings.py`, the GUI section of `menubar/SPEC.md` | none |
 | CLI | `codexpool …`, standard-library Python | `bin/codexpool`, wrapper at `~/.local/bin/codexpool` | none |
-| Add-ons (optional) | `addons/<id>/addon.py`, loaded through the hooks in `docs/ADDONS.md`: a second pool instance, its guard pass, doctor and status sections, gate profile, lane provider and menu bar tab. None ship with codexpool; `codexpool addon list` names the installed ones | `addons/<id>/` | the add-on's own |
+| Add-ons (optional) | `addons/<id>/addon.py`, loaded through the hooks in `docs/ADDONS.md`: a second pool instance, its guard pass, doctor and status sections, gate profile, lane provider and menu bar tab. The Claude add-on ships as source; `codexpool addon list` names the installed ones | `addons/<id>/` | the add-on's own |
 | Lane bridge (optional) | Standard-library Python on `127.0.0.1:<bridge_port>` (8320): an upstream behind the pool that adapts requests for lane members on providers such as OpenCode; runs only when `lanes/bridge.json` exists | `lanes/bridge.py`, `lanes/bridge.json`, `lanes/secrets/` | `com.codexpool.bridge` |
 
 The Codex app points at the pool with one line in `~/.codex/config.toml`:
@@ -100,8 +115,7 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
 11. **No personal data in the repository.** No emails, account or workspace ids, real seat names, company names,
     `/Users/<name>` paths or personal launchd labels, in code, docs, examples or screenshots. Screenshots come
     from the synthetic data in `docs/images/demo/` (an add-on's from its own `docs/images/demo/`).
-12. **Add-ons load through `addons/<id>/addon.py` and the hooks in `docs/ADDONS.md` only.** The core names no
-    add-on and no other product: every hook site iterates `ADDONS`, a pool id it does not know is an error (never a
+12. **Add-ons load through `addons/<id>/addon.py` and the hooks in `docs/ADDONS.md` only.** The core runtime dispatch stays generic: every hook site iterates `ADDONS`, a pool id it does not know is an error (never a
     fallback to the Codex pool), and a broken add-on is reported by `doctor` and skipped. A broken add-on never
     stops the Codex pool, the guard's Codex pass or the menu bar's Codex item.
 
@@ -185,17 +199,23 @@ The unit tests must pass:
 sh tests/run_all.sh      # the core suite, then every addons/*/tests; python3 -m unittest discover -s tests for the core alone
 ```
 
-The core suite must also pass in a copy of the tree without `addons/` (that is what CI runs), and
-`tests/test_public_tree.py` fails on any core file or path that names an add-on's product: the public tree describes
-the Codex pool only. The `.gitignore` keeps runtime state out even when the checkout is `~/.codexpool`. Still, scan what you stage.
-Both commands must print nothing:
+The core suite must also pass in a copy of the tree without `addons/`, so the add-on remains optional.
+CI runs the core and bundled add-on suites. `tests/test_public_tree.py` verifies the publication boundary. The `.gitignore` keeps runtime state out even when the checkout is `~/.codexpool`. Still, scan what you stage.
+Run the publication scan over the source tree, including add-ons:
 
 ```sh
-git diff --cached | grep -nE 'eyJ[A-Za-z0-9_-]{20,}|"(refresh|access|id)_token"[[:space:]]*:|\$2[aby]\$|sk-[A-Za-z0-9]{20,}'
-git diff --cached | grep -nE '/Users/[A-Za-z]|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}'
+python3 - <<'PYSCAN'
+import pathlib, sys
+sys.path.insert(0, 'scripts')
+from publish_tree import scan
+paths, hits = scan(pathlib.Path('.'))
+if hits:
+    raise SystemExit('Publication scan failed:\n' + '\n'.join(hits))
+print('Publication scan clean:', len(paths), 'files')
+PYSCAN
 ```
 
-The first catches tokens and hashes, the second home-directory paths and email addresses.
+The scan rejects credentials, private account data and runtime paths. Synthetic fixture addresses are allowed.
 
 ## Releasing
 

@@ -278,7 +278,8 @@ its pool sections with top-level ones the user wrote, rather than guess.
 
 A second pool for another tool is an add-on: a directory `addons/<id>/` with an `addon.py` that registers its pool
 instance, guard pass, doctor and status sections, gate profile, lane provider and menu bar `PoolUI` through the hooks
-in [ADDONS.md](ADDONS.md). None ship with codexpool. The registry exists so the core never names another product:
+in [ADDONS.md](ADDONS.md). The optional [Claude add-on](../addons/sienna/README.md) ships as source.
+The registry keeps product-specific runtime behavior in the add-on:
 every hook site iterates `ADDONS`, and a broken add-on is reported by `doctor` and skipped, never a reason for the
 Codex pool to stop. The gate's profile registry is core for the same reason: an add-on's pool needs stricter
 admission rules than the Codex pool, and the gate must fail closed on any profile it does not know.

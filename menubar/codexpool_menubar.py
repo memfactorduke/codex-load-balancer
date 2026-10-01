@@ -630,11 +630,12 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
 
     regular_total = len(regular) if seats else max(0, int(as_num(pool.get('seats'), 0)))
     headline = clamp_pct(as_num(headline))
-    return Model(now=now, status=status, problem=problem, age=age, headline=headline, headline_mode=headline_mode,
+    model = Model(now=now, status=status, problem=problem, age=age, headline=headline, headline_mode=headline_mode,
                  display=display, balancing=balancing, serving=serving, seats=seats, regular_ready=regular_ready,
                  regular_total=regular_total, reserve_seats=reserve, next_back=next_back,
                  version=as_str(pool.get('version')), history=history, pool=pool_name,
                  extra=ui.parse_pool(pool) if ui else None)
+    return ui.project_model(model, raw) if ui and hasattr(ui, "project_model") else model
 
 
 class DataSource:
@@ -917,7 +918,7 @@ def pool_pill(m: Model):
     if m.spending is not None:
         return getattr(m.ui, 'alarm_word', 'Paid use'), C.red_text(), C.soft(C.red(), 0.16)
     if m.status == 'regular':
-        return 'Regular', C.pool_text(m.pool), C.soft(C.pool_fill(m.pool), 0.16)
+        return 'Ready', C.pool_text(m.pool), C.soft(C.pool_fill(m.pool), 0.16)
     if m.status == 'reserve':
         return 'Reserve', C.red_text(), C.soft(C.red(), 0.16)
     if m.status == 'allout':
@@ -1719,6 +1720,8 @@ def pool_severity(m: Model) -> float:
 
 def pool_line(m: Model) -> str:
     """One pool in the two-pool tooltip: 'Codex 54% left this week · serving Work B'."""
+    if m.ui and hasattr(m.ui, 'headline_tip'):
+        return m.ui.headline_tip(m)
     who = m.serving.label if m.serving else ''
     figure = f'{fmt_pct(m.shown(m.headline))} {m.word} this week'
     spend = m.spending
@@ -1805,7 +1808,7 @@ APP_ROWS = (     # above Quit: the Settings window and its Setup assistant (SF S
 )
 
 BANNER_STATES = ('down', 'stale', 'missing', 'empty')
-TILE_GAP, TILE_H = 10.0, 66.0    # the two-pool switcher at the top of the popover
+TILE_GAP, TILE_H = 10.0, 82.0    # the two-pool switcher at the top of the popover
 ROW_PAD, ROW_GAP = 4.0, 2.0      # seat rows: inner top/bottom padding, space between rows
 SMALL_LH = 13.0                  # seat rows set their 11 pt lines on a tight 13 pt line
 
@@ -1849,6 +1852,8 @@ def headline_breakdown(m: Model) -> str:
         Pro 20x · 20× reserve · 66% left · resets in 3d 8h
         Weighted by size: 54% left · all seats
     With the regular headline a reserve line reads 'Pro 20x · reserve, not counted · 66% left'."""
+    if m.ui and hasattr(m.ui, 'headline_tip'):
+        return m.ui.headline_tip(m)
     lines = []
     for s in m.seats:
         used = s.week.used if s.week else None
@@ -1927,7 +1932,7 @@ class PopoverLayout:
                 y = self.banner(y) + (16 if hero else 0)
             if hero:
                 y = self.hero(y)
-        if m.status not in ('missing', 'empty') or self.samples >= MIN_CHART_SAMPLES:
+        if getattr(m.ui, 'show_chart', True) and (m.status not in ('missing', 'empty') or self.samples >= MIN_CHART_SAMPLES):
             y = self.chart(self.rule(y))
         if m.seats:
             y = self.seats(self.rule(y, below=8))
@@ -1945,6 +1950,8 @@ class PopoverLayout:
         if m.status == 'stale':
             return f'Last report {fmt_age(m.age)}'
         updated = f'Updated {fmt_age(m.age)}'
+        if m.ui and hasattr(m.ui, 'subtitle'):
+            return m.ui.subtitle(m, updated)
         return f'{updated} · Serving {m.serving.label}' if m.serving_now and m.serving else updated
 
     def header_pill(self):
@@ -1986,14 +1993,17 @@ class PopoverLayout:
                 self.add(draw_pool_glyph, pool, ix + GLYPH / 2, top + lh / 2, C.pool_fill(pool))
             self.text(tm.name, ix + GLYPH + 6, top, name_f, C.label())
             word, fg, _ = pool_pill(tm)
-            ny = top + lh + 2
+            scope = getattr(tm.ui, 'product_scope', 'Desktop/CLI')
+            self.text(scope, ix + GLYPH + 6, top + lh + 1, state_f, C.secondary(), width=w - GLYPH - 26)
+            ny = top + lh + line_height(state_f) + 4
             baseline = ny + round(big.ascender())
             if tm.headline is None:   # no number (no accounts, no data): the state takes its place
                 sf2 = font(13, NSFontWeightMedium)
                 self.text(word, ix, baseline - sf2.ascender(), sf2, C.secondary(), width=w - 20)
             else:
-                self.text(word, ix, top + name_f.ascender() - state_f.ascender(), state_f,
-                          C.secondary() if word == 'Regular' else fg, width=w - 20, align='right')
+                if word != 'Ready':
+                    self.text(word, ix, ny + big.ascender() - state_f.ascender(), state_f,
+                              fg, width=w - 20, align='right')
                 color = C.secondary() if tm.warn else headline_text(tm)
                 number = fmt_pct(tm.shown(tm.headline)).rstrip('%')
                 nw, uw = text_width(number, big), text_width('%', unit)
@@ -2059,6 +2069,8 @@ class PopoverLayout:
     # -- 3. hero -------------------------------------------------------------------------------------
     def hero(self, y: float) -> float:
         m = self.m
+        if m.ui and hasattr(m.ui, "draw_hero"):
+            return m.ui.draw_hero(self, y)
         color = headline_text(m)
         big, unit, cap_f = font(28, NSFontWeightSemibold, mono=True), font(17, NSFontWeightSemibold), font(12)
         number = f'{round(m.shown(m.headline)):d}'
@@ -2169,12 +2181,12 @@ class PopoverLayout:
     def seats(self, y: float) -> float:
         hf, nf = font(11, NSFontWeightSemibold), font(10.5)
         self.section_title(f'{self.m.noun.title()}s', y, line_height(hf))
-        order = ORDER_TITLE[self.m.balancing]
+        order = getattr(self.m.ui, 'order_label', ORDER_TITLE[self.m.balancing])
         self.text(order, PAD, y + hf.ascender() - nf.ascender(), nf, C.secondary(), width=INNER, align='right')
         # Hovering it says how the pool picks a seat (a tooltip only: no highlight, no click).
         ow = math.ceil(text_width(order, nf))
         self.regions.append((((PAD + INNER - ow, y), (ow, line_height(hf))), ('tip', 'order')))
-        self.tips[('tip', 'order')] = ORDER_TIP[self.m.balancing]
+        self.tips[('tip', 'order')] = getattr(self.m.ui, 'order_tip', ORDER_TIP[self.m.balancing])
         y += line_height(hf) + 4
         top = y
         for seat in self.m.seats:
@@ -2187,6 +2199,8 @@ class PopoverLayout:
         Capsules for the states that need a look (Serving, Out, Parked, Blocked); plain text for Ready/Off."""
         m = self.m
         text = STATE_PILL.get(seat.state, seat.state.title() or 'Unknown')
+        if m.ui and hasattr(m.ui, 'state_label'):
+            text = m.ui.state_label(seat, text)
         if seat.state in (READY, 'disabled') or text not in ('Serving', 'Out', 'Parked', 'Blocked'):
             f = font(11, NSFontWeightMedium)
             w = text_width(text, f)
@@ -2335,7 +2349,7 @@ class PopoverLayout:
         f = font(13)
         row_h = 22.0
         ui = self.m.ui
-        for symbol, title, action in FOOTER_ROWS:
+        for symbol, title, action in getattr(ui, "footer_items", FOOTER_ROWS):
             y = self.footer_row(y, row_h, symbol, title, action, f)
         if ui is not None:   # the add-on pool's own rows (a route control, its desktop app)
             y = ui.footer_rows(self, y, row_h, f)
@@ -3072,6 +3086,8 @@ class Controller(NSObject):
         """A footer or banner action, for the pool the popover shows (an add-on pool's tab has its own Status…,
         Pool log, Docs and Add account…, through its command prefix; Doctor covers both)."""
         ui = POOL_UI.get(self.tab) if self.models.get(self.tab) is not None else None
+        if ui and hasattr(ui, "run_action") and ui.run_action(self, action):
+            return
         pre = list(ui.command_prefix) if ui else []
         terminal = {'status': cp_command(*pre, 'status', '--live'), 'doctor': cp_command('doctor'),
                     'log': cp_command(*pre, 'logs', '-f')}
@@ -3138,6 +3154,9 @@ class Controller(NSObject):
                 item.setImage_(img)
             return item
 
+        if ui and hasattr(ui, 'account_menu'):
+            ui.account_menu(seat, add)
+            return menu
         if seat.resets:   # a banked free reset brings the seat back to full right now
             exp = f', expires {fmt_day(seat.reset_expiry)}' if seat.reset_expiry else ''
             add(f'Use reset now… ({seat.resets} banked{exp})', 'arrow.counterclockwise.circle', 'reset')

@@ -188,7 +188,8 @@ LANE_SHOTS = ('lanes-edit', 'lanes-new', 'lanes-model', 'lanes-model-key', 'lane
 # The pools: the Codex pool and, with an add-on (mb.POOL_UI, its menubar_ext.py), one more. The switcher on
 # Overview, Seats and Balancing and in the Setup assistant is drawn only when there are two.
 POOLS = mb.POOLS
-POOL_TITLES = mb.POOL_NAME
+POOL_TITLES = {p: f"{name} {getattr(mb.POOL_UI.get(p), 'product_scope', 'Desktop/CLI')}"
+               for p, name in mb.POOL_NAME.items()}
 POOL_DEFAULT = 'pool'                # NSUserDefaults key: the switcher's last choice
 
 BALANCING = ('priority', 'reset')    # pool.balancing: your order (fill-first) / soonest weekly reset first
@@ -1166,7 +1167,7 @@ def pool_switcher(current: str, fn, keep: list, enabled: bool = True, titles=Non
         [S(titles[p]) for p in POOLS], 0, target(lambda s: fn(POOLS[s.selectedSegment()]), keep), 'fire:'))
     for i, p in enumerate(POOLS):
         seg.setImage_forSegment_(pool_glyph_image(p), i)
-        seg.setWidth_forSegment_(116, i)
+        seg.setWidth_forSegment_(174, i)
     seg.setSelectedSegment_(POOLS.index(current) if current in POOLS else 0)
     seg.setEnabled_(enabled)
     seg.setAccessibilityLabel_(S('Pool'))
@@ -1752,6 +1753,8 @@ class SeatsPane(Pane):
         m = self.store.model(self.pool)
         k = self.keep
         out = [self.switcher()]
+        if ui and hasattr(ui, 'settings_page'):
+            return out + ui.settings_page(self, 'accounts')
         if ui is not None and not self.store.installed(self.pool):
             return out + [ui.setup_state(self.app, k)]
         if not m.seats:
@@ -1960,6 +1963,8 @@ class BalancingPane(Pane):
         ui = self.ui
         m = self.store.model(self.pool)
         out = [self.switcher()]
+        if ui and hasattr(ui, 'settings_page'):
+            return out + ui.settings_page(self, 'switching')
         if ui is not None and not self.store.installed(self.pool):
             return out + [ui.setup_state(self.app, self.keep)]
         if not m.seats:
@@ -2311,7 +2316,7 @@ def credentials(store: Store) -> list:
 
 
 class LanesPane(Pane):
-    key, title, symbol, tint = 'lanes', 'Lanes', 'arrow.triangle.branch', 'purple'
+    key, title, symbol, tint = 'lanes', 'Codex lanes', 'arrow.triangle.branch', 'purple'
 
     def __init__(self, app):
         super().__init__(app)
@@ -4065,6 +4070,8 @@ class SetupAssistant:
     def accounts(self):
         st = self.app.store
         ui = self.ui
+        if ui and hasattr(ui, 'setup_accounts'):
+            return ui.setup_accounts(self)
         m = st.model(self.pool)
         if ui is not None:
             head = self.heading(*ui.setup_heading)
@@ -4736,6 +4743,12 @@ class SettingsController(NSObject):
     @objc.python_method
     def open_setup(self, pane: str = 'setup-welcome', step: str | None = None, label: str | None = None,
                    priority: int | None = None, pool: str | None = None):
+        target_pool = pool or self.pool
+        target_ui = pool_ui(target_pool)
+        if target_ui and getattr(target_ui, 'setup_pane', None):
+            self.set_pool(target_pool)
+            self.open_pane(target_ui.setup_pane)
+            return
         setup = self.ensure_setup()
         if pool in POOLS and setup.login.phase in ('idle', 'added', 'again', 'failed', 'expired'):
             setup.pool = pool
