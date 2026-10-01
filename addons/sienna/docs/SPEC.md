@@ -2,6 +2,22 @@
 
 Part of the sienna add-on: what `menubar_ext.py` adds to the core apps (spec: the core's `menubar/SPEC.md`).
 
+## Current Claude CLI view
+
+The supported UI is `cswap_ui.py`, a file-only view of `claude-cli-status.json`.
+Account rows retain detected plan badges from the core parser (Max 5×, Max 20×,
+Team Premium 6.25×, or Plan unknown). The selected available account appears first,
+then ready regular accounts, then ready reserves, then unavailable accounts, keeping
+slot order within each group. Settings' account cards use the same display grouping
+and plan badges. cswap's account selection is unchanged. `cswap_patch.py` projects
+identity-checked OAuth profile metadata through cswap's public JSON; the adapter
+normalizes it to `plan`, `weight`, `capacity_known` and `plan_detected_at`. The
+headline remains the selected account's measured weekly usage.
+The shared Compact / Full toggle defaults to Compact and remembers the choice. Compact account rows
+show the binding limit first and all limits on hover; Full restores the quota bars.
+
+The remaining sections describe the retained legacy proxy view.
+
 ## Two pools (1.3.0)
 The Claude pool is installed when `state/claude-status.json` exists and its `pool.installed` is true (a file without
 the key, from an older writer, counts while it is fresh; a half-written or unreadable one counts, and shows "not

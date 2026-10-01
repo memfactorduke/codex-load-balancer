@@ -667,6 +667,8 @@ class WithAppKit(unittest.TestCase):
         with mock.patch.object(mb, 'snapshot') as snap, mock.patch.object(mb, 'run_app') as live:
             mb.main(['--snapshot', out, '--status', str(DEMO / 'status-regular.json')])
             self.assertEqual(snap.call_args.args[-1], 'drawn')
+            self.assertEqual(snap.call_args.kwargs['seat_view'], 'compact')
+            self.assertTrue(snap.call_args.kwargs['chart_expanded'])
             mb.main(['--snapshot', out, '--status', str(DEMO / 'status-regular.json'), '--marks', 'app'])
             self.assertEqual(snap.call_args.args[-1], 'app')
             self.assertEqual(live.call_count, 0)

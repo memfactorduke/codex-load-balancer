@@ -8,7 +8,7 @@
       "provider": "claude",
       "state": "exhausted",
       "priority": 9999,
-      "weight": 1,
+      "weight": 6.25,
       "selected": false,
       "week": {
         "used": 80,
@@ -18,7 +18,10 @@
         "used": 100,
         "reset_at": "2026-09-24T23:00:00Z"
       },
-      "until": "2026-09-24T23:00:00Z"
+      "until": "2026-09-24T23:00:00Z",
+      "plan": "team_premium",
+      "capacity_known": true,
+      "plan_detected_at": "2026-09-24T16:41:00Z"
     },
     {
       "name": "2",
@@ -26,7 +29,7 @@
       "provider": "claude",
       "state": "active",
       "priority": 9998,
-      "weight": 1,
+      "weight": 20,
       "selected": true,
       "week": {
         "used": 25,
@@ -35,7 +38,10 @@
       "five_hour": {
         "used": 15,
         "reset_at": "2026-09-25T00:00:00Z"
-      }
+      },
+      "plan": "max_20x",
+      "capacity_known": true,
+      "plan_detected_at": "2026-09-24T16:41:00Z"
     },
     {
       "name": "3",
@@ -43,7 +49,7 @@
       "provider": "claude",
       "state": "ready",
       "priority": 9997,
-      "weight": 1,
+      "weight": 5,
       "selected": false,
       "reserve": true,
       "reserve_held": true,
@@ -55,7 +61,10 @@
       "five_hour": {
         "used": 5,
         "reset_at": "2026-09-25T00:00:00Z"
-      }
+      },
+      "plan": "max_5x",
+      "capacity_known": true,
+      "plan_detected_at": "2026-09-24T16:41:00Z"
     }
   ],
   "pool": {

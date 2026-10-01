@@ -9,6 +9,21 @@ The native interface shows each account's five-hour and weekly limits, the selec
 login, Switch and Exclude/Enable buttons, and automatic-switching controls. Its
 headline is the selected account's weekly allowance. Unknown readings stay unknown.
 
+Account rows show the detected plan and its session-size multiplier, such as Max 5×,
+Max 20× or Team Premium 6.25×. These describe the plan's per-session capacity,
+not a multiplier of weekly quota. Selected and ready accounts appear first;
+unavailable accounts appear last. This display order does not change cswap's choices.
+
+`codexpool claude install` installs a checked source extension into the pinned cswap
+package. For an already connected installation, `codexpool claude detect-plans`
+enables it. cswap uses its own OAuth profile helper and identity checks, then exports
+only public subscription fields in `list --json`. codexpool never reads credentials.
+Successful profiles are cached for six hours; failures retry after fifteen minutes
+and show an unknown plan or size. Max without a reported rate tier has no guessed
+multiplier. The extension refuses unfamiliar source and keeps source-only originals
+beside the patched files for rollback. Re-enable it after an upstream reinstall;
+an unsupported upgrade needs an updated, tested extension.
+
 ## How it works
 
 The command adapter runs cswap's public commands. `list --json` supplies account

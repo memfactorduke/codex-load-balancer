@@ -53,6 +53,12 @@ for the rightmost spot among third-party items; ⌘-drag it anywhere and it stay
 Click the item. Click it again, or anywhere outside the popover (another app, the desktop), or press Escape to
 close it; it also closes when you switch to another app.
 
+The account list starts in **Compact**, with two lines per account. **Full** restores every quota bar;
+the detailed screenshots below show that view. The usage graph starts expanded in either view. Click
+its title or arrow to collapse it to a heading, or click again to restore it. The app remembers the
+account view and graph choice separately. Hover over a compact account row to see all its limits.
+
+
 1. **Header**: "Codex Pool", when the status was last updated and which seat is serving. The pill on the right
    says `Regular` (green), `Reserve` (red), or `All out`, `Down`, `Stale`, `No seats`, `No data` (grey). After
    you use an action, the subtitle shows its progress and result for a few seconds.

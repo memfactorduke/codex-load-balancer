@@ -9,6 +9,9 @@ Code CLI logins only. Codex Desktop/CLI remains a separate product and backend.
 
 - `cswap_backend.py`: pinned upstream dependency, public JSON projection and CLI commands.
 - `cswap_ui.py`: file-only native UI; commands execute in background workers.
+- `cswap_patch.py`: checked source extension to cswap's own profile and public JSON
+  code. cswap alone accesses its credentials; only public subscription fields leave
+  its process. Keep exact source validation, identity checks, caching and unknown sizes.
 - `addon.py`: registers the Claude CLI family and a separate guard lock.
 - `menubar_ext.py`: reusable drawing primitives plus the active UI loader. Its old
   proxy/desktop functions are not the supported UI.

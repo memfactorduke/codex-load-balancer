@@ -33,7 +33,8 @@ def create(legacy, mb):
 
         @staticmethod
         def parse_seat(row, seat, now=None):
-            seat.plan = ''
+            seat.plan = seat.plan if row.get('plan') else 'Plan unknown'
+            seat.plan_detected_at = mb.parse_time(row.get('plan_detected_at'))
             seat.selected = row.get('selected') is True
             seat.reserve_held = row.get('reserve_held') is True
             seat.scoped = []
@@ -159,11 +160,11 @@ def create(legacy, mb):
                 return out
             if page != 'switching':
                 rows = []
-                for seat in m.seats:
+                for seat in mb.display_seats(m):
                     selected = getattr(seat, 'selected', False)
                     week = mb.fmt_pct(m.shown(seat.week.used if seat.week else None))
                     short = mb.fmt_pct(m.shown(seat.short.used if seat.short else None))
-                    desc = ('Selected · ' if selected else '') + f'Week {week} left · 5h {short} left'
+                    desc = seat.plan + ' · ' + ('Selected · ' if selected else '') + f'Week {week} left · 5h {short} left'
                     if seat.reserve:
                         desc += ' · Reserve'
                         if getattr(seat, 'reserve_held', False):

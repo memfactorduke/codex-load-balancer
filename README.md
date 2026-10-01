@@ -13,6 +13,14 @@ its usage limit, the next one picks up the same request, in the middle of a turn
 and one thread history and never switch accounts. A menu bar meter shows how much of the week's quota is left
 across all of them. More on the [website](https://memfactorduke.github.io/codex-load-balancer/).
 
+The popover shows serving and ready accounts first and unavailable accounts last, while preserving the
+pool's routing priorities. **Compact** is the default: two lines per account, with plan size, status, quota
+and reset time. Select **Full** above the accounts to see every quota bar. The usage graph has its own
+collapse toggle: click its title to hide or show it in either view. It starts expanded. The app remembers
+both choices; hovering a compact row shows all its limits.
+The optional Claude CLI view also shows automatically detected plan sizes;
+see [the Claude integration](addons/sienna/README.md).
+
 ## Install
 
 You need macOS 13 or later, the Codex desktop app (signed in) and two or more ChatGPT accounts with Codex access.

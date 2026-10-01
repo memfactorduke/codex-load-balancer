@@ -12,7 +12,7 @@ Settings window and Setup assistant are a second file, `menubar/codexpool_settin
   `~/.codexpool/state/history.jsonl`, and an add-on pool's own status and history files
   (same shapes, below), and `settings.json` (only to find the Python that runs codexpool).
   **No Keychain access, no network, no management API.** A locked Keychain would pop password dialogs. The one
-  file it writes is the marker `state/setup-shown` (first run, below).
+  file it writes is the marker `state/setup-shown` (first run, below); presentation choices are kept in local `NSUserDefaults`.
 - A missing, stale (> 3 min) or partial status file renders a clear "pool not reporting" state, never a crash.
   A half-written file keeps the last good copy. Right after the Mac wakes, an old file gets 2 minutes' grace.
 - Actions shell out to codexpool without blocking: `bin/codexpool` run with the `python` from settings.json
@@ -34,7 +34,7 @@ Settings window and Setup assistant are a second file, `menubar/codexpool_settin
 - **How the pool picks a seat, also from `status.json`**: `pool.balancing` = `priority` (default, and what a file
   without it means: the fill order you set) or `reset` (soonest reset first: the guard reorders the regular seats
   on every pass so the one whose weekly quota resets soonest comes first; the reserve stays last). The app only
-  shows it (the seat list's header, below); the list is always in the pool's current fill order either way.
+  shows the policy in the seat header tooltip. The popover groups available seats first without changing routing.
 
 ## Menu bar item (next to the clock)
 - `NSStatusItem`, autosave name `CodexPool`, fixed width (fits ` 100%`, so neighbours never shift).
@@ -55,6 +55,23 @@ Settings window and Setup assistant are a second file, `menubar/codexpool_settin
   the regular seats used this week, serving Work B" and "regular seats used up, serving the reserve seat Pro 20x".
 
 ## Popover (click the item)
+
+
+**Account density and graph disclosure.** Compact is the default: two lines per account, with name,
+plan size, state and reset count above; binding quota and reset/return time below. Other quota windows
+appear as space permits and all windows remain in the row tooltip. Warnings and credit details keep
+extra lines. Full restores the detailed bars below. Serving and ready regular accounts come first,
+then ready reserves, then unavailable accounts; each group retains fill order and routing is unchanged.
+The account header's Compact / Full toggle remembers the choice in `NSUserDefaults`.
+
+The graph starts expanded in either account view. Click its title or disclosure chevron to collapse it
+to a heading or expand it again. Its preference is stored separately in `NSUserDefaults`; toggling
+presentation runs no pool command. With pool tiles, Compact replaces the duplicated hero with a short
+capacity or switching caption. A source with unknown capacity is never assigned a guessed multiplier.
+
+Snapshots accept `--seat-view compact|full` and `--chart expanded|collapsed`, defaulting to compact
+and expanded independently of saved live preferences.
+
 Transient `NSPopover`, 340 pt wide, 16 pt padding. No `NSVisualEffectView`: the popover draws its own material
 (Liquid Glass on macOS 26) and the content is transparent over it. System fonts and semantic colours, so light
 and dark both work; coloured text uses darker variants in light mode for contrast. Sections are separated by
@@ -111,9 +128,8 @@ next click on the item opens the popover straight away.
    to "now", a dot marks the latest sample. Bars and line take the pool's colour where a regular seat served, red
    where the reserve did (or every seat was out, or paid use was spent), all grey when nothing serves now. Fewer
    than 3 samples in the range: "Collecting history…".
-5. **Seats**, in fill order (highest priority first). The header's right side names the order: "Your order"
-   (`pool.balancing` `priority`) or "Soonest reset first" (`reset`), with a tooltip saying how the pool picks a
-   seat ("… New threads follow; running threads stay on their seat. The reserve stays last."). One row per seat:
+5. **Seats**, grouped as described above, with a Compact / Full toggle in the header. Hover the section
+   title to see the display grouping and routing policy. The following describes Full rows:
    - Line 1: **name**, plan badge in small text (`Team 1×`, `Business 5×`, `Pro 20×`), `· Reserve` tag, and at
      the right the state: capsules `Serving` (green; red for a reserve) / `Out` / `Parked` / `Blocked`, plain
      text `Ready` / `Off`. A seat with banked resets shows `↺ n` before it, blue when the seat is out.
