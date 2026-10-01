@@ -49,6 +49,25 @@ class Cswap(unittest.TestCase):
         self.assertIsNone(view['pool']['used_pct'])
         self.assertFalse(view['pool']['selected_usage_known'])
 
+    def test_automatic_plan_metadata_and_unknown_sizes(self):
+        for kind, rate, seat, plan, weight in (
+            ('claude_max', 'default_claude_max_20x', None, 'max_20x', 20),
+            ('claude_max', 'default_claude_max_5x', None, 'max_5x', 5),
+            ('claude_pro', None, None, 'pro', 1),
+            ('claude_team', 'default_claude_max_5x', 'team_tier_1', 'team_premium', 6.25),
+            ('claude_team', 'default_claude_pro', 'team_tier_0', 'team', 1.25),
+            ('claude_max', None, None, 'max', None),
+            ('claude_enterprise', None, None, 'enterprise', None),
+            (None, None, None, None, None)):
+            data = payload()
+            data['accounts'][1]['subscription'] = {'organizationType': kind, 'rateLimitTier': rate,
+                'seatTier': seat, 'fetchedAt': '2026-10-01T12:00:00Z', 'private': 'do-not-persist'}
+            row = backend.project(data)['seats'][1]
+            self.assertEqual((row['plan'], row['weight']), (plan, weight))
+            self.assertEqual(row['capacity_known'], weight is not None)
+            self.assertNotIn('do-not-persist', json.dumps(row))
+        self.assertIsNone(backend.project(payload())['seats'][0]['weight'])
+
     def test_schema_and_identity_disagreement_refuse(self):
         for edit in (lambda p: p.update(schemaVersion=2),
                      lambda p: p.update(activeAccountNumber=7),

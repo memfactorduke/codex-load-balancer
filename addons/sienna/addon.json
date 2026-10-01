@@ -55,6 +55,7 @@
     "AGENTS.md",
     "CHANGELOG.md",
     "cswap_backend.py",
+    "cswap_patch.py",
     "cswap_ui.py",
     "docs/LEGACY-AGENTS.md"
   ],

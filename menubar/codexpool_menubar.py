@@ -205,6 +205,8 @@ ORDER_TIP = {
              'reorders the seats by itself. New threads follow; running threads stay on their seat. '
              'The reserve stays last.',
 }
+DISPLAY_ORDER_TIP = ('Serving and ready accounts appear first; unavailable accounts appear last. '
+                     'This display order does not change routing priorities. ')
 
 # Seat states written by the guard, and how the popover names them.
 SERVING, READY = 'active', 'ready'
@@ -361,6 +363,7 @@ class Seat:
     reserve: bool
     week: Window | None
     short: Window | None         # the 5-hour window (Team seats)
+    capacity_known: bool = True
     resets: int = 0              # banked free resets (codexpool reset uses one)
     reset_expiry: dt.datetime | None = None   # when the soonest banked reset expires
     sign_in_ended: bool = False  # the provider ended its sign-in: only a new one helps
@@ -527,7 +530,8 @@ def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat |
         short = None
     if short is not None and short.minutes is None and short_key:
         short.minutes = 300
-    weight = as_num(d.get('weight'))
+    capacity_known = d.get('capacity_known') is not False
+    weight = as_num(d.get('weight')) if capacity_known else None
     plan = as_str(d.get('plan')) or as_str(as_dict(d.get('usage')).get('plan'))
     noun = ui.noun if ui else 'seat'
     label = as_str(d.get('label')) or as_str(d.get('email')) or as_str(d.get('name')) or noun.title()
@@ -535,7 +539,7 @@ def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat |
                 plan=plan_badge(plan, weight, ui.plan_names if ui else PLAN_NAMES),
                 state=as_str(d.get('state')).lower() or 'unknown',
                 detail=as_str(d.get('detail')).strip(), until=parse_time(d.get('until')),
-                priority=as_num(d.get('priority')), weight=weight, reserve=d.get('reserve') is True,
+                priority=as_num(d.get('priority')), weight=weight, capacity_known=capacity_known, reserve=d.get('reserve') is True,
                 week=week, short=short, resets=int(as_num(as_dict(d.get('resets')).get('available'), 0) or 0),
                 reset_expiry=parse_time(as_dict(d.get('resets')).get('next_expiry')),
                 sign_in_ended=d.get('sign_in_ended') is True, provider=pool)
@@ -544,8 +548,21 @@ def parse_seat(d, pool: str = 'codex', now: dt.datetime | None = None) -> Seat |
     return seat
 
 
+def display_seats(m: Model) -> list[Seat]:
+    """Available accounts first, preserving fill order within each group and in the model itself."""
+    def group(s):
+        if not s.available:
+            return 3
+        if s is m.serving or s.serving:
+            return 0
+        return 2 if s.reserve else 1
+    return sorted(m.seats, key=group)
+
+
 def weighted_used(seats: list[Seat]) -> float | None:
     # Weights are relative sizes (Plus = 1, Pro = 20); cap absurd values so the maths stays finite.
+    if any(not s.capacity_known for s in seats):
+        return None
     rows = [(min(max(s.weight or 1.0, 0.0), 1e6), s.week.used) for s in seats if s.week and s.week.used is not None]
     total = sum(w for w, _ in rows)
     v = sum(w * u for w, u in rows) / total if total else None
@@ -595,6 +612,10 @@ def build_model(raw: dict | None, problem: str, history: list[Sample], now: dt.d
         headline = clamp_pct(as_num(pool.get('used_pct_all')))
     if headline is None:
         headline = weighted_used([s for s in seats if s.state != 'disabled'] if headline_mode == 'all' else regular)
+
+    selected = [s for s in seats if s.state != 'disabled' and (headline_mode == 'all' or not s.reserve)]
+    if any(not s.capacity_known for s in selected):
+        headline = None
 
     nb = as_dict(raw.get('next_back'))
     nb_at = parse_time(nb.get('at'))
@@ -738,7 +759,9 @@ def load_history(path: Path | None, alarm_key: str | None = None) -> list[Sample
 def total_text(m: Model) -> str:
     """'36× total': the pool's size, every seat's × added up as the headline weighs them (seats turned off aside;
     as `codexpool status` has it); '' with no seats."""
-    total = sum(min(max(s.weight or 1.0, 0.0), 1e6) for s in m.seats if s.state != 'disabled')
+    total = sum(min(max(s.weight or 1.0, 0.0), 1e6) for s in m.seats if s.state != 'disabled' and s.capacity_known)
+    if any(not s.capacity_known for s in m.seats if s.state != 'disabled'):
+        return f'{round(total, 2):g}× known + unknown capacity' if total else 'Unknown capacity'
     return f'{round(total, 2):g}× total' if total else ''
 
 
@@ -1811,6 +1834,9 @@ BANNER_STATES = ('down', 'stale', 'missing', 'empty')
 TILE_GAP, TILE_H = 10.0, 82.0    # the two-pool switcher at the top of the popover
 ROW_PAD, ROW_GAP = 4.0, 2.0      # seat rows: inner top/bottom padding, space between rows
 SMALL_LH = 13.0                  # seat rows set their 11 pt lines on a tight 13 pt line
+SEAT_VIEWS = ('compact', 'full')
+SEAT_VIEW_KEY = 'SubpoolSeatView'
+CHART_EXPANDED_KEY = 'SubpoolChartExpanded'
 
 
 def fmt_day(t: dt.datetime | None) -> str:
@@ -1865,7 +1891,7 @@ def headline_breakdown(m: Model) -> str:
         if s.reserve and m.headline_mode != 'all':
             lines.append(' · '.join([s.label, 'reserve, not counted', figure] + serving))
             continue
-        size = f'{min(max(s.weight or 1.0, 0.0), 1e6):g}×'   # the weight, as weighted_used() counts it
+        size = 'capacity unknown' if not s.capacity_known else f'{min(max(s.weight or 1.0, 0.0), 1e6):g}×'   # the weight, as weighted_used() counts it
         parts = [s.label, f'{size} reserve' if s.reserve else size, figure] + serving
         when = seat_right_text(s, m.now)   # 'Back in 2d 7h' for out and parked seats, else 'Resets in 6d 13h'
         if when:
@@ -1879,7 +1905,7 @@ class PopoverLayout:
     """Builds the popover top to bottom. Each section method takes y and returns the y below it."""
 
     def __init__(self, m: Model, range_key: str = '24h', toast: str | None = None, tiles: dict | None = None,
-                 busy: str | None = None):
+                 busy: str | None = None, seat_view: str = 'compact', chart_expanded: bool = True):
         """tiles: {pool: Model} for both pools when an add-on's pool is installed; the popover then opens with a
         two-tile switcher and shows m (one of the two) below it. busy: an add-on's command is running (its
         caption; its control is greyed meanwhile)."""
@@ -1888,6 +1914,8 @@ class PopoverLayout:
         self.range_key = range_key if range_key in RANGES else '24h'
         self.toast = toast
         self.busy = busy
+        self.seat_view = seat_view if seat_view in SEAT_VIEWS else 'compact'
+        self.chart_expanded = chart_expanded
         self.ops: list = []          # callables op(DrawState), run in order by PopoverView.drawRect_
         self.regions: list = []      # (rect, key) for clicks and hover
         self.tips: dict = {}         # key -> tooltip
@@ -1931,14 +1959,31 @@ class PopoverLayout:
             if banner:
                 y = self.banner(y) + (16 if hero else 0)
             if hero:
-                y = self.hero(y)
-        if getattr(m.ui, 'show_chart', True) and (m.status not in ('missing', 'empty') or self.samples >= MIN_CHART_SAMPLES):
+                y = self.compact_hero(y) if self.seat_view == 'compact' and self.tiles else self.hero(y)
+        if any(not s.capacity_known for s in m.seats if s.state != 'disabled'):
+            y = self.rule(y)
+            self.text(total_text(m), PAD, y, font(12), C.secondary(), width=INNER)
+            y += line_height(font(12)) + 4
+            if m.headline is None:
+                self.text('Pool percentage unavailable; see each seat below.', PAD, y, font(11), C.secondary(), width=INNER)
+                y += line_height(font(11))
+        unknown_headline = any(not s.capacity_known for s in m.seats
+                               if s.state != 'disabled' and (m.headline_mode == 'all' or not s.reserve))
+        if getattr(m.ui, 'show_chart', True) and not unknown_headline and (m.status not in ('missing', 'empty') or self.samples >= MIN_CHART_SAMPLES):
             y = self.chart(self.rule(y))
         if m.seats:
             y = self.seats(self.rule(y, below=8))
         y = self.footer(self.rule(y, above=6, below=5))
         self.height = math.ceil(y + 6)
         return self
+
+    def compact_hero(self, y: float) -> float:
+        """Tiles already show the headline; retain a single useful caption below them."""
+        m = self.m
+        text = total_text(m) if m.pool == 'codex' else \
+            'Automatic switching on' if (m.extra or {}).get('auto_switch') else 'Manual switching'
+        self.text(text, PAD, y, font(11), C.secondary(), width=INNER)
+        return y + line_height(font(11))
 
     # -- 1. header -----------------------------------------------------------------------------------
     def subtitle(self) -> str:
@@ -2134,9 +2179,17 @@ class PopoverLayout:
 
     def chart(self, y: float) -> float:
         m = self.m
-        toggle = self.samples >= MIN_CHART_SAMPLES   # hidden while neither range could draw a line
-        row_h = 18.0 if toggle else float(line_height(font(11, NSFontWeightSemibold)))
-        self.section_title('Quota left' if m.left else 'Usage', y, row_h)
+        toggle = self.chart_expanded and self.samples >= MIN_CHART_SAMPLES
+        row_h = 18.0
+        title = 'Quota left' if m.left else 'Usage'
+        hf = font(11, NSFontWeightSemibold)
+        self.region(((PAD - 4, y), (text_width(title, hf) + 26, row_h)), ('chart', 'toggle'), radius=5,
+                    tip='Collapse graph' if self.chart_expanded else 'Expand graph')
+        self.add(draw_symbol, 'chevron.down' if self.chart_expanded else 'chevron.right',
+                 PAD + 4, y + row_h / 2, 8, C.secondary(), NSFontWeightSemibold)
+        self.text(title, PAD + 14, y + (row_h - line_height(hf)) / 2, hf, C.secondary())
+        if not self.chart_expanded:
+            return y + row_h
         if toggle:
             self.range_toggle(y)
         y += row_h + 5
@@ -2181,15 +2234,23 @@ class PopoverLayout:
     def seats(self, y: float) -> float:
         hf, nf = font(11, NSFontWeightSemibold), font(10.5)
         self.section_title(f'{self.m.noun.title()}s', y, line_height(hf))
-        order = getattr(self.m.ui, 'order_label', ORDER_TITLE[self.m.balancing])
-        self.text(order, PAD, y + hf.ascender() - nf.ascender(), nf, C.secondary(), width=INNER, align='right')
-        # Hovering it says how the pool picks a seat (a tooltip only: no highlight, no click).
-        ow = math.ceil(text_width(order, nf))
-        self.regions.append((((PAD + INNER - ow, y), (ow, line_height(hf))), ('tip', 'order')))
-        self.tips[('tip', 'order')] = getattr(self.m.ui, 'order_tip', ORDER_TIP[self.m.balancing])
-        y += line_height(hf) + 4
+        self.regions.append((((PAD, y), (60, 18)), ('tip', 'order')))
+        self.tips[('tip', 'order')] = DISPLAY_ORDER_TIP + getattr(self.m.ui, 'order_tip', ORDER_TIP[self.m.balancing])
+        x = WIDTH - PAD
+        for mode in reversed(SEAT_VIEWS):
+            title = mode.title()
+            w = math.ceil(text_width(title, nf)) + 14
+            x -= w
+            rect = ((x, y), (w, 18))
+            self.region(rect, ('seatview', mode), radius=5,
+                        tint=C.wash(0.09) if mode == self.seat_view else None,
+                        tip='Two-line account summaries' if mode == 'compact' else 'All quota bars and details')
+            self.text(title, x, y + (18 - line_height(nf)) / 2, nf,
+                      C.label() if mode == self.seat_view else C.secondary(), width=w, align='center')
+            x -= 2
+        y += max(line_height(hf), 18) + 4
         top = y
-        for seat in self.m.seats:
+        for seat in display_seats(self.m):
             y = self.seat_row(seat, y) + ROW_GAP
         self.scroll_span = (top, y - ROW_GAP)
         return y - ROW_GAP
@@ -2228,14 +2289,15 @@ class PopoverLayout:
         own (PoolUI.seat_lines: why it parked the seat, its credits), with its tooltip (PoolUI.seat_tip). Returns
         the y below the row."""
         m = self.m
+        compact = self.seat_view == 'compact'
         stale = not m.reporting
         dim = stale or seat.unavailable
         ui = m.ui
         name_f, small_f = font(13, NSFontWeightSemibold), font(11)
         lh, sh = line_height(name_f), SMALL_LH
         wins = seat_windows(seat)
-        labelled = len(wins) > 1      # each limit on its own line: 'Week ▬▬▬ 45%', the binding one emphasised
-        bars_h = SMALL_LH * len(wins) if labelled else 5.0
+        labelled = len(wins) > 1 and not compact
+        bars_h = 0 if compact else SMALL_LH * len(wins) if labelled else 5.0
         blocked, soon = seat.state == 'blocked', seat.sign_in_soon
         ended = ui.sign_in_ended_text if ui else SIGN_IN_ENDED
         detail = (seat.detail or 'Needs attention') if blocked else (ended if soon else '')
@@ -2252,19 +2314,25 @@ class PopoverLayout:
                 C.secondary() if stale else C.red_text() if blocked else C.orange_text()
         else:
             right = seat_right_text(seat, m.now)
-            if seat.resets and seat.unavailable and not stale and seat.state != 'disabled':
+            if seat.resets and seat.unavailable and not stale and seat.state != 'disabled' and not compact:
                 right = f'{right} · reset available' if right else 'Reset available'
             rf, rc = small_f, C.secondary()
+            if compact:
+                right = right.replace('Back in ', 'Back ').replace('Resets in ', 'Reset ')
         line3 = not labelled or bool(right)   # a labelled row's figures sit on the bars; no line without a right text
         row_h = ROW_PAD + lh + 4 + bars_h + (4 + sh if line3 else 0) + (sh + 1) * len(extra) + ROW_PAD
+        if compact:
+            row_h = ROW_PAD + lh + 2 + sh + (sh + 1) * len(extra) + ROW_PAD
         key = ('seat', seat.name or seat.label)
         reset_tip = ''
         if seat.resets:
             exp = f', soonest expires {fmt_day(seat.reset_expiry)}' if seat.reset_expiry else ''
             reset_tip = f'{seat.resets} banked reset{"s" if seat.resets != 1 else ""}{exp}. Click to use one.'
+        usage_tip = ' · '.join(f'{label}: {fmt_pct(m.shown(used))} {m.word}' for label, used, _ in wins)
         self.region(((PAD - 8, y), (INNER + 16, row_h)), key, radius=9,
                     tint=C.row_tint() if seat.serving and m.serving_now else None,
-                    tip='  '.join(t for t in (detail, reset_tip, ui.seat_tip(seat) if ui else '') if t) or None)
+                    tip='  '.join(t for t in (seat.label + ' · ' + seat.plan, usage_tip if compact else '',
+                        detail, reset_tip, ui.seat_tip(seat) if ui else '') if t) or None)
 
         # line 1
         top = y + ROW_PAD
@@ -2296,17 +2364,20 @@ class PopoverLayout:
 
         # bars: one full-width weekly bar, or for a seat with more limits one labelled line per limit
         by = top + lh + 4
-        if not labelled:
+        if compact:
+            pass
+        elif not labelled:
             used = wins[0][1]
             self.add(draw_bar, PAD, by, INNER, 5.0, m.shown(used), bar_fill(used, dim))
         else:
             self.window_bars(seat, wins, PAD, by, small_f, dim, stale)
-        y3 = by + bars_h + 4
+        y3 = top + lh + 2 if compact else by + bars_h + 4
 
         # line 3: the figure ('56% left') left, the reset or return right; a labelled row has only the right
         if line3:
             rw = text_width(right, rf) if right else 0
-            lw = self.usage_text(seat, PAD, y3, small_f, dim, stale, room=INNER - rw - 12) if not labelled else 0
+            lw = self.compact_usage(seat, PAD, y3, small_f, room=INNER - rw - 12) if compact else \
+                self.usage_text(seat, PAD, y3, small_f, dim, stale, room=INNER - rw - 12) if not labelled else 0
             self.text(right, PAD + lw + 12, y3, rf, rc, width=INNER - lw - 12, align='right')
         dy = y3 + sh + 1 if line3 else by + bars_h
         for symbol, sc, text, tc in extra:
@@ -2314,6 +2385,23 @@ class PopoverLayout:
             self.text(text[:1].upper() + text[1:], PAD + 14, dy, small_f, tc, width=INNER - 14, truncate='middle')
             dy += sh + 1
         return y + row_h
+
+    def compact_usage(self, seat: Seat, x: float, y: float, f, room: float) -> float:
+        """Keep the binding limit visible; every limit remains in the tooltip and Full view."""
+        room = max(0.0, room)
+        wins = seat_windows(seat)
+        binding = binding_window(seat)
+        indexes = [binding] + [i for i in range(len(wins)) if i != binding]
+        labels = [f'{wins[i][0]} {fmt_pct(self.m.shown(wins[i][1]))}' for i in indexes]
+        parts = [labels[0]]
+        for label in labels[1:]:
+            candidate = ' · '.join(parts + [label]) + ' ' + self.m.word
+            if text_width(candidate, f) > room:
+                break
+            parts.append(label)
+        text = ' · '.join(parts) + ' ' + self.m.word
+        self.text(text, x, y, f, C.secondary() if seat.unavailable or not self.m.reporting else C.label(), width=room)
+        return min(room, text_width(text, f))
 
     def usage_text(self, seat: Seat, x: float, y: float, f, dim: bool, stale: bool, room: float | None = None) -> float:
         """'49% used' / '51% left' for a seat with one limit (a seat with more has its figures on its bar lines,
@@ -2760,6 +2848,10 @@ class Controller(NSObject):
         self.closed_tab = None               # the tab the popover showed when it last started closing
         self.two = False                     # the item shows both pools
         self.range_key = '24h'
+        saved_view = NSUserDefaults.standardUserDefaults().stringForKey_(SEAT_VIEW_KEY)
+        self.seat_view = saved_view if saved_view in SEAT_VIEWS else 'compact'
+        defaults = NSUserDefaults.standardUserDefaults()
+        self.chart_expanded = defaults.boolForKey_(CHART_EXPANDED_KEY) if defaults.objectForKey_(CHART_EXPANDED_KEY) is not None else True
         self.toast: tuple[str, float] | None = None
         self.busy: str | None = None         # an add-on's command runs (its caption): its control is greyed
         self.item = None
@@ -2918,7 +3010,8 @@ class Controller(NSObject):
         toast = self.toast[0] if self.toast and time.time() <= self.toast[1] else None
         tiles = dict(self.models) if len(POOLS) > 1 and self.models.get(POOLS[1]) is not None else None
         model, range_key, busy = self.model, self.range_key, self.busy
-        self.content.show(lambda: PopoverLayout(model, range_key, toast, tiles=tiles, busy=busy).build(),
+        self.content.show(lambda: PopoverLayout(model, range_key, toast, tiles=tiles, busy=busy,
+                                               seat_view=self.seat_view, chart_expanded=self.chart_expanded).build(),
                           self.max_height(), reset_scroll)
         self.popover.setContentSize_((WIDTH, self.content.height()))
         self.last_render = time.time()
@@ -3063,6 +3156,16 @@ class Controller(NSObject):
         if kind == 'range':
             self.range_key = value
             self.render()
+        elif kind == 'chart' and value == 'toggle':
+            self.chart_expanded = not self.chart_expanded
+            NSUserDefaults.standardUserDefaults().setBool_forKey_(self.chart_expanded, CHART_EXPANDED_KEY)
+            self.content.set_hover(None)
+            self.render(reset_scroll=True)
+        elif kind == 'seatview' and value in SEAT_VIEWS:
+            self.seat_view = value
+            NSUserDefaults.standardUserDefaults().setObject_forKey_(value, SEAT_VIEW_KEY)
+            self.content.set_hover(None)
+            self.render(reset_scroll=True)
         elif kind == 'pool':
             if value != self.tab and self.models.get(value) is not None:
                 self.tab, self.model = value, self.models[value]
@@ -3319,7 +3422,7 @@ def rgb(r, g, b, a=1.0):
 def snapshot(out: str, appearance_name: str, status_path: Path, history_path: Path | None,
              now: dt.datetime | None, range_key: str, max_height: float | None = None, hover: tuple | None = None,
              pool_status: Path | None = None, pool_history: Path | None = None, pool: str = 'codex',
-             marks: str = 'drawn'):
+             marks: str = 'drawn', seat_view: str = 'compact', chart_expanded: bool = True):
     """pool_status: the add-on pool's status file, which makes that pool installed (both numbers in the item, the
     switcher in the popover; ignored without an add-on); pool: the tab the popover shows; marks: 'drawn' (plain
     shapes, nothing read from /Applications, so the output is reproducible) or 'app' (the logos from the apps on
@@ -3345,7 +3448,8 @@ def snapshot(out: str, appearance_name: str, status_path: Path, history_path: Pa
     # popover material (vibrancy needs a window).
     content = PopoverContent.alloc().initWithFrame_(((0, 0), (WIDTH, 400)))
     content.setAppearance_(appearance)
-    content.show(lambda: PopoverLayout(model, range_key, tiles=tiles).build(), max_height)
+    content.show(lambda: PopoverLayout(model, range_key, tiles=tiles, seat_view=seat_view,
+                                      chart_expanded=chart_expanded).build(), max_height)
     if hover:
         content.set_hover(hover)
         tip = content.lay.tips.get(hover)
@@ -3431,6 +3535,8 @@ def main(argv=None):
     p.add_argument('--history', type=Path, help='history.jsonl to render (snapshot)')
     p.add_argument('--now', help='pretend the time is this ISO-8601 instant (snapshot)')
     p.add_argument('--range', dest='range_key', choices=tuple(RANGES), default='24h', help='chart range (snapshot)')
+    p.add_argument('--seat-view', choices=SEAT_VIEWS, default='compact', help='account detail level (snapshot)')
+    p.add_argument('--chart', choices=('expanded', 'collapsed'), default='expanded', help='graph visibility (snapshot)')
     p.add_argument('--max-height', type=float, help='cap the popover height, in pt (snapshot)')
     p.add_argument('--hover', metavar='KIND:VALUE',
                    help='highlight a region, e.g. action:doctor, and print its tooltip, e.g. tip:headline (snapshot)')
@@ -3461,7 +3567,8 @@ def main(argv=None):
                                              .replace('.json', '.jsonl'))
         pool_history = sibling if sibling != args.pool_status and sibling.exists() else None
     snapshot(args.snapshot, args.appearance, args.status, history, now, args.range_key, args.max_height, hover,
-             args.pool_status, pool_history, pool_id(args.pool), args.marks or 'drawn')
+             args.pool_status, pool_history, pool_id(args.pool), args.marks or 'drawn', seat_view=args.seat_view,
+             chart_expanded=args.chart == 'expanded')
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════

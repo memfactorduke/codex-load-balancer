@@ -116,9 +116,26 @@ def project(payload, config=None):
                 except ValueError:
                     pass
         until = max(deadlines).isoformat() if deadlines else None
+        subscription = row.get('subscription')
+        subscription = subscription if isinstance(subscription, dict) else {}
+        from .pool import claude_plan
+        plan, weight = claude_plan({'organization': {
+            'organization_type': subscription.get('organizationType'),
+            'rate_limit_tier': subscription.get('rateLimitTier'),
+            'seat_tier': subscription.get('seatTier')}, 'account': {
+            'has_claude_max': subscription.get('hasMax'), 'has_claude_pro': subscription.get('hasPro')}})
+        if plan == 'max_5x' and '5x' not in str(subscription.get('rateLimitTier') or ''):
+            plan, weight = 'max', None  # Max alone cannot distinguish 5× from 20×.
+        if plan not in ('pro', 'max_5x', 'max_20x', 'team', 'team_premium'):
+            weight = None
+        if plan == 'team' and not subscription.get('seatTier') and not subscription.get('rateLimitTier'):
+            weight = None
         accounts.append({'until': until, 'name': str(number), 'label': str(row.get('alias') or row.get('email') or 'Account %s' % number),
                          'email': str(row.get('email') or ''), 'provider': 'claude',
-                         'state': state, 'priority': 10000 - number, 'weight': 1, 'reserve': reserve is not None,
+                         'state': state, 'priority': 10000 - number, 'plan': plan,
+                         'weight': weight, 'capacity_known': weight is not None,
+                         'plan_detected_at': subscription.get('fetchedAt'),
+                         'reserve': reserve is not None,
                          'reserve_held': held, 'rotation_disabled': bool(row.get('disabled')),
                          'week': week, 'five_hour': short, 'selected': active,
                          'detail': '' if usage else str(row.get('usageStatus') or 'Usage unavailable'),
@@ -243,6 +260,8 @@ def install(args):
     # An existing cswap is never upgraded or replaced silently.
     if not executable():
         subprocess.run(command, check=True)
+    from . import cswap_patch
+    cswap_patch.install(executable())
     cp.write_json(OPTIONS, {**options(), 'enabled': True})
     refresh()
     print('Claude CLI connected to cswap. Use plain claude in Terminal.')
@@ -283,6 +302,12 @@ def _command(args):
             if not args.yes:
                 raise ValueError('Removing a saved account requires --yes.')
             call(['remove', args.account], input_text='y\n')
+        elif action == 'detect-plans':
+            from . import cswap_patch
+            cswap_patch.install(executable())
+            refresh()
+            print('Automatic Claude plan detection enabled through cswap.')
+            return
         elif action == 'reserve':
             set_reserve(args.account, args.mode)
         elif action in ('enable', 'disable'):
@@ -331,7 +356,7 @@ def add_parser(sub):
     root = sub.add_parser('sienna', aliases=['claude'], help='Claude CLI account switcher, powered by cswap',
                          description='Switch Claude Code CLI accounts using upstream cswap. No Claude desktop, proxy or Codex lane.')
     children = root.add_subparsers(dest='cswap_action', required=True)
-    for name in ('install', 'status', 'add', 'switch', 'enable', 'disable', 'label', 'reserve', 'auto', 'strategy', 'threshold', 'retire-proxy', 'remove'):
+    for name in ('install', 'status', 'add', 'switch', 'enable', 'disable', 'label', 'detect-plans', 'reserve', 'auto', 'strategy', 'threshold', 'retire-proxy', 'remove'):
         item = children.add_parser(name)
         item.set_defaults(fn=command)
         if name in ('retire-proxy', 'remove'):

@@ -6,6 +6,12 @@ All notable changes to codexpool are recorded here. The format follows
 
 ## [Unreleased]
 
+- Show serving and ready accounts above unavailable accounts without changing routing. Default to compact
+  two-line rows with a remembered Compact / Full toggle. The usage graph has its own remembered collapse
+  toggle in either view and starts expanded.
+- Detect Claude subscription tiers through cswap's identity-checked profile helper and show plan sizes
+  beside account names. Cache public metadata, preserve unknown sizes, and reject unfamiliar upstream source.
+
 - Publish the optional Claude integration, including its docs, tests, demo assets and patches; explicitly allow
   it in the publication rules and validate both suites in CI. Credentials and runtime state remain local.
 

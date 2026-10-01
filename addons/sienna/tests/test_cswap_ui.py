@@ -30,6 +30,14 @@ class NativeContract(unittest.TestCase):
         self.assertEqual(model.seats[0].week.used, 80)
         self.assertEqual(self.ui.product_scope, 'CLI')
 
+    def test_display_order_and_plan_badges(self):
+        self.raw['seats'][1].update(plan='max_20x', weight=20, capacity_known=True)
+        model = self.model()
+        self.assertEqual([s.label for s in mb.display_seats(model)], ['Personal', 'Backup', 'Work'])
+        self.assertEqual(model.seats[1].plan, 'Max 20×')
+        self.raw['seats'][0].update(plan=None, weight=None, capacity_known=False)
+        self.assertEqual(self.model().seats[0].plan, 'Plan unknown')
+
     def test_unknown_selected_usage_cannot_fall_back_to_average(self):
         self.raw['pool']['selected_usage_known'] = False
         self.raw['pool']['used_pct'] = None
