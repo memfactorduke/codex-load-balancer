@@ -598,7 +598,7 @@ def write_claude_route(value):
 def patch_claude_status(**pool_fields):
     """Show a change in claude-status.json's pool block at once, before the guard's next pass rewrites the file
     (it reads the same sources, so both agree). No file, nothing to patch."""
-    with cp.guard_lock(pool=cp.seat_pool('claude')):
+    with cp.guard_lock(pool=claude_seat_pool()):
         st = cp.read_json(CLAUDE_STATUS_FILE, None)
         if not isinstance(st, dict):
             return

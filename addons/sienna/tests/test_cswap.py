@@ -26,6 +26,14 @@ class Cswap(unittest.TestCase):
         backend.OPTIONS.unlink(missing_ok=True)
         self.addCleanup(lambda: backend.OPTIONS.unlink(missing_ok=True))
 
+    def test_retirement_can_update_status_after_proxy_unregisters(self):
+        legacy = addon.pool
+        path = HOME / 'retired-claude-status.json'
+        cp.write_json(path, {'pool': {'installed': True}})
+        with mock.patch.object(legacy, 'CLAUDE_STATUS_FILE', path), mock.patch.object(cp, 'seat_pool', side_effect=AssertionError('proxy is no longer registered')):
+            legacy.patch_claude_status(installed=False)
+        self.assertFalse(cp.read_json(path, {})['pool']['installed'])
+
     def test_selected_account_is_not_a_pool_average(self):
         view = backend.project(payload())
         self.assertEqual(view['pool']['used_pct'], 25)
