@@ -12,9 +12,9 @@ backend = addon.cswap
 
 def payload():
     return {'schemaVersion': 1, 'activeAccountNumber': 2, 'accounts': [
-        {'number': 1, 'alias': 'Work', 'active': False, 'usageStatus': 'ok',
+        {'number': 1, 'alias': 'Work', 'email': 'work@example.com', 'active': False, 'usageStatus': 'ok',
          'usage': {'sevenDay': {'pct': 80}, 'fiveHour': {'pct': 100, 'resetsAt': '2026-10-01T23:00:00Z'}}},
-        {'number': 2, 'alias': 'Personal', 'active': True, 'usageStatus': 'ok',
+        {'number': 2, 'alias': 'Personal', 'email': 'personal@example.com', 'active': True, 'usageStatus': 'ok',
          'usage': {'sevenDay': {'pct': 25}, 'fiveHour': {'pct': 15}}}]}
 
 
@@ -68,6 +68,112 @@ class Cswap(unittest.TestCase):
         with mock.patch.object(backend, 'executable', return_value='/fake/cswap'), mock.patch.object(backend, 'call') as call:
             backend.guard()
         call.assert_not_called()
+
+    def reserve_options(self, auto=True, excluded=False):
+        cp.write_json(backend.OPTIONS, {'enabled': True, 'auto_switch': auto,
+            'reserves': {'personal@example.com': {'excluded': excluded, 'held': False}}})
+
+    def test_reserve_is_held_while_regular_has_quota(self):
+        self.reserve_options()
+        data = payload()
+        data['accounts'][0]['usage']['fiveHour']['pct'] = 20
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data))
+        call.assert_called_once_with(['disable', '2'])
+        data['accounts'][1]['disabled'] = True
+        account = backend.project(data)['seats'][1]
+        self.assertTrue(account['reserve'])
+        self.assertTrue(account['reserve_held'])
+        self.assertEqual(account['state'], 'active')
+
+    def test_reserve_is_released_only_at_regular_threshold(self):
+        self.reserve_options()
+        cp.write_json(backend.OPTIONS, {**backend.options(), 'reserves': {
+            'personal@example.com': {'excluded': False, 'held': True}}})
+        data = payload()
+        data['accounts'][1]['disabled'] = True
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data, {'autoswitch.threshold': 90}))
+        call.assert_called_once_with(['enable', '2'])
+        self.assertFalse(backend.reserves()['personal@example.com']['held'])
+
+    def test_reserve_is_held_with_auto_off_even_if_regular_exhausted(self):
+        self.reserve_options(auto=False)
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(payload()))
+        call.assert_called_once_with(['disable', '2'])
+
+    def test_unknown_regular_usage_does_not_release_reserve(self):
+        self.reserve_options()
+        data = payload()
+        data['accounts'][0]['usageStatus'] = 'unavailable'
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data))
+        call.assert_called_once_with(['disable', '2'])
+
+    def test_one_healthy_regular_keeps_reserve_held(self):
+        self.reserve_options()
+        data = payload()
+        extra = copy.deepcopy(data['accounts'][0])
+        extra.update(number=3, email='other@example.com', usage={'sevenDay': {'pct': 5}, 'fiveHour': {'pct': 10}})
+        data['accounts'].append(extra)
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data))
+        call.assert_called_once_with(['disable', '2'])
+
+    def test_excluded_reserve_is_never_released(self):
+        self.reserve_options(excluded=True)
+        data = payload()
+        data['accounts'][1]['disabled'] = True
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data))
+        call.assert_not_called()
+        self.assertEqual(backend.project(data)['seats'][1]['state'], 'disabled')
+
+    def test_excluded_regular_does_not_block_release(self):
+        self.reserve_options()
+        data = payload()
+        data['accounts'][0].update(disabled=True, usageStatus='unavailable')
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data))
+        call.assert_not_called()  # Reserve already enabled; no regular account is eligible.
+
+    def test_reserve_follows_identity_after_slot_changes(self):
+        self.reserve_options(auto=False)
+        data = payload()
+        data['accounts'][1]['number'] = 3
+        data['activeAccountNumber'] = 3
+        with mock.patch.object(backend, 'call') as call:
+            backend.sync_reserves(backend.project(data))
+        call.assert_called_once_with(['disable', '3'])
+        data['accounts'][1]['email'] = 'different@example.com'
+        self.assertFalse(backend.project(data)['seats'][1]['reserve'])
+
+    def test_unreserve_restores_only_adapter_held_account(self):
+        for excluded in (False, True):
+            self.reserve_options(excluded=excluded)
+            records = backend.reserves()
+            records['personal@example.com']['held'] = True
+            cp.write_json(backend.OPTIONS, {**backend.options(), 'reserves': records})
+            with mock.patch.object(backend, 'refresh', return_value=backend.project(payload())), mock.patch.object(backend, 'call') as call:
+                backend.set_reserve('2', 'off')
+            self.assertEqual(call.call_count, 0 if excluded else 1)
+            self.assertEqual(backend.reserves(), {})
+
+    def test_reserve_command_does_not_enable_auto_or_switch(self):
+        view = backend.project(payload())
+        with mock.patch.object(backend, 'refresh', return_value=view), mock.patch.object(backend, 'call') as call:
+            backend.command(cp.build_parser().parse_args(['claude', 'reserve', '2']))
+        call.assert_called_once_with(['disable', '2'])
+        self.assertIsNot(backend.options().get('auto_switch'), True)
+
+    def test_reserve_guard_gates_before_delegating_choice(self):
+        self.reserve_options()
+        data = payload()
+        data['accounts'][0]['usage']['fiveHour']['pct'] = 20
+        with mock.patch.object(backend, 'executable', return_value='/fake/cswap'), mock.patch.object(backend, 'refresh', return_value=backend.project(data)), mock.patch.object(backend, 'call') as call:
+            backend.guard()
+        self.assertEqual(call.call_args_list, [mock.call(['disable', '2']), mock.call(['auto', '--once', '--json'], ok=(0, 2, 3))])
 
     def test_auto_delegates_once_and_accepts_no_change(self):
         cp.write_json(backend.OPTIONS, {'enabled': True, 'auto_switch': True})

@@ -22,6 +22,15 @@ Automatic switching is off initially. When enabled, the guard runs `cswap auto
 account selection. Choose **Most quota left** or **Reset soonest**. Do not run
 cswap's own auto loop or menu-bar auto-switcher at the same time.
 
+Mark an account **Reserve** to hold it out of automatic rotation until every
+enabled regular account reaches the switching threshold in its five-hour or
+weekly limit. Unknown regular usage keeps the reserve held. With automatic
+switching off, reserves remain held; you can always switch to one manually.
+The adapter manages eligibility through cswap's `enable`/`disable` commands;
+cswap still chooses the next eligible account and handles the login change.
+Explicitly excluded accounts stay excluded, including reserves. Removing the
+reserve designation restores eligibility only when the adapter was holding it.
+
 On macOS, an existing Claude Code process can retain a cached login. Reopen Claude
 Code to apply a switch immediately. The UI confirms cswap's selected login, not
 that every already-running process has adopted it. API-key accounts are excluded
@@ -46,6 +55,7 @@ is required. No third-party source is vendored or relicensed here; upstream is M
 
 The CLI also offers `auto off`, `strategy best|consume-first`, `threshold PERCENT`,
 `enable SLOT`, `disable SLOT` and `label SLOT NAME`. Run plain `claude` to work.
+Use `reserve SLOT on|off` to change an account's reserve designation.
 
 ## Existing proxy installations
 

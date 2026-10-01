@@ -35,6 +35,7 @@ def create(legacy, mb):
         def parse_seat(row, seat, now=None):
             seat.plan = ''
             seat.selected = row.get('selected') is True
+            seat.reserve_held = row.get('reserve_held') is True
             seat.scoped = []
             for w in row.get('scoped', []):
                 seat.scoped.append(legacy.Scoped(w.get('name', 'Model'), w.get('used'), mb.parse_time(w.get('reset_at'))))
@@ -48,7 +49,11 @@ def create(legacy, mb):
 
         @staticmethod
         def state_label(seat, default):
-            return 'Selected' if getattr(seat, 'selected', False) else default
+            if getattr(seat, 'selected', False):
+                return 'Selected'
+            if getattr(seat, 'reserve_held', False) and seat.state != 'disabled':
+                return 'Held for later'
+            return default
 
         @staticmethod
         def subtitle(m, updated):
@@ -103,13 +108,16 @@ def create(legacy, mb):
                 None if getattr(seat, 'selected', False) else 'switch')
             add('Enable automatic rotation' if seat.state == 'disabled' else 'Exclude from automatic rotation',
                 'pause.circle', 'enable' if seat.state == 'disabled' else 'disable')
+            add('Use as a regular account' if seat.reserve else 'Use as reserve',
+                'shield', 'unreserve' if seat.reserve else 'reserve')
 
         @staticmethod
         def seat_action(verb, seat, app):
-            if verb not in ('switch', 'enable', 'disable') or seat is None:
+            if verb not in ('switch', 'enable', 'disable', 'reserve', 'unreserve') or seat is None:
                 return True
             app.say('Updating Claude CLI…')
-            mb.run_codexpool(['claude', verb, seat.name], lambda code, err: app.after_action(
+            args = ['claude', 'reserve', seat.name, 'off' if verb == 'unreserve' else 'on'] if verb in ('reserve', 'unreserve') else ['claude', verb, seat.name]
+            mb.run_codexpool(args, lambda code, err: app.after_action(
                 'Claude CLI updated; reopen Claude Code to apply a switch immediately', verb, code, err))
             return True
 
@@ -156,6 +164,10 @@ def create(legacy, mb):
                     week = mb.fmt_pct(m.shown(seat.week.used if seat.week else None))
                     short = mb.fmt_pct(m.shown(seat.short.used if seat.short else None))
                     desc = ('Selected · ' if selected else '') + f'Week {week} left · 5h {short} left'
+                    if seat.reserve:
+                        desc += ' · Reserve'
+                        if getattr(seat, 'reserve_held', False):
+                            desc += ' (held for later)'
                     if seat.detail:
                         desc += ' · ' + seat.detail.replace('_', ' ')
                     buttons = [st.button('Selected' if selected else 'Switch',
@@ -164,6 +176,8 @@ def create(legacy, mb):
                     verb = 'enable' if seat.state == 'disabled' else 'disable'
                     buttons.append(st.button('Enable' if verb == 'enable' else 'Exclude',
                         lambda _, n=seat.name, v=verb: self.execute(pane, [v, n]), k, enabled=not busy))
+                    buttons.append(st.button('Make regular' if seat.reserve else 'Reserve',
+                        lambda _, n=seat.name, mode='off' if seat.reserve else 'on': self.execute(pane, ['reserve', n, mode]), k, enabled=not busy))
                     buttons.append(st.button('Remove…',
                         lambda _, n=seat.name: pane.app.ask('Remove this saved account?',
                             'cswap will remove this account from its saved accounts. This does not delete the Claude account.',
@@ -172,6 +186,9 @@ def create(legacy, mb):
                 if not rows:
                     rows.append(st.form_row('No accounts saved', 'Sign in with Claude Code, then add its current login below.', ()))
                 out.append(st.section(st.group(rows), 'Accounts'))
+                out.append(st.group([st.form_row('Reserve accounts',
+                    'Held out of automatic rotation until every enabled regular account reaches the switching threshold. '
+                    'You can still switch to a reserve manually.', ())]))
                 out.append(st.section(st.group([st.form_row('Add the current Claude Code login',
                     'First sign in to the account in Claude Code. cswap saves that login itself; '
                     'old proxy accounts are not imported.', st.button('Add current login…',

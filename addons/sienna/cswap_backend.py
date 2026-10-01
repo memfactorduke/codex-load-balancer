@@ -35,6 +35,16 @@ def options():
         return {}
 
 
+def reserve_key(row):
+    # Account slots can change after removal. Public email identifies the login.
+    return str(row.get('email') or '').strip().lower()
+
+
+def reserves():
+    value = options().get('reserves', {})
+    return value if isinstance(value, dict) else {}
+
+
 def call(args, structured=False, ok=(0,), input_text=None):
     binary = executable()
     if not binary:
@@ -76,6 +86,7 @@ def project(payload, config=None):
     if payload.get('schemaVersion') != 1 or not isinstance(payload.get('accounts'), list):
         raise ValueError('Unsupported cswap account response.')
     accounts, numbers = [], set()
+    reserve_accounts = reserves()
     active_number = payload.get('activeAccountNumber')
     for row in payload['accounts']:
         if not isinstance(row, dict):
@@ -91,7 +102,11 @@ def project(payload, config=None):
         usage = usage if isinstance(usage, dict) else {}
         week, short = window(usage.get('sevenDay')), window(usage.get('fiveHour'))
         exhausted = any(w and w['used'] >= 100 for w in (week, short))
-        state = ('disabled' if row.get('disabled') else 'blocked' if not usage else
+        reserve = reserve_accounts.get(reserve_key(row))
+        reserve = reserve if isinstance(reserve, dict) else None
+        held = bool(reserve is not None and reserve.get('held') and row.get('disabled'))
+        excluded = bool(row.get('disabled') and not held) or bool(reserve and reserve.get('excluded'))
+        state = ('disabled' if excluded else 'blocked' if not usage else
                  'exhausted' if exhausted else 'active' if active else 'ready')
         deadlines = []
         for win in (week, short):
@@ -103,7 +118,8 @@ def project(payload, config=None):
         until = max(deadlines).isoformat() if deadlines else None
         accounts.append({'until': until, 'name': str(number), 'label': str(row.get('alias') or row.get('email') or 'Account %s' % number),
                          'email': str(row.get('email') or ''), 'provider': 'claude',
-                         'state': state, 'priority': 10000 - number, 'weight': 1, 'reserve': False,
+                         'state': state, 'priority': 10000 - number, 'weight': 1, 'reserve': reserve is not None,
+                         'reserve_held': held, 'rotation_disabled': bool(row.get('disabled')),
                          'week': week, 'five_hour': short, 'selected': active,
                          'detail': '' if usage else str(row.get('usageStatus') or 'Usage unavailable'),
                          'usage_fetched_at': row.get('usageFetchedAt'),
@@ -138,10 +154,63 @@ def refresh():
 def guard():
     if not executable() or options().get('enabled') is not True:
         return
+    if reserves():
+        # Eligibility is our only extension. cswap still chooses and switches.
+        sync_reserves(refresh())
     if options().get('auto_switch') is True:
         # Upstream owns its locks, cooldown, hysteresis, choice and credential writes.
         call(['auto', '--once', '--json'], ok=(0, 2, 3))
     refresh()
+
+
+def sync_reserves(view):
+    """Hold reserves until every enabled regular account reaches the threshold.
+
+    Unknown regular usage does not release the reserve. With rotation off, keep
+    reserves held; cswap allows disabled accounts to be switched manually.
+    """
+    config = options()
+    records = reserves()
+    regular = [a for a in view['seats'] if not a['reserve'] and a['state'] != 'disabled']
+    threshold = percent(view.get('pool', {}).get('threshold'))
+    threshold = threshold if threshold is not None else 90
+    release = config.get('auto_switch') is True and all(
+        any(w and w['used'] >= threshold for w in (a['week'], a['five_hour'])) for a in regular)
+    changed = False
+    for account in view['seats']:
+        key = reserve_key(account)
+        record = records.get(key)
+        if not isinstance(record, dict):
+            continue
+        hold = not release and not record.get('excluded')
+        disabled = hold or bool(record.get('excluded'))
+        if hold:
+            # Record ownership before disabling so an interrupted pass recovers.
+            record['held'] = True
+            cp.write_json(OPTIONS, {**config, 'reserves': records})
+        if disabled != account.get('rotation_disabled', account['state'] == 'disabled'):
+            call(['disable' if disabled else 'enable', account['name']])
+            changed = True
+        record['held'] = hold
+    cp.write_json(OPTIONS, {**config, 'reserves': records})
+    return changed
+
+
+def set_reserve(account, mode):
+    view = refresh()
+    row = next((a for a in view['seats'] if a['name'] == account), None)
+    if row is None or not reserve_key(row):
+        raise ValueError('Refresh and choose a saved Claude account with an email address.')
+    records, key = reserves(), reserve_key(row)
+    if mode == 'on':
+        if key not in records:
+            records[key] = {'excluded': row['state'] == 'disabled', 'held': False}
+    else:
+        record = records.get(key, {})
+        if record.get('held') and not record.get('excluded'):
+            call(['enable', account])
+        records.pop(key, None)
+    cp.write_json(OPTIONS, {**options(), 'reserves': records})
 
 
 def guard_descriptor(legacy):
@@ -214,7 +283,17 @@ def _command(args):
             if not args.yes:
                 raise ValueError('Removing a saved account requires --yes.')
             call(['remove', args.account], input_text='y\n')
+        elif action == 'reserve':
+            set_reserve(args.account, args.mode)
         elif action in ('enable', 'disable'):
+            if reserves():
+                view = refresh()
+                row = next((a for a in view['seats'] if a['name'] == args.account), None)
+                records = reserves()
+                record = records.get(reserve_key(row or {}))
+                if isinstance(record, dict):
+                    record.update(excluded=action == 'disable', held=False)
+                    cp.write_json(OPTIONS, {**options(), 'reserves': records})
             call([action, args.account])
         elif action == 'add':
             call(['add'])
@@ -223,7 +302,10 @@ def _command(args):
         else:
             raise ValueError('Unsupported Claude CLI action.')
         cp.write_json(OPTIONS, {**options(), 'enabled': True})
-        refresh()
+        view = refresh()
+        if reserves():
+            sync_reserves(view)
+            refresh()
         print('Claude CLI updated through cswap. Reopen Claude Code to apply a login switch immediately on macOS.')
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise SystemExit(str(exc))
@@ -249,7 +331,7 @@ def add_parser(sub):
     root = sub.add_parser('sienna', aliases=['claude'], help='Claude CLI account switcher, powered by cswap',
                          description='Switch Claude Code CLI accounts using upstream cswap. No Claude desktop, proxy or Codex lane.')
     children = root.add_subparsers(dest='cswap_action', required=True)
-    for name in ('install', 'status', 'add', 'switch', 'enable', 'disable', 'label', 'auto', 'strategy', 'threshold', 'retire-proxy', 'remove'):
+    for name in ('install', 'status', 'add', 'switch', 'enable', 'disable', 'label', 'reserve', 'auto', 'strategy', 'threshold', 'retire-proxy', 'remove'):
         item = children.add_parser(name)
         item.set_defaults(fn=command)
         if name in ('retire-proxy', 'remove'):
@@ -259,8 +341,10 @@ def add_parser(sub):
         if name == 'status':
             item.add_argument('--json', action='store_true')
             item.add_argument('--live', action='store_true')
-        if name in ('switch', 'enable', 'disable', 'label', 'remove'):
+        if name in ('switch', 'enable', 'disable', 'label', 'reserve', 'remove'):
             item.add_argument('account', type=account_number)
+        if name == 'reserve':
+            item.add_argument('mode', choices=('on', 'off'), nargs='?', default='on')
         if name == 'label':
             item.add_argument('label')
         if name == 'auto':

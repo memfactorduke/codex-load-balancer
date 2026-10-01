@@ -36,6 +36,26 @@
         "used": 15,
         "reset_at": "2026-09-25T00:00:00Z"
       }
+    },
+    {
+      "name": "3",
+      "label": "Backup",
+      "provider": "claude",
+      "state": "ready",
+      "priority": 9997,
+      "weight": 1,
+      "selected": false,
+      "reserve": true,
+      "reserve_held": true,
+      "rotation_disabled": true,
+      "week": {
+        "used": 10,
+        "reset_at": "2026-09-28T10:00:00Z"
+      },
+      "five_hour": {
+        "used": 5,
+        "reset_at": "2026-09-25T00:00:00Z"
+      }
     }
   ],
   "pool": {

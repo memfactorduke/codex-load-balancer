@@ -11,6 +11,8 @@ All notable changes to codexpool are recorded here. The format follows
 
 ### Changed
 
+- Add Claude CLI reserve accounts: hold them out of automatic rotation until enabled regular accounts reach the switching threshold; retain manual switching and explicit exclusions.
+
 - Replace the supported Claude proxy, desktop and engine-lane product with a native UI over upstream cswap.
   Account switching and auto-rotation are delegated to cswap; live migration is explicit.
 - Label the product selectors Codex Desktop/CLI and Claude CLI, replace the normal-state “Regular” badge

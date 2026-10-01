@@ -39,9 +39,19 @@ class NativeContract(unittest.TestCase):
         add = mock.Mock()
         self.ui.account_menu(self.model().seats[0], add)
         verbs = [c.args[2] for c in add.call_args_list]
-        self.assertEqual(verbs, ['switch', 'disable'])
+        self.assertEqual(verbs, ['switch', 'disable', 'reserve'])
         self.assertFalse(self.ui.lane_providers)
         self.assertFalse(self.ui.show_chart)
+
+    def test_held_reserve_is_labeled_and_remains_manually_switchable(self):
+        self.raw['seats'][0].update(reserve=True, reserve_held=True)
+        seat = self.model().seats[0]
+        self.assertTrue(seat.reserve_held)
+        self.assertTrue(seat.reserve)
+        self.assertEqual(self.ui.state_label(seat, 'Ready'), 'Held for later')
+        add = mock.Mock()
+        self.ui.account_menu(seat, add)
+        self.assertEqual([c.args[2] for c in add.call_args_list], ['switch', 'disable', 'unreserve'])
 
     def test_settings_provider_list_excludes_claude_engine(self):
         st = importlib.import_module('codexpool_settings')
