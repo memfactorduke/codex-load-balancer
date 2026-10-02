@@ -24,7 +24,7 @@ BODY_REUSED = ('{"error":"token refresh failed with status 401: {\\"error\\": {\
 BODY_TRANSIENT = ('{"error":"token refresh failed with status 401: {\\"error\\": {\\"message\\": \\"Provided '
                   'authentication token is expired.\\", \\"code\\": \\"token_expired\\"}}"}')
 SOON = 'OpenAI ended this sign-in: sign in again soon'   # the row's detail while the pool still serves the seat
-ENDED_NOTE = ('Codex seat needs a re-login', 'Work: OpenAI ended this sign-in. Sign in again: codexpool login Work '
+ENDED_NOTE = ('Codex seat needs a re-login', 'Work: OpenAI ended this sign-in. Sign in again: subpool login Work '
               '--priority 300 (or click it in the menu bar).')
 
 
@@ -156,7 +156,7 @@ class EndedSignIn(unittest.TestCase):
             self.assertNotIn('sign_in_ended', g)
             self.assertEqual((row['state'], row['detail']), ('blocked', 'unauthorized'))
             self.assertEqual(self.notes, [] if attempt < 3 else [
-                ('Codex seat needs a re-login', 'Work: unauthorized. Run: codexpool login Work --priority 300')])
+                ('Codex seat needs a re-login', 'Work: unauthorized. Run: subpool login Work --priority 300')])
             guard = json.loads(cp.GUARD_FILE.read_text())
             guard['seats'][SEAT]['last_heal'] = (self.now - dt.timedelta(minutes=16)).isoformat()
             cp.write_json(cp.GUARD_FILE, guard)
@@ -181,7 +181,7 @@ class EndedSignIn(unittest.TestCase):
         self.assertEqual(g['sign_in_ended']['seen'], 'the pool log')
         self.assertEqual((row['state'], row['detail'], row['sign_in_ended']), ('active', SOON, True))
         self.assertEqual(self.refreshes, [])
-        self.signed_in(self.now)   # codexpool login: new tokens
+        self.signed_in(self.now)   # subpool login: new tokens
         g, row = self.guard_pass()
         self.assertNotIn('sign_in_ended', g)
         self.assertEqual((row['state'], row['detail'], row['sign_in_ended']), ('active', '', False))
@@ -338,7 +338,7 @@ class EndedSignIn(unittest.TestCase):
         self.assertEqual((lands['status'], lands['text']), ('ok', 'new threads land on: Work'))
         (work,) = [c for c in checks if c['text'].startswith('Work: ')]
         self.assertEqual(work, {'status': 'warn', 'text': f'Work: active ({SOON})',
-                                'fix': 'codexpool login Work --priority 300'})
+                                'fix': 'subpool login Work --priority 300'})
         self.guard_pass()
         self.assertEqual(self.all_notes, [ENDED_NOTE])
         self.blocked_by_the_pool()   # its access token ran out
@@ -367,7 +367,7 @@ class EndedSignIn(unittest.TestCase):
         self.guard_pass()
         self.assertEqual(self.all_notes, [ENDED_NOTE, ('Codex now on Spare', 'Work: OpenAI ended this sign-in')])
         self.assertEqual(json.loads(cp.STATUS_FILE.read_text())['active'], 'Spare')
-        self.signed_in(self.now)   # codexpool login: new tokens, and the pool serves Work again
+        self.signed_in(self.now)   # subpool login: new tokens, and the pool serves Work again
         self.pool.update(status='active', unavailable=False, status_message='')
         _, row = self.guard_pass()
         self.assertEqual(row['state'], 'active')
@@ -379,7 +379,7 @@ class EndedSignIn(unittest.TestCase):
         self.guard_pass()
         (work,) = [c for c in self.doctor() if c['text'].startswith('Work: ')]
         self.assertEqual(work, {'status': 'fail', 'text': 'Work: blocked (OpenAI ended this sign-in)',
-                                'fix': 'codexpool login Work --priority 300'})
+                                'fix': 'subpool login Work --priority 300'})
 
 
 class PoolView(unittest.TestCase):

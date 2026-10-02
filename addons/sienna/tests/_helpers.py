@@ -6,10 +6,10 @@ import sys
 
 CORE = pathlib.Path(os.environ.get('CODEXPOOL_CORE', pathlib.Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(CORE / 'tests'))
-if 'codexpool_test_helpers' in sys.modules:
-    core = sys.modules['codexpool_test_helpers']
+if 'subpool_test_helpers' in sys.modules:
+    core = sys.modules['subpool_test_helpers']
 else:
-    spec = importlib.util.spec_from_file_location('codexpool_test_helpers', CORE / 'tests/_helpers.py')
+    spec = importlib.util.spec_from_file_location('subpool_test_helpers', CORE / 'tests/_helpers.py')
     core = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = core
     spec.loader.exec_module(core)

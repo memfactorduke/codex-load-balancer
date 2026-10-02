@@ -1,6 +1,6 @@
 """Sienna's menu bar and Settings extension: the Claude pool as the core apps' second pool.
 
-The core menu bar app (menubar/codexpool_menubar.py) and Settings window (menubar/codexpool_settings.py) keep the
+The core menu bar app (menubar/subpool_menubar.py) and Settings window (menubar/subpool_settings.py) keep the
 generic two-pool plumbing: a second DataSource, the strip with both numbers, the switcher tiles, the pool switcher
 and the `pool` parameter on their model builders. Everything that is Claude by name or by content lives here, behind
 one PoolUI object: the status file, the colours and the mark, the words (accounts, Anthropic, claude.ai), the
@@ -26,7 +26,7 @@ mb = None    # the menu bar module (load)
 st = None    # the Settings module (settings_loaded)
 
 POOL = 'claude'
-POOL_DIR = Path.home() / '.codexpool'
+POOL_DIR = Path.home() / '.subpool'
 # The Claude pool (a second CLIProxyAPI instance for Claude Code). Installed means claude-status.json exists and does
 # not say "installed": false; without it the item and the popover are the Codex pool's alone.
 STATUS_FILE = POOL_DIR / 'state' / 'claude-status.json'
@@ -34,7 +34,7 @@ HISTORY_FILE = POOL_DIR / 'state' / 'claude-history.jsonl'
 DOCS = POOL_DIR / 'addons' / 'sienna' / 'docs' / 'SIENNA.md'
 DOCS_URL = 'https://github.com/memfactorduke/codex-load-balancer/blob/main/addons/sienna/docs/SIENNA.md'
 USAGE_URL = 'https://claude.ai/settings/usage'   # opened in the browser from a seat's menu, never fetched
-LAUNCHER = 'claude-pool'      # starts Claude Code through the pool (written by `codexpool claude install`)
+LAUNCHER = 'claude-pool'      # starts Claude Code through the pool (written by `subpool claude install`)
 
 SCOPE = {'all': 'all accounts', 'regular': 'regular accounts'}   # the Claude pool calls its seats accounts
 SIGN_IN_ENDED = 'Anthropic ended this sign-in'
@@ -58,12 +58,12 @@ class Scoped:
 
 @dataclass
 class Credits:
-    """A Claude account's usage credits (extra usage) and codexpool's policy for them."""
+    """A Claude account's usage credits (extra usage) and subpool's policy for them."""
     enabled: bool                # turned on for the account at claude.ai
     used: float | None           # spent this month, in `currency`
     limit: float | None          # the account's monthly limit
     policy: str = 'off'          # off (park at the plan limit) | last-resort (spend only when every account is out)
-    cap: float | None = None     # last-resort: codexpool parks it once `used` reaches this
+    cap: float | None = None     # last-resort: subpool parks it once `used` reaches this
     currency: str = 'USD'
     spending: bool | None = None  # the guard says it is on credits right now (None: an older guard didn't say)
     mismatch: bool = False       # the guard: policy off, yet claude.ai says credits are on (see credits_mismatch)
@@ -106,7 +106,7 @@ def credits(seat):
 
 # -- the pooled Claude desktop app: claude-status.json's pool.desktop (addons/sienna/docs/DESKTOP.md) ------------------------
 #
-# The guard's Claude pass writes the block every minute and `codexpool claude desktop …` patches it at once. Two
+# The guard's Claude pass writes the block every minute and `subpool claude desktop …` patches it at once. Two
 # things are kept apart, and the control never confuses them: configured_mode is what the app's files say (the
 # mode the app opens in next time), running_mode is evidence from the running process's own log (never inferred
 # from the files). "On the pool" appears only with running_mode pooled. A file from a guard without the block
@@ -124,7 +124,7 @@ DESKTOP_APP_MISSING = 'Claude app not found'                          # the back
 class Desktop:
     configured_mode: str = 'unknown'      # pooled | claudeai | other | none | unknown (the files)
     chooser_disabled: bool = False        # the applied entry hides the Claude.ai sign-in (only with other)
-    applied_name: str = ''                # the applied configuration's name ("Pool" is codexpool's)
+    applied_name: str = ''                # the applied configuration's name ("Pool" is subpool's)
     running_mode: str | None = None       # pooled | 3p | other | claudeai | fallback | unknown; None: not running
     running_host: str = ''
     app_running: bool = False
@@ -132,12 +132,12 @@ class Desktop:
     app_bundle_ok: bool = True            # False: a process named Claude runs from elsewhere (running_* unknown)
     restart_required: bool = False        # the running app started before the last change
     owned_drift: bool = False             # the "Pool" entry's owned fields were edited in the app
-    current: bool = False                 # the "Pool" entry is what codexpool would write today
+    current: bool = False                 # the "Pool" entry is what subpool would write today
     port_ok: bool = False                 # ... and points at the Claude pool's port
     credits_ok: bool | None = None        # every account that can serve has credits off (or a capped last resort)
     credits_problems: list = field(default_factory=list)   # the backend's reasons, one line each
     accepted_credits: list = field(default_factory=list)   # [{label, cap}]: capped last-resort paid use accepted
-    txn_pending: bool = False             # a change was interrupted (codexpool claude desktop rollback)
+    txn_pending: bool = False             # a change was interrupted (subpool claude desktop rollback)
     txn_classes: dict | None = None
     pool_seen_desktop_at: str = ''        # the pool admitted a request from this app process
     app_version: str = ''
@@ -316,17 +316,17 @@ def desktop_view(d: Desktop, busy: str | None = None) -> DesktopView:
 
 
 def desktop_refusal(d: Desktop, target: str, pool_down: bool = False) -> str:
-    """Why `codexpool claude desktop <target>` would refuse, in its own words, before Claude is quit for nothing
+    """Why `subpool claude desktop <target>` would refuse, in its own words, before Claude is quit for nothing
     ('' when nothing known stands in the way; the command checks again, and its ✗ line shows if it refuses). The
     GUI never passes --reclaim: that is a deliberate terminal choice, and the line names it."""
     if d.txn_pending:
-        return ('A change was interrupted before it finished. Run Doctor; codexpool claude desktop rollback '
+        return ('A change was interrupted before it finished. Run Doctor; subpool claude desktop rollback '
                 'recovers it.')
     if target == 'pooled':
         if d.credits_ok is False and d.credits_problems:
             return '\n'.join(p[:1].upper() + p[1:] for p in d.credits_problems)
         if d.owned_drift:
-            return ('The “Pool” configuration was edited in the app. In Terminal, codexpool claude desktop '
+            return ('The “Pool” configuration was edited in the app. In Terminal, subpool claude desktop '
                     'pooled --reclaim overwrites the edits after a backup; or leave it as it is.')
         if pool_down:
             return 'The Claude pool is down: the app would open on a pool that can’t answer. Run Doctor.'
@@ -357,7 +357,7 @@ def desktop_confirm(target: str, d: Desktop) -> tuple:
     if target == 'import':
         opens = 'Claude quits and opens again' if running else 'Claude opens'
         return ('Import claude.ai history?',
-                f'codexpool unlocks the import in the “Pool” configuration, and {opens} on the pool. Then, '
+                f'subpool unlocks the import in the “Pool” configuration, and {opens} on the pool. Then, '
                 'in Claude, Settings → Import & export → Import… brings your claude.ai chats and projects over once. '
                 'The wizard signs in to claude.ai on its own and stores that sign-in in the pooled profile; the '
                 'app’s “Go back to Claude.ai” clears it.', 'Import')
@@ -366,7 +366,7 @@ def desktop_confirm(target: str, d: Desktop) -> tuple:
 
 
 def desktop_command(target: str) -> list:
-    """The command behind a confirmed choice: always --relaunch (codexpool quits and reopens Claude itself) and
+    """The command behind a confirmed choice: always --relaunch (subpool quits and reopens Claude itself) and
     --yes (the confirm was this GUI's); never --reclaim or a credits override."""
     if target == 'reopen':
         return ['claude', 'desktop', 'relaunch', '--yes']
@@ -385,7 +385,7 @@ def desktop_closing(out: str, code: int, err: str) -> str:
     if code == 0:
         lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
         return (lines[-1] if lines else 'Done').rstrip('.')
-    line = (err or f'codexpool claude desktop failed (exit {code})').strip()
+    line = (err or f'subpool claude desktop failed (exit {code})').strip()
     return line[2:] if line.startswith('✗ ') else line
 
 
@@ -411,7 +411,7 @@ def model_route(m) -> str:
 def installed(raw: dict | None, problem: str, age: float | None = None) -> bool:
     """The Claude pool is installed: claude-status.json exists (a half-written or unreadable one counts) and its
     pool.installed is true. A file without the key (an older writer) counts only while it is fresh (age: seconds
-    since it was written). `codexpool claude uninstall` leaves "installed": false or removes the file."""
+    since it was written). `subpool claude uninstall` leaves "installed": false or removes the file."""
     if raw is None:
         return problem != mb.NO_FILE
     flag = mb.as_dict(raw.get('pool')).get('installed')
@@ -439,7 +439,7 @@ def credits_mismatch(seat) -> bool:
 def mismatch_text(label: str) -> str:
     """The warning in full, where there is room for it: the row's tooltip, and Settings."""
     return (f'Usage credits are on at claude.ai for {label}: turn them off there (Settings → Usage). '
-            'codexpool can’t stop every paid request.')
+            'subpool can’t stop every paid request.')
 
 
 def credits_line(seat, spending: bool | None = None) -> tuple[str, bool] | None:
@@ -479,8 +479,8 @@ def credits_tip(seat) -> str:
         return ''
     if c.last_resort:
         return ('Credits: last resort. Used only after every account’s plan quota is spent, the reserve’s '
-                'included; codexpool stops it at the cap.')
-    return ('Usage credits are on for this account at claude.ai. Its credit policy is Off: codexpool parks it at its '
+                'included; subpool stops it at the cap.')
+    return ('Usage credits are on for this account at claude.ai. Its credit policy is Off: subpool parks it at its '
             'plan limit instead of spending them.')
 
 
@@ -489,7 +489,7 @@ LAST_RESORT_ITEM = 'Serves once every other account is out'   # the menu's line 
 
 def last_resort_parked(seat) -> bool:
     """A Claude account parked by its last-resort credit policy. It stays parked until every other account's plan
-    quota is spent, the reserve's included, and `codexpool claude enable` refuses to override that (it overrides a
+    quota is spent, the reserve's included, and `subpool claude enable` refuses to override that (it overrides a
     credits-off park only), so the menu and Settings offer no Enable for it and say when it serves instead."""
     c = getattr(seat, 'extra', None)
     return seat.provider == POOL and seat.state == 'parked' and bool(c and c.last_resort)
@@ -499,7 +499,7 @@ def last_resort_tip(label: str, reserve: bool = False) -> str:
     """Why there is no Enable, where there is room for it: the menu item's tooltip. The reserve's own line skips
     'the reserve's included'."""
     others = 'every other account’s plan quota is spent' + ('' if reserve else ', the reserve’s included')
-    return (f'{label} is the last resort: codexpool brings it back once {others}. Enable can’t override that; '
+    return (f'{label} is the last resort: subpool brings it back once {others}. Enable can’t override that; '
             'change its credit policy in Settings → Balancing.')
 
 
@@ -508,8 +508,8 @@ def last_resort_tip(label: str, reserve: bool = False) -> str:
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 
 class PoolUI:
-    """The Claude pool for the core apps. Members are read by name (menubar/codexpool_menubar.py, section 1 lists
-    them); the Settings members below `settings_loaded` are read by menubar/codexpool_settings.py."""
+    """The Claude pool for the core apps. Members are read by name (menubar/subpool_menubar.py, section 1 lists
+    them); the Settings members below `settings_loaded` are read by menubar/subpool_settings.py."""
     id = POOL
     aliases = ('sienna',)          # `--pool sienna` (the add-on's id) means this pool too
     product_scope = 'CLI'
@@ -534,7 +534,7 @@ class PoolUI:
     short_key = 'five_hour'        # the 5-hour window
     chart_area = 0.2
     compact_usage = True           # never try ' left' on every figure of a multi-window usage line
-    command_prefix = ('claude',)   # `codexpool claude …`
+    command_prefix = ('claude',)   # `subpool claude …`
     add_account_title = 'Add a Claude account…'
     switcher_blurb = 'the Claude pool (Claude accounts, for Claude Code)'
     serving_tip = 'New sessions land on this account'
@@ -668,7 +668,7 @@ class PoolUI:
             c = credits(spend)
             return ('Spending usage credits',
                     f'Every plan quota is spent, the reserve’s included, so {spend.label} is on credits as the '
-                    f'last resort: {money(c.used, c.currency)} of its {money(c.cap, c.currency)} cap. codexpool '
+                    f'last resort: {money(c.used, c.currency)} of its {money(c.cap, c.currency)} cap. subpool '
                     f'stops it at the cap.', None)
         if m.status == 'down':
             if desktop_shown(d) and d.configured_mode == 'pooled':
@@ -698,7 +698,7 @@ class PoolUI:
     @staticmethod
     def seat_rotation_item(seat):
         """In place of Enable/Disable: (title, symbol, verb or None, tooltip), or None for the core's items."""
-        if last_resort_parked(seat):   # `codexpool claude enable` refuses; say when the guard brings it back instead
+        if last_resort_parked(seat):   # `subpool claude enable` refuses; say when the guard brings it back instead
             return LAST_RESORT_ITEM, 'pause.circle', None, last_resort_tip(seat.label, seat.reserve)
         return None
 
@@ -718,7 +718,7 @@ class PoolUI:
 
     @staticmethod
     def enable_parked_text(label: str, when: str) -> str:
-        return (f'codexpool parked {label} so that it doesn’t spend usage credits. Enabling it overrides its '
+        return (f'subpool parked {label} so that it doesn’t spend usage credits. Enabling it overrides its '
                 f'credit policy until the limit resets{when}, and it may spend credits.')
 
     @staticmethod
@@ -728,7 +728,7 @@ class PoolUI:
             m = app.model
             if m is not None and value != model_route(m) and confirm_route(app, value):
                 app.say(f'Sending new Claude Code sessions {"through the pool" if value == "pool" else "direct"}…')
-                mb.run_codexpool(['claude', 'route', value], lambda code, err: app.after_action(
+                mb.run_subpool(['claude', 'route', value], lambda code, err: app.after_action(
                     'New Claude Code sessions go ' + ('through the pool' if value == 'pool' else 'direct'),
                     'route', code, err))
             return True
@@ -882,7 +882,7 @@ class PoolUI:
 
 def route_row(lay, y, row_h, f) -> float:
     """Claude tab: where new Claude Code sessions go, as a two-segment control (Pool | Direct). Choosing the
-    other one asks first, then runs `codexpool claude route pool|direct`; running sessions stay where they are."""
+    other one asks first, then runs `subpool claude route pool|direct`; running sessions stay where they are."""
     PAD, C = mb.PAD, mb.C
     lay.add(mb.draw_symbol, 'arrow.triangle.branch', PAD + 8, y + row_h / 2, 13, C.label(), mb.NSFontWeightRegular)
     lay.text('Claude Code route', PAD + 26, y + (row_h - mb.line_height(f)) / 2, f, C.label())
@@ -897,7 +897,7 @@ def desktop_row(lay, y, row_h, f) -> float:
     that tells the truth about the running app (running_mode, from the app's own log: "On the pool" only once
     the app logged the pool's address), an action at its right (Reopen Claude…, Run Doctor, Set Up…) and the
     warnings under it (credits on at claude.ai, an edited "Pool" entry). Choosing the other segment asks
-    first, then runs `codexpool claude desktop pooled|claudeai --relaunch --yes`; meanwhile the control is
+    first, then runs `subpool claude desktop pooled|claudeai --relaunch --yes`; meanwhile the control is
     greyed and the caption says what is happening."""
     PAD, INNER, WIDTH, SMALL_LH, C = mb.PAD, mb.INNER, mb.WIDTH, mb.SMALL_LH, mb.C
     d = model_desktop(lay.m)
@@ -907,7 +907,7 @@ def desktop_row(lay, y, row_h, f) -> float:
     lay.segmented(y, row_h, 'desktop', DESKTOP_LABELS, view.selected, {
         'pooled': 'Chat, local Cowork and Code in the Claude app use the pool’s accounts, in a separate '
                   'profile (Claude-3p)',
-        'claudeai': 'The Claude app on its own claude.ai account, as without codexpool'}, enabled=view.enabled)
+        'claudeai': 'The Claude app on its own claude.ai account, as without subpool'}, enabled=view.enabled)
     y += row_h
     cf, x, w = mb.font(11), PAD + 26, INNER - 26
     lines = mb.wrap_words(view.caption, cf, w)
@@ -923,7 +923,7 @@ def desktop_row(lay, y, row_h, f) -> float:
         ay = y - SMALL_LH
         ax = WIDTH - PAD - aw
         lay.region(((ax - 5, ay - 1), (aw + 10, SMALL_LH + 2)), ('desktop', view.action), radius=5, tip={
-            'doctor': 'Runs codexpool doctor in Terminal: it says what is wrong and how to fix it',
+            'doctor': 'Runs subpool doctor in Terminal: it says what is wrong and how to fix it',
             'reopen': 'Quits Claude and opens it again in the configured mode (asks first)',
             'setup': 'Sets the Claude app up on the pool and opens it (asks first)'}[view.action])
         lay.text(title, ax, ay + (SMALL_LH - mb.line_height(af)) / 2, af, C.blue_text(), width=aw)
@@ -966,7 +966,7 @@ def confirm_route(app, value: str) -> bool:
 
 def desktop_action(app, value: str):
     """A click on the control: a segment (pooled | claudeai), Set Up… (the Pooled confirm), Reopen Claude…
-    or Run Doctor. A switch asks first, then runs the command with --relaunch --yes; what codexpool would
+    or Run Doctor. A switch asks first, then runs the command with --relaunch --yes; what subpool would
     refuse (credits on at claude.ai, an interrupted change, an edited "Pool" entry) is said here first, in its
     words, so Claude is not quit for nothing."""
     m = app.model
@@ -999,10 +999,10 @@ def desktop_run(app, target: str):
         app.busy = None
         app.say(desktop_closing(out, code, err))
         if code == 0:
-            mb.run_codexpool(['guard'], lambda c, e: app.refresh(force=True))   # the running mode, once logged
+            mb.run_subpool(['guard'], lambda c, e: app.refresh(force=True))   # the running mode, once logged
         else:
             app.refresh(force=True)   # the command patched claude-status.json before it gave up
-    mb.run_codexpool(desktop_command(target), done, want_out=True)
+    mb.run_subpool(desktop_command(target), done, want_out=True)
 
 
 def confirm_desktop(app, target: str, d: Desktop) -> bool:
@@ -1014,7 +1014,7 @@ def confirm_desktop(app, target: str, d: Desktop) -> bool:
 
 
 def refuse_desktop(app, target: str, why: str):
-    """codexpool would refuse: its reason, and Run Doctor (which says how to fix it) or OK."""
+    """subpool would refuse: its reason, and Run Doctor (which says how to fix it) or OK."""
     a = alert('Can’t switch the desktop app to the pool yet' if target == 'pooled' else
               'Can’t send the desktop app back to Claude.ai yet', why, 'Run Doctor', 'OK')
     app.popover.performClose_(None)
@@ -1027,7 +1027,7 @@ def refuse_desktop(app, target: str, why: str):
 # Settings: the Claude side of Overview, Seats and Balancing, the Setup assistant, the lane copy
 # ══════════════════════════════════════════════════════════════════════════════════════════════════════
 
-LANE_PROVIDERS = (('sienna', 'Claude', 'engine', None),)   # what `lane providers --json` says, for an older codexpool
+LANE_PROVIDERS = (('sienna', 'Claude', 'engine', None),)   # what `lane providers --json` says, for an older subpool
 PoolUI.lane_providers = LANE_PROVIDERS
 
 CLAUDE_MODES = (   # claude_balancing, in Claude's words
@@ -1042,17 +1042,17 @@ LANE_STATE = {   # an engine member (sienna: Claude Code, read-only): the engine
     'no engine': ('No Claude Code', 'red'), 'no launcher': ('No launcher', 'red'), 'pool down': ('Pool down', 'red'),
     'no profile': ('Apply lanes', 'orange'),
 }
-ENGINE_STATE = {   # `lane providers` detail of the engine provider (before its ': codexpool …' hint) -> plain words
+ENGINE_STATE = {   # `lane providers` detail of the engine provider (before its ': subpool …' hint) -> plain words
     'engine ok': 'Accepted', 'untested engine': 'Not accepted yet', 'no engine': 'Claude Code isn’t installed',
     'no launcher': 'The Claude pool launcher isn’t installed', 'pool down': 'The Claude pool is down',
     'no profile': 'Apply lanes first',
 }
 ENGINE_HINT = {   # ... and what to do, for a member row's tooltip
-    'untested engine': 'Accept the engine once: Credentials → Accept Engine… (codexpool lane apply --accept-engine).',
-    'no engine': 'Install Claude Code first.', 'no launcher': 'Install the Claude pool (codexpool claude install).',
+    'untested engine': 'Accept the engine once: Credentials → Accept Engine… (subpool lane apply --accept-engine).',
+    'no engine': 'Install Claude Code first.', 'no launcher': 'Install the Claude pool (subpool claude install).',
     'pool down': 'The Claude pool must be running for the lane to answer.', 'no profile': 'Apply lanes.',
 }
-ENGINE_COPY = {   # the Lanes pane's words for the engine provider (menubar/codexpool_settings.py's lane_copy)
+ENGINE_COPY = {   # the Lanes pane's words for the engine provider (menubar/subpool_settings.py's lane_copy)
     'provider_line': 'Claude Code, read-only, through the Claude pool. ',
     'provider_ready': 'Engine accepted.', 'provider_unready': 'Accept the engine once the lane is saved.',
     'model_line': 'Type a Claude model id the pool serves, e.g. claude-opus-5-5.',
@@ -1061,18 +1061,18 @@ ENGINE_COPY = {   # the Lanes pane's words for the engine provider (menubar/code
     'no_member_tip': 'Add a Claude member to a lane first; accepting probes that lane’s engine.',
     'row_state': 'read-only, through the Claude pool',
     'accept_title': 'Accept the Claude engine?',
-    'accept_body': 'codexpool runs one read-only probe turn through the Claude pool (it spends one request there) '
+    'accept_body': 'subpool runs one read-only probe turn through the Claude pool (it spends one request there) '
                    'and records the exact Claude Code version. Do it again after a Claude Code update.',
     'accept_sheet': 'Accepting the Claude engine',
-    'accept_sheet_sub': 'Output from codexpool lane apply --accept-engine. It spends one Claude pool request.',
+    'accept_sheet_sub': 'Output from subpool lane apply --accept-engine. It spends one Claude pool request.',
     'accepted': 'Claude engine accepted. Start a new Codex thread to use the lane.',
     'demo_model': ('claude-opus-5-5', 'Opus 5.5'),
 }
 
 DEMO_CLAUDE_URL = ('https://claude.ai/oauth/authorize?code=true&client_id=demo&response_type=code'
                    '&redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback&state=demo')
-DEMO_INSTALL_LINES = [   # a made-up `codexpool claude install` in progress
-    'codexpool claude install',
+DEMO_INSTALL_LINES = [   # a made-up `subpool claude install` in progress
+    'subpool claude install',
     '  CLIProxyAPI 7.3.18: building from source with the gate (profile claude)…',
     '  go build ./cmd/server: ok',
     '  gate self-test: 15 of 15 passed',
@@ -1121,7 +1121,7 @@ def credits_summary(seat, m) -> str:
     if credits_mismatch(seat):
         month = f'{usd(c.used)} of {usd(c.limit)}' if c.limit is not None else usd(c.used)
         return (f'Off, but usage credits are on at claude.ai ({month} this month): turn them off there '
-                '(Settings → Usage). codexpool can’t stop every paid request.')
+                '(Settings → Usage). subpool can’t stop every paid request.')
     if c.policy == 'last-resort':
         return f'Last resort, up to {usd(c.cap)}' + (f' · {usd(c.used)} used this month.' if c.enabled else
                                                      ' · credits are off for it at claude.ai.')
@@ -1131,7 +1131,7 @@ def credits_summary(seat, m) -> str:
 
 def rotation_row(seat) -> tuple[str, bool]:
     """A Claude account's In rotation row: its subtitle, and whether the switch is live. An account parked by its
-    last-resort policy has no Enable (`codexpool claude enable` refuses it, as the popover's menu says): the switch
+    last-resort policy has no Enable (`subpool claude enable` refuses it, as the popover's menu says): the switch
     stays off and disabled, and the subtitle says when it serves and where its policy is set."""
     if last_resort_parked(seat):
         return ('Parked as the last resort: serves once every other account is out' +
@@ -1273,7 +1273,7 @@ def using_card(pane):
     rows = [st.form_row('Claude CLI only', 'For Claude Code in Terminal. Codex Desktop/CLI is managed separately; '
                         'this does not configure the Claude desktop app.', ()), start, works,
             st.form_row('Route for new sessions', 'Pool sends them through the pool; Direct uses Claude Code’s own '
-                        'login, as without codexpool. Running sessions stay where they are.', seg)]
+                        'login, as without subpool. Running sessions stay where they are.', seg)]
     note = st.note_row(pane.note_now())
     if note is not None:
         rows.append(note)
@@ -1301,7 +1301,7 @@ def desktop_rows(pane, m, busy: bool) -> list:
     seg.setEnabled_(view.enabled and not busy)
     seg.setToolTip_(st.S('Pooled: Chat, local Cowork and Code in the Claude app use the pool’s accounts, in a '
                          'separate profile (Claude-3p). Claude.ai: the app on its own account, as without '
-                         'codexpool.'))
+                         'subpool.'))
     act = None
     if view.action == 'reopen':
         act = st.button('Reopen Claude…', lambda _: desktop_go(pane, 'reopen'), k, enabled=not busy)
@@ -1394,9 +1394,9 @@ def set_route(pane, value: str):
 
 
 def desktop_switch(app, target: str, feedback):
-    """Pooled | Claude.ai, Reopen Claude… and Import claude.ai history…: what codexpool would refuse is said
+    """Pooled | Claude.ai, Reopen Claude… and Import claude.ai history…: what subpool would refuse is said
     first, in its words, with Check Health (so Claude is not quit for nothing); then the confirm; then
-    `codexpool claude desktop … --relaunch --yes` in the background. feedback(kind, text) shows the progress
+    `subpool claude desktop … --relaunch --yes` in the background. feedback(kind, text) shows the progress
     where it was asked for, then the command's closing line ('Claude opened on the pool') or its ✗ line;
     feedback(None, None) means nothing happened (cancelled, refused)."""
     m = app.store.model(POOL)
@@ -1427,7 +1427,7 @@ def desktop_switch(app, target: str, feedback):
 # -- Seats ------------------------------------------------------------------------------------------------------
 
 def claude_details(pane, seat, m):
-    """A Claude account's settings: the Codex seat's, in `codexpool claude …` commands, with its credit policy
+    """A Claude account's settings: the Codex seat's, in `subpool claude …` commands, with its credit policy
     (set in Balancing) in place of banked resets, which Claude doesn't have."""
     k = pane.keep
     busy = bool(pane.note and pane.note[0] == 'busy')
@@ -1544,7 +1544,7 @@ def credits_section(pane, m, busy: bool):
     rows.append(pane.note_for('credits'))
     return st.section(st.group(rows), 'Usage credits',
                       footer='Last resort: used only after every account’s plan quota is spent, the reserve’s '
-                             'included; codexpool stops it at the cap. Off: an account at its plan limit is parked '
+                             'included; subpool stops it at the cap. Off: an account at its plan limit is parked '
                              'until it resets, so it never spends credits.')
 
 
@@ -1597,7 +1597,7 @@ def parse_usd(text: str) -> float | None:
 
 
 class CreditsSheet:
-    """Last resort… and Change Cap…: asks for the cap, then runs `codexpool claude credits SEAT last-resort --cap N`.
+    """Last resort… and Change Cap…: asks for the cap, then runs `subpool claude credits SEAT last-resort --cap N`.
     Spending money is never one click: the popup opens this sheet, and Allow is its only way in. (Built on the
     Settings module's Sheet once that is loaded: see `sheet_class`.)"""
 
@@ -1654,7 +1654,7 @@ def sheet_class():
                 when = f'{self.seat.label} spends credits only after every account’s plan quota is spent, the ' \
                     'reserve’s included.'
             rows = [st.padded(st.secondary(f'{when} Then it spends them until another account comes back or it '
-                                           'reaches the cap, where codexpool stops it.', 12, wrap=W - 2 * ROW_X),
+                                           'reaches the cap, where subpool stops it.', 12, wrap=W - 2 * ROW_X),
                               11, ROW_X, 11, ROW_X),
                     st.form_row('Cap this month', f'Credits it may spend in a month, in US dollars.{so_far}',
                                 [st.label('$', 13, color=st.NSColor.secondaryLabelColor()), field_], width=W)]
@@ -1743,7 +1743,7 @@ def install_card(assistant):
                                    f'{LAUNCHER}.', 12, wrap=W - 2 * ROW_X - 50)], spacing=3, full=False)
     top = st.hstack([icon, text], spacing=12, insets=(14, ROW_X, 10, ROW_X))
     top.setAlignment_(3)   # top: the icon sits by the title
-    rows = [top, st.hstack([st.secondary('Runs codexpool claude install.', 11)], [go], spacing=10,
+    rows = [top, st.hstack([st.secondary('Runs subpool claude install.', 11)], [go], spacing=10,
                            insets=(4, ROW_X + 48, 12, ROW_X), min_h=40)]
     if again:
         rows.append(st.note_row(('error', ins.message), W))

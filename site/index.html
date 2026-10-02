@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>codexpool: every ChatGPT seat you have, behind one Codex</title>
-  <meta name="description" content="codexpool pools your ChatGPT accounts behind the Codex app and CLI on macOS. When one seat hits its usage limit, the next one picks up the same thread. A menu bar meter shows what is left across all of them.">
+  <title>subpool.app — pool your AI subscriptions</title>
+  <meta name="description" content="subpool.app pools your ChatGPT accounts behind the Codex app and CLI on macOS. When one seat hits its usage limit, the next one picks up the same thread. A menu bar meter shows what is left across all of them.">
   <link rel="canonical" href="https://memfactorduke.github.io/codex-load-balancer/">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
@@ -13,19 +13,19 @@
   <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
 
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="codexpool">
-  <meta property="og:title" content="codexpool: every ChatGPT seat you have, behind one Codex">
+  <meta property="og:site_name" content="subpool.app">
+  <meta property="og:title" content="subpool.app: every ChatGPT seat you have, behind one Codex">
   <meta property="og:description" content="Pool your ChatGPT accounts behind the Codex app and CLI. When one seat hits its limit, the next one picks up the same thread. A menu bar meter shows what is left.">
   <meta property="og:url" content="https://memfactorduke.github.io/codex-load-balancer/">
   <meta property="og:image" content="https://memfactorduke.github.io/codex-load-balancer/assets/img/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="codexpool: every ChatGPT seat you have, behind one Codex. The menu bar popover shows 54% of the week's quota left across five seats.">
+  <meta property="og:image:alt" content="subpool.app: every ChatGPT seat you have, behind one Codex. The menu bar popover shows 54% of the week's quota left across five seats.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="codexpool: every ChatGPT seat you have, behind one Codex">
+  <meta name="twitter:title" content="subpool.app: every ChatGPT seat you have, behind one Codex">
   <meta name="twitter:description" content="Pool your ChatGPT accounts behind the Codex app and CLI. When one seat hits its limit, the next one picks up the same thread.">
   <meta name="twitter:image" content="https://memfactorduke.github.io/codex-load-balancer/assets/img/og.png">
-  <meta name="twitter:image:alt" content="codexpool: every ChatGPT seat you have, behind one Codex.">
+  <meta name="twitter:image:alt" content="subpool.app: every ChatGPT seat you have, behind one Codex.">
 
   <link rel="stylesheet" href="assets/style.css">
   <script src="assets/site.js" defer></script>
@@ -35,14 +35,14 @@
 
   <header class="menubar">
     <div class="wrap menubar-inner">
-      <a class="brand" href="#top" aria-label="codexpool, back to top">
+      <a class="brand" href="#top" aria-label="subpool.app, back to top">
         <svg class="mark" viewBox="0 0 18 12" width="21" height="14" aria-hidden="true">
           <rect class="mark-track" x="0" y="0" width="18" height="6" rx="3"/>
           <rect class="mark-fill" x="0" y="0" width="12" height="6" rx="3"/>
           <rect class="mark-track" x="0" y="8" width="18" height="4" rx="2"/>
           <rect class="mark-fill" x="0" y="8" width="8" height="4" rx="2"/>
         </svg>
-        <span class="wordmark">codexpool</span>
+        <span class="wordmark">subpool.app</span>
       </a>
 
       <nav class="menus" aria-label="Primary">
@@ -92,7 +92,7 @@
             <span>seat you have,</span>
             <span>behind one Codex.</span>
           </h1>
-          <p class="hero-lede">codexpool pools your ChatGPT accounts behind the Codex app and CLI. When one seat hits its usage limit, the next one picks up the same thread, so you keep working. A menu bar meter shows what is left across all of them.</p>
+          <p class="hero-lede">subpool.app (formerly codexpool) pools your ChatGPT accounts behind the Codex app and CLI. When one seat hits its usage limit, the next one picks up the same thread, so you keep working. A menu bar meter shows what is left across all of them.</p>
 
           <div class="cmd">
             <code><span class="cmd-prompt" aria-hidden="true">$ </span>curl -fsSL https://raw.githubusercontent.com/<wbr>memfactorduke/<wbr>codex-load-balancer/<wbr>main/<wbr><span class="nobr">install.sh | bash</span></code>
@@ -117,8 +117,8 @@
         <div class="hero-shot">
           <picture>
             <source srcset="assets/img/popover-dark.webp" media="(prefers-color-scheme: dark)" data-theme-dark>
-            <img src="assets/img/popover-light.webp" width="340" height="814" fetchpriority="high"
-                 alt="The codexpool popover under the menu bar: 54% of this week's quota left across all seats, Work B serving, Work A out with a free reset available, five seats in priority order, each with its weekly bar and reset time, and menu items to add a ChatGPT account or open Settings.">
+            <img src="assets/img/popover-light.webp" width="340" height="743" fetchpriority="high"
+                 alt="The subpool.app popover under the menu bar: 54% of this week's quota left across all seats, Work B serving, Work A out with a free reset available, five seats with available accounts first, compact quotas and reset times, and menu items to add a ChatGPT account or open Settings.">
           </picture>
         </div>
       </div>
@@ -145,7 +145,7 @@
             <div class="seat-foot"><span>100% left</span><span>Resets in 5d 1h</span></div>
           </li>
         </ul>
-        <p class="problem-coda">codexpool uses them one after another, so the work doesn't stop.</p>
+        <p class="problem-coda">subpool.app uses them one after another, so the work doesn't stop.</p>
       </div>
     </section>
 
@@ -155,12 +155,12 @@
         <header class="section-head">
           <p class="kicker">How it works</p>
           <h2 id="how-title">Codex talks to one address on your Mac.</h2>
-          <p class="section-lede">codexpool runs a small pool on 127.0.0.1 and answers as whichever seat has quota left. When that seat hits its limit, the pool sends the same request to the next seat, and the turn carries on after a pause of a second or two.</p>
+          <p class="section-lede">subpool.app runs a small pool on 127.0.0.1 and answers as whichever seat has quota left. When that seat hits its limit, the pool sends the same request to the next seat, and the turn carries on after a pause of a second or two.</p>
         </header>
 
         <figure class="diagram">
           <!-- Wide layout -->
-          <svg class="diagram-wide" viewBox="0 24 1080 344" role="img" aria-label="The Codex app and the Codex CLI send requests to codexpool on 127.0.0.1 port 8319. codexpool forwards each request as one of your seats. Seat 1 hit its limit, so the same thread continues on Seat 2. Seats 3 and N are ready.">
+          <svg class="diagram-wide" viewBox="0 24 1080 344" role="img" aria-label="The Codex app and the Codex CLI send requests to subpool.app on 127.0.0.1 port 8319. subpool.app forwards each request as one of your seats. Seat 1 hit its limit, so the same thread continues on Seat 2. Seats 3 and N are ready.">
             <!-- links: clients to pool -->
             <path class="d-link" d="M232 144.5C312 144.5 312 180.5 392 180.5"/>
             <path class="d-link" d="M232 244.5C312 244.5 312 208.5 392 208.5"/>
@@ -203,7 +203,7 @@
               <rect class="mark-track" x="0" y="11" width="24" height="5" rx="2.5"/>
               <rect class="mark-fill" x="0" y="11" width="11" height="5" rx="2.5"/>
             </g>
-            <text class="d-pool-title" x="450" y="164">codexpool</text>
+            <text class="d-pool-title" x="450" y="164">subpool.app</text>
             <text class="d-mono" x="416" y="206">127.0.0.1:8319</text>
             <text class="d-sub" x="416" y="234">on your Mac · loopback only</text>
             <circle class="d-port" cx="672" cy="194.5" r="3.5"/>
@@ -252,7 +252,7 @@
           </svg>
 
           <!-- Tall layout (phones) -->
-          <svg class="diagram-tall" viewBox="0 0 360 588" role="img" aria-label="The Codex app and the Codex CLI send requests to codexpool on 127.0.0.1 port 8319. codexpool forwards each request as one of your seats. Seat 1 hit its limit, so the same thread continues on Seat 2. Seats 3 and N are ready.">
+          <svg class="diagram-tall" viewBox="0 0 360 588" role="img" aria-label="The Codex app and the Codex CLI send requests to subpool.app on 127.0.0.1 port 8319. subpool.app forwards each request as one of your seats. Seat 1 hit its limit, so the same thread continues on Seat 2. Seats 3 and N are ready.">
             <path class="d-link" d="M86 64.5C86 92 150 92 150 120.5"/>
             <path class="d-link" d="M274 64.5C274 92 210 92 210 120.5"/>
             <path class="d-flow d-flow-neutral" d="M86 64.5C86 92 150 92 150 120.5"/>
@@ -291,7 +291,7 @@
               <rect class="mark-track" x="0" y="11" width="24" height="5" rx="2.5"/>
               <rect class="mark-fill" x="0" y="11" width="11" height="5" rx="2.5"/>
             </g>
-            <text class="d-pool-title" x="74" y="156">codexpool</text>
+            <text class="d-pool-title" x="74" y="156">subpool.app</text>
             <text class="d-mono" x="40" y="188">127.0.0.1:8319</text>
             <text class="d-sub" x="40" y="210">on your Mac · loopback only</text>
             <circle class="d-port" cx="48" cy="224.5" r="3.5"/>
@@ -390,7 +390,7 @@
             </div>
             <div class="card-body">
               <h3>One thread history</h3>
-              <p>Codex keeps its built-in provider, so every thread stays where it was. Encrypted reasoning and compactions carry across seats, and <code>codexpool selftest</code> checks any pair.</p>
+              <p>Codex keeps its built-in provider, so every thread stays where it was. Encrypted reasoning and compactions carry across seats, and <code>subpool selftest</code> checks any pair.</p>
             </div>
           </article>
 
@@ -427,7 +427,7 @@
             </div>
             <div class="card-body">
               <h3>Banked resets</h3>
-              <p>Free resets banked on an account show on its seat, and one click redeems one. codexpool only redeems what the account already holds; it never buys anything.</p>
+              <p>Free resets banked on an account show on its seat, and one click redeems one. subpool.app only redeems what the account already holds; it never buys anything.</p>
             </div>
           </article>
 
@@ -463,7 +463,7 @@
         </div>
 
         <ul class="also">
-          <li><strong>A doctor.</strong> <code>codexpool doctor</code> explains every problem it finds and how to fix it.</li>
+          <li><strong>A doctor.</strong> <code>subpool doctor</code> explains every problem it finds and how to fix it.</li>
           <li><strong>A credit guard.</strong> A seat that would start spending credits is parked until it resets.</li>
           <li><strong>Safe upgrades.</strong> Each pool build is tested before use and rolled back if anything fails.</li>
           <li><strong>A clean uninstall.</strong> One command restores your Codex config. Threads are never touched.</li>
@@ -483,7 +483,7 @@
         <div class="shots">
           <figure class="shot shot-popover wall-light">
             <div class="shot-stage">
-              <img src="assets/img/popover-reserve-light.webp" width="340" height="816" loading="lazy" decoding="async"
+              <img src="assets/img/popover-reserve-light.webp" width="340" height="745" loading="lazy" decoding="async"
                    alt="The popover while the reserve seat serves: the headline turns red at 34% left, none of the four regular seats is ready, and the reserve seat, Pro 20x, is serving.">
             </div>
             <figcaption>Reserve serving</figcaption>
@@ -501,20 +501,20 @@
               <picture>
                 <source srcset="assets/img/settings-overview-dark.webp" media="(prefers-color-scheme: dark)" data-theme-dark>
                 <img src="assets/img/settings-overview-light.webp" width="1776" height="1512" loading="lazy" decoding="async"
-                   alt="The codexpool Settings window, Overview pane: a sidebar with Overview, Seats, Lanes, General, Health and About, the headline meter at 54% left this week, the seat new threads go to, and every seat with its plan, size, weekly bar and reset time.">
+                   alt="The subpool.app Settings window, Overview pane: a sidebar with Overview, Seats, Lanes, General, Health and About, the headline meter at 54% left this week, the seat new threads go to, and every seat with its plan, size, weekly bar and reset time.">
               </picture>
             </div>
-            <figcaption><strong>Settings.</strong> Every seat with its plan, size and limits. Rename, resize, reorder or redeem a reset without a terminal. Open it from the menu bar or with <code>codexpool gui</code>.</figcaption>
+            <figcaption><strong>Settings.</strong> Every seat with its plan, size and limits. Rename, resize, reorder or redeem a reset without a terminal. Open it from the menu bar or with <code>subpool gui</code>.</figcaption>
           </figure>
           <figure class="shot shot-window shot-setup">
             <div class="shot-stage">
               <picture>
                 <source srcset="assets/img/setup-signin-dark.webp" media="(prefers-color-scheme: dark)" data-theme-dark>
                 <img src="assets/img/setup-signin-light.webp" width="1416" height="1346" loading="lazy" decoding="async"
-                   alt="The codexpool Setup assistant, adding a ChatGPT account: the five seats already in the pool, then the sign-in link, already copied to the clipboard, with buttons to open it in the browser or a private Chrome window or copy it again, and a countdown until the link expires.">
+                   alt="The subpool.app Setup assistant, adding a ChatGPT account: the five seats already in the pool, then the sign-in link, already copied to the clipboard, with buttons to open it in the browser or a private Chrome window or copy it again, and a countdown until the link expires.">
               </picture>
             </div>
-            <figcaption><strong>Setup assistant.</strong> Add each ChatGPT account with a sign-in link, in a private window for accounts your browser isn't signed in to. Prefer the terminal? <code>codexpool setup</code> does the same.</figcaption>
+            <figcaption><strong>Setup assistant.</strong> Add each ChatGPT account with a sign-in link, in a private window for accounts your browser isn't signed in to. Prefer the terminal? <code>subpool setup</code> does the same.</figcaption>
           </figure>
           </div>
         </div>
@@ -561,21 +561,21 @@
                       </button>
                     </div>
                     <!-- The same words as the prompt in README.md, one line per paragraph (it wraps here). -->
-                    <pre class="prompt-text" id="agent-prompt" tabindex="0" aria-label="Setup prompt for your coding agent"><span class="pl">Set up codexpool on this Mac (https://github.com/memfactorduke/codex-load-balancer): it pools my ChatGPT accounts behind the Codex app and CLI. This message is my go-ahead to install it (and uv, Astral's Python manager, if this Mac has no Python 3.11 or later), sign in my accounts and mark the reserve. Rules: no sudo; never ask for my Mac or ChatGPT password; never read ~/.codexpool/auth/ or ~/.codex/auth.json and never print a token; ask me before `codexpool uninstall`; if a step fails, stop and show me the error and the fix it prints, don't retry in a loop; if the install stops at the Keychain, ask me to unlock it (I run `security unlock-keychain` myself) and wait. You can't answer terminal prompts, so use exactly the commands below (not `codexpool setup`, which needs a terminal). They need the network, the login Keychain and files outside your workspace: if you have a sandbox, ask me to approve running them outside it.</span>
+                    <pre class="prompt-text" id="agent-prompt" tabindex="0" aria-label="Setup prompt for your coding agent"><span class="pl">Set up subpool.app on this Mac (https://github.com/memfactorduke/codex-load-balancer): it pools my ChatGPT accounts behind the Codex app and CLI. This message is my go-ahead to install it (and uv, Astral's Python manager, if this Mac has no Python 3.11 or later), sign in my accounts and mark the reserve. Rules: no sudo; never ask for my Mac or ChatGPT password; never read ~/.subpool/auth/ or ~/.codex/auth.json and never print a token; ask me before `subpool uninstall`; if a step fails, stop and show me the error and the fix it prints, don't retry in a loop; if the install stops at the Keychain, ask me to unlock it (I run `security unlock-keychain` myself) and wait. You can't answer terminal prompts, so use exactly the commands below (not `subpool setup`, which needs a terminal). They need the network, the login Keychain and files outside your workspace: if you have a sandbox, ask me to approve running them outside it.</span>
 <span class="pl"></span>
 <span class="pl pl-3">1. Ask me in one message: a short name for each ChatGPT account (for example Personal, Work, Team), in the order to use them; which one is the reserve, used last (usually the biggest plan); and whether I'm at this Mac's screen or somewhere else (over SSH, or you run on a Mac I'm not sitting at). If I'm not at the screen, tell me first: this Mac has to be logged in to its desktop as this user and stay logged in (log in once through Screen Sharing, and again after a restart), because the pool runs as launchd agents in that login.</span>
 <span class="pl pl-3">2. Install. Run this in the background (your tool's background mode, or `nohup ... &amp;`), since the first install builds the pool from source and can take up to 15 minutes, and wait for it to end:</span>
-<span class="pl pl-5">     (curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash -s -- --yes --no-gui) &gt; /tmp/codexpool-install.log 2&gt;&amp;1</span>
-<span class="pl pl-3">   Then read the log. When the install worked, its last line starts with "Docs:"; otherwise it stopped, so show me its last lines (the "✗" line and the fix under it). If `codexpool` isn't on your PATH, use ~/.local/bin/codexpool. Run `codexpool version`: if it is older than 1.1.0, stop and tell me. The closing doctor check in the log reports 0 seats and a warning under "Codex app" (Codex keeps its own login until the first seat): both expected until step 3. If a Setup assistant window opens on this Mac, I can close it. Then read ~/.codexpool/AGENTS.md and follow it.</span>
+<span class="pl pl-5">     (curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash -s -- --yes --no-gui) &gt; /tmp/subpool-install.log 2&gt;&amp;1</span>
+<span class="pl pl-3">   Then read the log. When the install worked, its last line starts with "Docs:"; otherwise it stopped, so show me its last lines (the "✗" line and the fix under it). If `subpool` isn't on your PATH, use ~/.local/bin/subpool. Run `subpool version`: if it is older than 1.1.0, stop and tell me. The closing doctor check in the log reports 0 seats and a warning under "Codex app" (Codex keeps its own login until the first seat): both expected until step 3. If a Setup assistant window opens on this Mac, I can close it. Then read ~/.subpool/AGENTS.md and follow it.</span>
 <span class="pl pl-3">3. Sign in each account, one at a time. Run this in the background too and read its log:</span>
-<span class="pl pl-5">     codexpool login "&lt;Name&gt;" --no-open &lt; /dev/null &gt; /tmp/codexpool-login.log 2&gt;&amp;1</span>
+<span class="pl pl-5">     subpool login "&lt;Name&gt;" --no-open &lt; /dev/null &gt; /tmp/subpool-login.log 2&gt;&amp;1</span>
 <span class="pl pl-3">   Send me the https:// link from the log and tell me: first close every private window left from the previous account (a browser's private windows share one session until the last one closes), then open the link in a new private (incognito) window, sign in to THAT account and pick its workspace; the link expires after about 5 minutes (then run the login again). The login has ended when the log has a line starting "seat " (it worked) or "login did not complete" (it did not; the reason follows). If the log also has a line starting "That was", the browser signed in to an account that is already in, and nothing was added: tell me, and run this login again.</span>
 <span class="pl pl-3">   If I'm not at this Mac's screen, the sign-in ends at http://localhost:1455 on THIS Mac. Tell me to do one of these. Open the link in a browser on this Mac through Screen Sharing. Or keep this running on my own computer and open the link there (it needs Remote Login on in this Mac's Sharing settings):</span>
 <span class="pl pl-5">     ssh -N -L 1455:localhost:1455 &lt;user&gt;@&lt;address&gt;</span>
 <span class="pl pl-3">   Fill it in for me: &lt;user&gt; is `whoami`; on the same network, &lt;address&gt; is `scutil --get LocalHostName` plus .local. If the page already failed, I start the tunnel and reload it while the login is still waiting. Or, from any device (a phone too): I open the link there and sign in, and when the page fails to load, I send you its full address (it starts http://localhost:1455/auth/callback?code= and holds a one-time code, not a token); you then run `curl -s "&lt;that address&gt;" &gt; /dev/null` on this Mac while the login is still waiting.</span>
-<span class="pl pl-3">4. Run `codexpool reserve "&lt;Reserve name&gt;"` (skip it if I named none), then `codexpool doctor` (it must end with OK) and `codexpool status --live`.</span>
+<span class="pl pl-3">4. Run `subpool reserve "&lt;Reserve name&gt;"` (skip it if I named none), then `subpool doctor` (it must end with OK) and `subpool status --live`.</span>
 <span class="pl pl-3">5. Report the seat table and the doctor result, then tell me to quit the Codex app fully (⌘Q) and reopen it (through Screen Sharing if I'm not at the screen). If you are Codex: this thread keeps working until then and is still there afterwards; from then on it and every new thread go through the pool.</span>
-<span class="pl pl-3">6. Ask whether I also want subagent lanes (models from other providers for token-heavy subagent work). If yes, follow "Paste this to your agent" in ~/.codexpool/docs/LANES.md.</span></pre>
+<span class="pl pl-3">6. Ask whether I also want subagent lanes (models from other providers for token-heavy subagent work). If yes, follow "Paste this to your agent" in ~/.subpool/docs/LANES.md.</span></pre>
                   </div>
                 </div>
               </div>
@@ -585,7 +585,7 @@
               <div class="step-body">
                 <h3>Add your ChatGPT accounts</h3>
                 <p>The Setup assistant opens by itself. Sign in to each account; for accounts your browser isn't signed in to, open the link in a private window. Each seat is sized by its plan. Codex keeps working on its own login until the first account is in, and that sign-in points it at the pool.</p>
-                <p class="step-note">Prefer the terminal? <code>codexpool setup</code> walks you through the same steps there. To add accounts later, choose Add a ChatGPT account… in the menu bar or run <code>codexpool gui setup-welcome</code>.</p>
+                <p class="step-note">Prefer the terminal? <code>subpool setup</code> walks you through the same steps there. To add accounts later, choose Add a ChatGPT account… in the menu bar or run <code>subpool gui setup-welcome</code>.</p>
               </div>
             </li>
             <li class="step">
@@ -606,7 +606,7 @@
               <li>Two or more ChatGPT accounts with Codex access</li>
               <li>No Xcode or Homebrew needed</li>
             </ul>
-            <p class="requirements-note">Changed your mind? <code>codexpool uninstall --yes</code> removes it and restores your Codex config.</p>
+            <p class="requirements-note">Changed your mind? <code>subpool uninstall --yes</code> removes it and restores your Codex config.</p>
           </aside>
         </div>
       </div>
@@ -623,39 +623,39 @@
 
         <div class="compare">
           <table>
-            <caption class="sr-only">Switching accounts yourself compared with codexpool</caption>
+            <caption class="sr-only">Switching accounts yourself compared with subpool.app</caption>
             <thead>
               <tr>
                 <td></td>
                 <th scope="col">Switching accounts yourself</th>
-                <th scope="col" class="col-us"><span class="col-us-label"><svg class="mark" viewBox="0 0 18 12" width="18" height="12" aria-hidden="true"><rect class="mark-track" width="18" height="6" rx="3"/><rect class="mark-fill" width="12" height="6" rx="3"/><rect class="mark-track" y="8" width="18" height="4" rx="2"/><rect class="mark-fill" y="8" width="8" height="4" rx="2"/></svg>With codexpool</span></th>
+                <th scope="col" class="col-us"><span class="col-us-label"><svg class="mark" viewBox="0 0 18 12" width="18" height="12" aria-hidden="true"><rect class="mark-track" width="18" height="6" rx="3"/><rect class="mark-fill" width="12" height="6" rx="3"/><rect class="mark-track" y="8" width="18" height="4" rx="2"/><rect class="mark-fill" y="8" width="8" height="4" rx="2"/></svg>With subpool.app</span></th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <th scope="row">When a seat runs out</th>
                 <td data-label="Switching accounts yourself">The turn stops. You sign out, sign in to another account and ask again.</td>
-                <td data-label="With codexpool" class="col-us">The same request goes to the next seat, and the turn carries on.</td>
+                <td data-label="With subpool.app" class="col-us">The same request goes to the next seat, and the turn carries on.</td>
               </tr>
               <tr>
                 <th scope="row">Knowing what's left</th>
                 <td data-label="Switching accounts yourself">One account at a time, in the app's own meter.</td>
-                <td data-label="With codexpool" class="col-us">One number for every seat in the menu bar, weighted by plan size.</td>
+                <td data-label="With subpool.app" class="col-us">One number for every seat in the menu bar, weighted by plan size.</td>
               </tr>
               <tr>
                 <th scope="row">Picking the next account</th>
                 <td data-label="Switching accounts yourself">You guess which one still has quota.</td>
-                <td data-label="With codexpool" class="col-us">Your priority order decides, and the reserve goes last.</td>
+                <td data-label="With subpool.app" class="col-us">Your priority order decides, and the reserve goes last.</td>
               </tr>
               <tr>
                 <th scope="row">Banked resets</th>
                 <td data-label="Switching accounts yourself">Easy to forget they're there.</td>
-                <td data-label="With codexpool" class="col-us">Shown on each seat, redeemed in one click.</td>
+                <td data-label="With subpool.app" class="col-us">Shown on each seat, redeemed in one click.</td>
               </tr>
               <tr>
                 <th scope="row">Your Codex sign-in</th>
                 <td data-label="Switching accounts yourself">Changes every time you switch.</td>
-                <td data-label="With codexpool" class="col-us">Stays as it is. Each seat has its own login in the pool.</td>
+                <td data-label="With subpool.app" class="col-us">Stays as it is. Each seat has its own login in the pool.</td>
               </tr>
             </tbody>
           </table>
@@ -695,11 +695,11 @@
           </details>
           <details>
             <summary>How do I uninstall?</summary>
-            <div class="answer"><p>Run <code>codexpool uninstall --yes</code>. It stops the background agents, restores your Codex config and removes the command; then reopen Codex. Seat logins and settings stay in <code>~/.codexpool</code> until you delete the folder.</p></div>
+            <div class="answer"><p>Run <code>subpool uninstall --yes</code>. It stops the background agents, restores your Codex config and removes the command; then reopen Codex. Seat logins and settings stay in <code>~/.subpool</code> until you delete the folder.</p></div>
           </details>
           <details>
-            <summary>Is codexpool affiliated with OpenAI?</summary>
-            <div class="answer"><p>No. codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of OpenAI.</p></div>
+            <summary>Is subpool.app affiliated with OpenAI?</summary>
+            <div class="answer"><p>No. subpool.app is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of OpenAI.</p></div>
           </details>
           <details>
             <summary>What about the terms of service?</summary>
@@ -716,7 +716,7 @@
           <div class="license-lead">
             <p class="kicker">License</p>
             <h2 id="license-title">Free for noncommercial use.</h2>
-            <p>codexpool is free and source-available under the <a href="https://polyformproject.org/licenses/noncommercial/1.0.0">PolyForm Noncommercial License 1.0.0</a>.</p>
+            <p>subpool.app is free and source-available under the <a href="https://polyformproject.org/licenses/noncommercial/1.0.0">PolyForm Noncommercial License 1.0.0</a>.</p>
           </div>
           <dl class="license-terms">
             <div>
@@ -741,14 +741,14 @@
     <div class="wrap">
       <div class="footer-top">
         <div class="footer-brand">
-          <a class="brand" href="#top" aria-label="codexpool, back to top">
+          <a class="brand" href="#top" aria-label="subpool.app, back to top">
             <svg class="mark" viewBox="0 0 18 12" width="21" height="14" aria-hidden="true">
               <rect class="mark-track" width="18" height="6" rx="3"/>
               <rect class="mark-fill" width="12" height="6" rx="3"/>
               <rect class="mark-track" y="8" width="18" height="4" rx="2"/>
               <rect class="mark-fill" y="8" width="8" height="4" rx="2"/>
             </svg>
-            <span class="wordmark">codexpool</span>
+            <span class="wordmark">subpool.app</span>
           </a>
           <p>Every ChatGPT seat you have, behind one Codex.</p>
         </div>
@@ -785,7 +785,7 @@
         </nav>
       </div>
       <div class="footer-fine">
-        <p>codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of OpenAI. Use it only with accounts you own, and follow the terms that apply to them.</p>
+        <p>subpool.app is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are trademarks of OpenAI. Use it only with accounts you own, and follow the terms that apply to them.</p>
         <p>© 2026 memfactorduke · <a href="https://github.com/memfactorduke/codex-load-balancer/blob/main/LICENSE">PolyForm Noncommercial 1.0.0</a></p>
       </div>
     </div>

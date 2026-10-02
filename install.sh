@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# codexpool installer: every ChatGPT seat you have, behind one Codex.
+# subpool installer: every ChatGPT seat you have, behind one Codex.
 # https://github.com/memfactorduke/codex-load-balancer
 #
 #   curl -fsSL https://raw.githubusercontent.com/memfactorduke/codex-load-balancer/main/install.sh | bash
@@ -13,16 +13,16 @@
 #      installed (a warning if not; the real installer decides).
 #   2. Finds a Python 3.11+ already on this Mac. If there is none, it gets one through uv, installing uv into
 #      ~/.local/bin first if needed (it asks before doing that).
-#   3. Downloads the codexpool source of the latest release (or --version TAG) from GitHub as a tarball into a
+#   3. Downloads the subpool source of the latest release (or --version TAG) from GitHub as a tarball into a
 #      temporary directory. Without any release it uses the main branch.
-#   4. Runs `bin/codexpool install` from that source. That is the real installer: it copies the code into
-#      ~/.codexpool, builds the pool, sets up the launchd agents and records the Codex config; the first seat's
+#   4. Runs `bin/subpool install` from that source. That is the real installer: it copies the code into
+#      ~/.subpool, builds the pool, sets up the launchd agents and records the Codex config; the first seat's
 #      sign-in points the Codex app at the pool. Every step of it is safe to repeat, so running this script again
 #      upgrades in place and keeps your seats and settings.
 #   5. Opens the Setup assistant, where you add your ChatGPT accounts, and prints what to do next.
 #
 # It never uses sudo, never edits your shell profile, and deletes its temporary directory when it exits.
-# To undo an install: codexpool uninstall --yes
+# To undo an install: subpool uninstall --yes
 
 set -euo pipefail
 
@@ -33,9 +33,9 @@ CODELOAD="https://codeload.github.com/$REPO/tar.gz"
 UV_INSTALLER="https://astral.sh/uv/install.sh"
 CODEX_BUNDLE_ID="com.openai.codex"
 MIN_MACOS=13
-UV_PYTHON="3.13"             # the Python uv provides when this Mac has no 3.11+ (codexpool's installer uses the same)
+UV_PYTHON="3.13"             # the Python uv provides when this Mac has no 3.11+ (subpool's installer uses the same)
 : "${HOME:?HOME is not set}"
-CODEXPOOL_HOME="$HOME/.codexpool"
+CODEXPOOL_HOME="$HOME/.subpool"
 
 # Options
 VERSION=""                   # --version TAG; empty = the latest release
@@ -46,7 +46,7 @@ YES=0                        # -y / --yes sets 1
 # State, filled in as the script runs
 HAVE_TTY=0                   # 1 when /dev/tty can be opened, so questions can be asked even under `curl | bash`
 PROBLEMS=0                   # problems found in a dry run (a real run stops at the first)
-UPGRADE=0                    # 1 when ~/.codexpool already holds an install with at least one seat
+UPGRADE=0                    # 1 when ~/.subpool already holds an install with at least one seat
 PYTHON=""                    # a Python 3.11+ found on this Mac
 UV=""                        # uv, when it provides the Python instead
 NEED_UV=0                    # 1 when uv has to be installed first
@@ -59,7 +59,7 @@ GUI_OPENED=0
 
 usage() {
   cat <<EOF
-codexpool installer
+subpool installer
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash
@@ -73,7 +73,7 @@ Options:
   -y, --yes       answer yes to every question, including installing uv when this Mac has no Python 3.11+
   -h, --help      show this help
 
-Re-running upgrades an existing install in place. Undo with: codexpool uninstall --yes
+Re-running upgrades an existing install in place. Undo with: subpool uninstall --yes
 EOF
 }
 
@@ -142,7 +142,7 @@ detect_tty() {
 }
 
 # ask QUESTION SAFE: 0 for yes. The default answer is yes. --yes answers yes to everything. Without a terminal
-# to ask on, a safe step (SAFE=1: codexpool's own install, which is idempotent and undone by uninstall) goes
+# to ask on, a safe step (SAFE=1: subpool's own install, which is idempotent and undone by uninstall) goes
 # ahead, and any other step is declined.
 ask() {
   local question=$1 safe=$2 reply=""
@@ -174,7 +174,7 @@ ask() {
 ensure_workdir() {
   if [ -z "$WORK" ]; then
     local tmp=${TMPDIR:-/tmp}
-    WORK=$(mktemp -d "${tmp%/}/codexpool-install.XXXXXX")
+    WORK=$(mktemp -d "${tmp%/}/subpool-install.XXXXXX")
   fi
 }
 
@@ -192,11 +192,11 @@ on_interrupt() {
 check_mac() {
   heading "This Mac"
   if [ "$(uname -s)" != "Darwin" ]; then
-    die "codexpool runs on macOS only (it relies on launchd, the Keychain and the menu bar). Nothing was changed."
+    die "subpool runs on macOS only (it relies on launchd, the Keychain and the menu bar). Nothing was changed."
   fi
   if [ "$(id -u)" = 0 ]; then
     problem "this is running as root" \
-      "run it as yourself, without sudo: codexpool installs into your home folder and never needs sudo"
+      "run it as yourself, without sudo: subpool installs into your home folder and never needs sudo"
   fi
 
   local version major arch chip
@@ -216,7 +216,7 @@ check_mac() {
     *) chip=$arch ;;
   esac
   if [ "$major" -lt "$MIN_MACOS" ]; then
-    problem "macOS $version on $chip: codexpool needs macOS $MIN_MACOS (Ventura) or later" \
+    problem "macOS $version on $chip: subpool needs macOS $MIN_MACOS (Ventura) or later" \
       "update macOS (Software Update), then run this again"
   else
     ok "macOS $version on $chip"
@@ -224,23 +224,23 @@ check_mac() {
   case "$chip" in
     Intel) warn "Intel Macs should work but are untested" ;;
     Apple*) ;;
-    *) problem "unsupported processor: $arch" "codexpool supports Apple silicon and Intel Macs" ;;
+    *) problem "unsupported processor: $arch" "subpool supports Apple silicon and Intel Macs" ;;
   esac
 
   check_codex_app
 
   if [ -d "$CODEXPOOL_HOME/.git" ]; then
     problem "$(tilde "$CODEXPOOL_HOME") is a git checkout, so this script would overwrite tracked files" \
-      "update it with git instead: cd ~/.codexpool && git pull && ./bin/codexpool install"
-  elif [ -f "$CODEXPOOL_HOME/bin/codexpool" ] && has_seats; then
+      "update it with git instead: cd ~/.subpool && git pull && ./bin/subpool install"
+  elif [ -f "$CODEXPOOL_HOME/bin/subpool" ] && has_seats; then
     UPGRADE=1
-    ok "codexpool is installed in $(tilde "$CODEXPOOL_HOME"): this upgrades it in place (seats and settings are kept)"
-  elif [ -f "$CODEXPOOL_HOME/bin/codexpool" ]; then
-    # `codexpool install` copies its code in before the long steps, so this is also what an install that was
+    ok "subpool is installed in $(tilde "$CODEXPOOL_HOME"): this upgrades it in place (seats and settings are kept)"
+  elif [ -f "$CODEXPOOL_HOME/bin/subpool" ]; then
+    # `subpool install` copies its code in before the long steps, so this is also what an install that was
     # stopped part way leaves behind. Either way the first-install steps (add accounts, reopen Codex) still apply.
-    ok "codexpool is in $(tilde "$CODEXPOOL_HOME") with no seats yet: this finishes the install in place"
+    ok "subpool is in $(tilde "$CODEXPOOL_HOME") with no seats yet: this finishes the install in place"
   else
-    ok "codexpool is not installed yet: it goes into $(tilde "$CODEXPOOL_HOME")"
+    ok "subpool is not installed yet: it goes into $(tilde "$CODEXPOOL_HOME")"
   fi
 }
 
@@ -282,21 +282,21 @@ check_codex_app() {
   if [ -n "$cli" ]; then
     ok "Codex app: $(tilde "$app") (its codex CLI: ${cli#"$app"/})"
   elif [ -n "$app" ] && command -v codex >/dev/null 2>&1; then
-    warn "Codex app: $(tilde "$app"), with no codex CLI inside; codexpool uses $(tilde "$(command -v codex)")" \
+    warn "Codex app: $(tilde "$app"), with no codex CLI inside; subpool uses $(tilde "$(command -v codex)")" \
       "update the Codex app to use the CLI it ships with"
   elif [ -n "$app" ]; then
     warn "Codex app: $(tilde "$app"), with no codex CLI inside" \
-      "update the Codex app, or set \"codex_bin\" in ~/.codexpool/settings.json to a codex CLI"
+      "update the Codex app, or set \"codex_bin\" in ~/.subpool/settings.json to a codex CLI"
   elif command -v codex >/dev/null 2>&1; then
     warn "Codex app not found (bundle id $CODEX_BUNDLE_ID); the codex CLI at $(tilde "$(command -v codex)") will do" \
-      "codexpool is made for the Codex app: install it from OpenAI and sign in to use the pool from the app"
+      "subpool is made for the Codex app: install it from OpenAI and sign in to use the pool from the app"
   else
     warn "Codex app not found (bundle id $CODEX_BUNDLE_ID)" \
-      "install the Codex app from OpenAI and sign in first; codexpool install stops at its preflight without it"
+      "install the Codex app from OpenAI and sign in first; subpool install stops at its preflight without it"
   fi
 }
 
-# setting KEY: prints KEY from codexpool's settings.json (~ expanded) and succeeds, or fails when the file, the
+# setting KEY: prints KEY from subpool's settings.json (~ expanded) and succeeds, or fails when the file, the
 # key or a value is missing (null counts as missing). plutil reads JSON, so this needs no Python.
 setting() {
   local file="${CODEXPOOL_SETTINGS:-$CODEXPOOL_HOME/settings.json}" value
@@ -310,7 +310,7 @@ setting() {
   printf '%s\n' "$value"
 }
 
-# has_seats: succeeds when ~/.codexpool/auth holds a seat login, the same test `codexpool install` uses to tell
+# has_seats: succeeds when ~/.subpool/auth holds a seat login, the same test `subpool install` uses to tell
 # an upgrade from a first install. It only checks that a file exists; it never reads one.
 has_seats() {
   local f
@@ -323,7 +323,7 @@ has_seats() {
 # -- 2. Python --------------------------------------------------------------------------------------------
 
 # python_ok PYTHON: prints the version and succeeds when PYTHON is 3.11+ with tarfile's data filter, which is
-# what codexpool's installer needs to build the pool, and it has CA certificates, since that installer downloads
+# what subpool's installer needs to build the pool, and it has CA certificates, since that installer downloads
 # over HTTPS. Exit 3: too old. Exit 4: new enough, but no CA certificates (a python.org Python whose
 # "Install Certificates.command" was never run); get_default_verify_paths() reports a missing file as None.
 python_ok() {
@@ -425,7 +425,7 @@ install_uv() {
 fetch_uv_python() {
   # uv run would download Python on first use anyway; doing it here makes a failure easy to read.
   # UV_PYTHON_INSTALL_BIN=0 keeps uv from also putting a python3.13 command in ~/.local/bin (and warning that
-  # the folder is not on PATH): codexpool only needs uv's managed copy. It is an environment variable rather
+  # the folder is not on PATH): subpool only needs uv's managed copy. It is an environment variable rather
   # than --no-bin so that an older uv ignores it instead of stopping at an unknown flag.
   change "get Python $UV_PYTHON through uv (uv python install $UV_PYTHON)"
   if [ "$DRY_RUN" = 1 ]; then return; fi
@@ -506,13 +506,13 @@ resolve_version() {
 
 confirm() {
   if [ "$DRY_RUN" = 1 ]; then return 0; fi
-  local name="codexpool $REF" what question
-  if [ "$REF" = "main" ]; then name="codexpool (main branch)"; fi
-  what="install $name into ~/.codexpool"
-  question="Install $name into ~/.codexpool?"
+  local name="subpool $REF" what question
+  if [ "$REF" = "main" ]; then name="subpool (main branch)"; fi
+  what="install $name into ~/.subpool"
+  question="Install $name into ~/.subpool?"
   if [ "$UPGRADE" = 1 ]; then
-    what="upgrade ~/.codexpool to $name"
-    question="Upgrade ~/.codexpool to $name?"
+    what="upgrade ~/.subpool to $name"
+    question="Upgrade ~/.subpool to $name?"
   fi
   if [ "$NEED_UV" = 1 ]; then
     # uv is someone else's software, so this answer is not assumed without a terminal.
@@ -541,7 +541,7 @@ fetch_source() {
   mkdir "$WORK/src"
   tar -xzf "$WORK/source.tar.gz" -C "$WORK/src" --strip-components 1 ||
     die "could not extract the download" "run this again; if it keeps failing, open an issue: $REPO_URL/issues"
-  [ -f "$WORK/src/bin/codexpool" ] || die "the download has no bin/codexpool" "is $REF a codexpool release? See $REPO_URL/releases"
+  [ -f "$WORK/src/bin/subpool" ] || die "the download has no bin/subpool" "is $REF a subpool release? See $REPO_URL/releases"
   SRC="$WORK/src"
   ok "source extracted to a temporary directory"
 }
@@ -551,39 +551,39 @@ run_install() {
   if [ "$DRY_RUN" = 1 ]; then
     local how
     if [ -n "$PYTHON" ]; then how=$(tilde "$PYTHON"); else how="uv run --python $UV_PYTHON python"; fi
-    change "run: $how bin/codexpool install (from the downloaded source)"
+    change "run: $how bin/subpool install (from the downloaded source)"
     if [ "$UPGRADE" = 1 ]; then
-      say "      It checks this Mac again, copies the new code into ~/.codexpool and changes only what differs."
+      say "      It checks this Mac again, copies the new code into ~/.subpool and changes only what differs."
       say "      Seats, settings, logins and lanes stay as they are."
     else
-      say "      It checks this Mac again, then: copies the code into ~/.codexpool, gets Go from go.dev, builds the"
+      say "      It checks this Mac again, then: copies the code into ~/.subpool, gets Go from go.dev, builds the"
       say "      gated CLIProxyAPI pool, stores a management key in the Keychain, starts the launchd agents (pool,"
       say "      guard, menu bar), records the Codex config (the first account's sign-in points Codex at the pool)"
-      say "      and writes the codexpool command to ~/.local/bin."
+      say "      and writes the subpool command to ~/.local/bin."
     fi
     return
   fi
-  say "  Running codexpool's installer (bin/codexpool install); every step below is safe to repeat."
+  say "  Running subpool's installer (bin/subpool install); every step below is safe to repeat."
   local rc=0
   # stdin comes from /dev/null: under `curl | bash` it is the rest of this script. CODEXPOOL_VIA_INSTALLER tells
   # it to leave the next steps to finish() below, so a first install shows one list of them.
-  (cd "$SRC" && CODEXPOOL_VIA_INSTALLER=1 "${PY_CMD[@]}" bin/codexpool install) </dev/null || rc=$?
+  (cd "$SRC" && CODEXPOOL_VIA_INSTALLER=1 "${PY_CMD[@]}" bin/subpool install) </dev/null || rc=$?
   if [ "$rc" != 0 ]; then
-    die "codexpool install stopped (exit $rc); its output above says why" \
+    die "subpool install stopped (exit $rc); its output above says why" \
       "fix that and run this again; the install picks up where it stopped"
   fi
 }
 
 # -- 5. Setup assistant and next steps --------------------------------------------------------------------
 
-# The interpreter with PyObjC: settings.json's menubar_python, else its python, else codexpool's own venv.
+# The interpreter with PyObjC: settings.json's menubar_python, else its python, else subpool's own venv.
 menubar_python() {
   setting menubar_python || setting python || printf '%s\n' "$CODEXPOOL_HOME/.venv/bin/python"
 }
 
 open_setup_assistant() {
   heading "Setup assistant"
-  local app="$CODEXPOOL_HOME/menubar/codexpool_settings.py" py pid status
+  local app="$CODEXPOOL_HOME/menubar/subpool_settings.py" py pid status
   if [ "$GUI" != 1 ]; then
     ok "skipped (--no-gui)"
     return
@@ -606,12 +606,12 @@ open_setup_assistant() {
     return
   fi
   if [ ! -f "$app" ]; then
-    warn "this version has no Setup assistant" "add each ChatGPT account with: codexpool login \"<Label>\" --priority <n>"
+    warn "this version has no Setup assistant" "add each ChatGPT account with: subpool login \"<Label>\" --priority <n>"
     return
   fi
   if [ ! -x "$py" ]; then
     warn "no Python for the Setup assistant at $(tilde "$py")" \
-      "run codexpool doctor; then open it with: <python with PyObjC> ~/.codexpool/menubar/codexpool_settings.py"
+      "run subpool doctor; then open it with: <python with PyObjC> ~/.subpool/menubar/subpool_settings.py"
     return
   fi
   change "open the Setup assistant"
@@ -626,7 +626,7 @@ open_setup_assistant() {
     ok "it is open: add your ChatGPT accounts there"
   else
     warn "the Setup assistant closed right away (exit $status)" \
-      "open it yourself to see why: $(tilde "$py") ~/.codexpool/menubar/codexpool_settings.py --pane setup-welcome"
+      "open it yourself to see why: $(tilde "$py") ~/.subpool/menubar/subpool_settings.py --pane setup-welcome"
   fi
 }
 
@@ -638,7 +638,7 @@ finish() {
     else
       say "Dry run: nothing was downloaded or changed."
     fi
-    # No git clone and no ./bin/codexpool here: without the Command Line Tools both are stubs that pop up the
+    # No git clone and no ./bin/subpool here: without the Command Line Tools both are stubs that pop up the
     # Xcode tools dialog, on exactly the Macs this script is made for. The Python found above runs it instead.
     local py=""
     if [ -n "$PYTHON" ]; then
@@ -650,10 +650,10 @@ finish() {
       # The dry run doesn't look up the latest release, so this previews main unless --version named a tag.
       local which="the main branch"
       if [ -n "$VERSION" ] && [ "$VERSION" != main ]; then which=$VERSION; fi
-      say "codexpool's own installer checks again and prints each of its steps. To see those for $which without"
+      say "subpool's own installer checks again and prints each of its steps. To see those for $which without"
       say "changing anything (no git or Xcode tools needed):"
-      say "  mkdir codexpool-src && curl -fsSL $(tarball_url "${VERSION:-main}") | tar -xz -C codexpool-src --strip-components 1"
-      say "  $py codexpool-src/bin/codexpool install --dry-run"
+      say "  mkdir subpool-src && curl -fsSL $(tarball_url "${VERSION:-main}") | tar -xz -C subpool-src --strip-components 1"
+      say "  $py subpool-src/bin/subpool install --dry-run"
       if [ -z "$VERSION" ]; then
         say "(The real install uses the latest release. To preview a release, add --version <tag> to this script.)"
       fi
@@ -662,16 +662,16 @@ finish() {
     return
   fi
 
-  # How to type the command: ~/.local/bin/codexpool until that folder is on PATH (the installer says how).
-  local cmd="codexpool" label
+  # How to type the command: ~/.local/bin/subpool until that folder is on PATH (the installer says how).
+  local cmd="subpool" label
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
-    *) cmd="$(tilde "$HOME/.local/bin")/codexpool" ;;
+    *) cmd="$(tilde "$HOME/.local/bin")/subpool" ;;
   esac
   heading "Next"
   if [ "$UPGRADE" = 1 ]; then
-    say "  codexpool is up to date ($REF). Your seats, settings and logins are as they were."
-    label=$(setting menubar_label || echo "com.codexpool.menubar")
+    say "  subpool is up to date ($REF). Your seats, settings and logins are as they were."
+    label=$(setting menubar_label || echo "com.subpool.menubar")
     say "  Restart the menu bar app to load its new version:"
     say "    launchctl kickstart -k gui/\$(id -u)/$label"
     say "  Check everything: $cmd doctor (it should end with OK)"
@@ -719,7 +719,7 @@ main() {
   trap on_interrupt INT TERM
   detect_tty
 
-  say "${BOLD}codexpool installer${RESET}: every ChatGPT seat you have, behind one Codex."
+  say "${BOLD}subpool installer${RESET}: every ChatGPT seat you have, behind one Codex."
   if [ "$DRY_RUN" = 1 ]; then
     say "Dry run: nothing is downloaded or changed; each step says what it would do."
   fi

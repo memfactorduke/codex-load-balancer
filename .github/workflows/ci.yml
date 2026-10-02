@@ -15,12 +15,16 @@ concurrency:
 
 jobs:
   check:
-    name: Checks (Python ${{ matrix.python }})
+    name: Checks (Python ${{ matrix.python }}, upstream ${{ matrix.cpa }})
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.13"]
+        include:
+          - python: "3.11"
+            cpa: "7.3.18"
+          - python: "3.13"
+            cpa: "8.0.9"
     steps:
       - uses: actions/checkout@v7
 
@@ -29,20 +33,20 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Compile the Python code
-        run: python -m py_compile bin/codexpool lanes/bridge.py menubar/*.py
+        run: python -m py_compile bin/subpool lanes/bridge.py menubar/*.py
 
       - name: Python 3.9 syntax (install and uninstall run on a fresh Mac's /usr/bin/python3)
         run: |
           python - <<'EOF'
           import ast
-          for path in ("bin/codexpool", "lanes/bridge.py"):
+          for path in ("bin/subpool", "lanes/bridge.py"):
               with open(path, encoding="utf-8") as f:
                   ast.parse(f.read(), path, feature_version=(3, 9))
               print(f"{path}: parses as Python 3.9")
           EOF
 
-      - name: codexpool --help
-        run: HOME="$(mktemp -d)" python bin/codexpool --help > /dev/null
+      - name: subpool --help
+        run: HOME="$(mktemp -d)" python bin/subpool --help > /dev/null
 
       - name: install.sh syntax (macOS /bin/bash 3.2)
         run: /bin/bash -n install.sh
@@ -56,10 +60,10 @@ jobs:
 
       # tests/test_gate.py runs the gate's Go tests offline (GOPROXY=off) in a copy of CLIProxyAPI, and fails in CI
       # rather than skipping: fetch the pinned source and its modules first.
-      - name: CLIProxyAPI source for the gate tests
+      - name: CLIProxyAPI source for gate and catalog tests
         run: |
           mkdir -p "$RUNNER_TEMP/cpa"
-          curl -fsSL https://codeload.github.com/router-for-me/CLIProxyAPI/tar.gz/refs/tags/v7.3.18 \
+          curl -fsSL https://codeload.github.com/router-for-me/CLIProxyAPI/tar.gz/refs/tags/v${{ matrix.cpa }} \
             | tar -xz -C "$RUNNER_TEMP/cpa" --strip-components=1
           (cd "$RUNNER_TEMP/cpa" && go mod download)
           {
@@ -71,12 +75,12 @@ jobs:
       - name: Unit tests
         run: sh tests/run_all.sh
 
-      - name: Core without optional add-ons
+      - name: Core tests without add-ons
         run: |
-          cp -R . "$RUNNER_TEMP/core-only"
-          rm -rf "$RUNNER_TEMP/core-only/addons"
-          cd "$RUNNER_TEMP/core-only"
-          python -m unittest discover -s tests -v
+          optional_tree=$(mktemp -d)
+          git archive HEAD | tar -x -C "$optional_tree"
+          rm -rf "$optional_tree/addons"
+          (cd "$optional_tree" && python -m unittest discover -s tests)
 
   scan:
     name: Secrets and personal data
@@ -84,17 +88,44 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Publication boundary
+      # The same two scans AGENTS.md asks for before every commit, over every tracked file. The synthetic
+      # demo data in docs/images/demo/ is left out.
+      - name: No tokens or password hashes
         run: |
-          python3 - <<'PYSCAN'
+          rc=0
+          # shellcheck disable=SC2016  # the pattern matches a literal "$" (bcrypt hashes)
+          git grep -nIE \
+            'eyJ[A-Za-z0-9_-]{20,}|"(refresh|access|id)_token"[[:space:]]*:|\$2[aby]\$|sk-[A-Za-z0-9]{20,}' \
+            -- . ':(exclude)docs/images/demo' || rc=$?
+          case "$rc" in
+            0) echo "::error::Possible token or password hash above; remove it."; exit 1 ;;
+            1) echo "Nothing found." ;;
+            *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
+          esac
+
+      - name: Public source scan (including Claude add-on)
+        run: |
+          python - <<'EOF'
           import pathlib, sys
           sys.path.insert(0, 'scripts')
           from publish_tree import scan
           paths, hits = scan(pathlib.Path('.'))
           if hits:
               raise SystemExit('Publication scan failed:\n' + '\n'.join(hits))
-          print('Publication scan clean:', len(paths), 'files')
-          PYSCAN
+          print('Publication scan clean over', len(paths), 'files')
+          EOF
+
+      - name: No home-directory paths
+        run: |
+          rc=0
+          git grep -nIE \
+            '/Users/[A-Za-z]' \
+            -- . ':(exclude)docs/images/demo' || rc=$?
+          case "$rc" in
+            0) echo "::error::Home-directory path or email address above; remove it."; exit 1 ;;
+            1) echo "Nothing found." ;;
+            *) echo "::error::git grep failed (exit $rc)"; exit "$rc" ;;
+          esac
 
   shellcheck:
     name: shellcheck install.sh

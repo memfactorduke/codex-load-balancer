@@ -163,7 +163,7 @@ class RuntimeReview(tb.EngineHarness):
         self.run_engine()
         self.assertEqual(self.handler.events[-1]['type'], 'response.completed')
         # Upgrade the binary without restarting the bridge.
-        (self.home / '.codexpool/bin/claude-current/cli-proxy-api').write_bytes(b'new build')
+        (self.home / '.subpool/bin/claude-current/cli-proxy-api').write_bytes(b'new build')
         with mock.patch.object(b.subprocess, 'Popen') as spawn, self.assertRaises(b.BridgeError):
             self.run_engine()
         spawn.assert_not_called()

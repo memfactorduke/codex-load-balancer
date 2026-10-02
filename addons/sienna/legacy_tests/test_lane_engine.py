@@ -122,7 +122,7 @@ class Sienna(unittest.TestCase):
                                    'ANTHROPIC_AUTH_TOKEN', 'CLAUDEPOOL', 'DISABLE_AUTOUPDATER',
                                    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB'})
         self.assertEqual((env['CLAUDE_CONFIG_DIR'], env['ANTHROPIC_AUTH_TOKEN'], env['CLAUDEPOOL']),
-                         (engine['profile'], 'codexpool', 'required'))
+                         (engine['profile'], 'subpool', 'required'))
         self.assertEqual(env['PATH'], self.PATH)
         self.assertEqual(env['TMPDIR'], str(le.engine_profile('sienna') / 'tmp'))
         # One policy, two copies: lane apply writes it and the bridge checks the acceptance fingerprint against its own
@@ -133,7 +133,7 @@ class Sienna(unittest.TestCase):
         self.assertIs(settings['disableSkillShellExecution'], True)
         deny = settings['permissions']['deny']
         for rule in ('Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Agent', 'Skill',
-                     'Read(~/.codexpool/**)', 'Read(~/.codex/**)', 'Read(~/.claude/**)', 'Read(~/.claude.json)',
+                     'Read(~/.subpool/**)', 'Read(~/.codex/**)', 'Read(~/.claude/**)', 'Read(~/.claude.json)',
                      'Read(~/.ssh/**)', 'Read(~/.config/**)', 'Read(~/Library/**)', 'Read(~/.gnupg/**)'):
             self.assertIn(rule, deny)
         model = config['models']['lane-sienna-opus']

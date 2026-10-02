@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""codexpool lane bridge.
+"""subpool lane bridge.
 
 Lets Codex subagents use providers that speak the OpenAI Responses API but not Codex's dialect of it
 (OpenCode Zen and OpenCode Go, which serve Muse Spark). It runs BEHIND the pool as an ordinary upstream:
@@ -16,7 +16,7 @@ Seat traffic never touches it. Per request it:
     sealed compaction item, then unseals that item on later requests;
   - reports provider limits as a quota 429 with resets_at, so the pool cools this credential and moves on.
 
-Standard library only, Python 3.9+. Config: ~/.codexpool/lanes/bridge.json. Never logs prompts, outputs or keys.
+Standard library only, Python 3.9+. Config: ~/.subpool/lanes/bridge.json. Never logs prompts, outputs or keys.
 """
 import importlib.util
 import types
@@ -40,9 +40,9 @@ import uuid
 import zlib
 from pathlib import Path
 
-HOME = Path(os.environ.get('CODEXPOOL_HOME') or Path.home() / '.codexpool')
+HOME = Path(os.environ.get('CODEXPOOL_HOME') or Path.home() / '.subpool')
 CONFIG_PATH = HOME / 'lanes' / 'bridge.json'
-USER_AGENT = 'codexpool-bridge/1'
+USER_AGENT = 'subpool-bridge/1'
 SEAL_PREFIX = 'cpbridge1.'
 MAX_BODY = 64 * 1024 * 1024
 NAME_LIMIT = 64
@@ -527,7 +527,7 @@ def load_extension_module(path):
     path = Path(path)
     if not path.is_absolute() or not path.is_file():
         raise ValueError('extension must be an absolute local file')
-    spec = importlib.util.spec_from_file_location('codexpool_bridge_extension_' + hashlib.sha256(str(path).encode()).hexdigest()[:16], path)
+    spec = importlib.util.spec_from_file_location('subpool_bridge_extension_' + hashlib.sha256(str(path).encode()).hexdigest()[:16], path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.bind(types.SimpleNamespace(**globals()))
@@ -603,7 +603,7 @@ class Bridge:
             first = next((json.dumps(i.get('content'), sort_keys=True) for i in (body.get('input') or [])
                           if isinstance(i, dict) and i.get('role') == 'user'), '')
             key = hashlib.sha256((str(body.get('instructions', ''))[:4096] + first[:4096]).encode()).hexdigest()[:32]
-        return 'codexpool-' + re.sub(r'[^A-Za-z0-9_.:-]', '', str(key))[:96]
+        return 'subpool-' + re.sub(r'[^A-Za-z0-9_.:-]', '', str(key))[:96]
 
     def open_upstream(self, route, wire, stream, session):
         up = self.cfg.upstreams[route['upstream']]
@@ -647,7 +647,7 @@ def request_path(raw):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
-    server_version = 'codexpool-bridge'
+    server_version = 'subpool-bridge'
     bridge = None
 
     def log_message(self, *args):
@@ -793,7 +793,7 @@ def main():
     Handler.bridge = Bridge(cfg)
     server = Server(('127.0.0.1', cfg.port), Handler)
     Handler.bridge.recover()
-    log(f'codexpool bridge listening on 127.0.0.1:{cfg.port} for {", ".join(sorted(cfg.models)) or "no models"}')
+    log(f'subpool bridge listening on 127.0.0.1:{cfg.port} for {", ".join(sorted(cfg.models)) or "no models"}')
     def stop_server(signum, frame):
         # shutdown() cannot be called on the serve_forever thread.
         threading.Thread(target=server.shutdown, daemon=True).start()

@@ -14,7 +14,7 @@ class DesktopSplit(unittest.TestCase):
         for name in ('desktop_module', 'desktop_backend', 'desktop_status', 'cmd_desktop',
                      'desktop_cpa_compatibility', 'desktop_wire_record_path', 'DESKTOP_P3'):
             self.assertFalse(hasattr(cp, name), name)
-        self.assertFalse((REPO / 'bin/codexpool_desktop.py').exists())
+        self.assertFalse((REPO / 'bin/subpool_desktop.py').exists())
         self.assertTrue((REPO / 'tests/test_gate.py').is_file())
 
     def test_parser_routes_both_names_to_addon(self):
@@ -29,20 +29,20 @@ class DesktopSplit(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=HOME) as temp:
             dest = pathlib.Path(temp)
             (dest / 'bin').mkdir()
-            (dest / 'bin/codexpool').write_text('old CLI')
+            (dest / 'bin/subpool').write_text('old CLI')
             old_addon = dest / 'addons/sienna'
             old_addon.mkdir(parents=True)
             (old_addon / 'old-marker').write_text('old add-on')
             replace = cp.os.replace
             def fail_cli(source, target):
-                if pathlib.Path(target) == dest / 'bin/codexpool' and 'payload' in pathlib.Path(source).parts:
+                if pathlib.Path(target) == dest / 'bin/subpool' and 'payload' in pathlib.Path(source).parts:
                     raise OSError('interrupted CLI publication')
                 return replace(source, target)
             with patch.multiple(cp, ROOT=dest, STATE=dest / 'state', ADDON_REGISTRY=dest / 'state/addons.json',
-                                CODE_FILES=('bin/codexpool',)):
+                                CODE_FILES=('bin/subpool',)):
                 with patch.object(cp.os, 'replace', side_effect=fail_cli), self.assertRaises(OSError):
                     cp.copy_code()
-                self.assertEqual((dest / 'bin/codexpool').read_text(), 'old CLI')
+                self.assertEqual((dest / 'bin/subpool').read_text(), 'old CLI')
                 self.assertEqual((old_addon / 'old-marker').read_text(), 'old add-on')
                 cp.copy_code()
                 self.assertFalse((old_addon / 'old-marker').exists())

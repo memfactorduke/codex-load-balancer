@@ -24,7 +24,7 @@ def failing(*args):
 
 class Addons(unittest.TestCase):
     def setUp(self):
-        self.work = pathlib.Path(tempfile.mkdtemp(prefix='codexpool-addon-test-'))
+        self.work = pathlib.Path(tempfile.mkdtemp(prefix='subpool-addon-test-'))
         self.addCleanup(shutil.rmtree, self.work, True)
         self.checkout, self.installed = self.work / 'checkout', self.work / 'installed'
         settings = preserved(cp.SETTINGS_FILE)
@@ -64,7 +64,7 @@ from types import SimpleNamespace
 def load(cp):
     pool = cp.SeatPool('stub', 'stub', 49321, cp.ROOT / 'meta', cp.ROOT / 'guard',
         cp.ROOT / 'auth', cp.ROOT / 'config', cp.ROOT / 'link', cp.ROOT,
-        cp.ROOT / 'log', 'codexpool stub', 'stub_mode', 'seat', cp.ROOT / 'stub.lock')
+        cp.ROOT / 'log', 'subpool stub', 'stub_mode', 'seat', cp.ROOT / 'stub.lock')
     def add_parser(sub, core):
         sub.add_parser('stub').set_defaults(fn=component.callback)
     return SimpleNamespace(id='stub', version='1.0.0', core_min='1.3.0', component=component,
@@ -78,12 +78,12 @@ def load(cp):
     def test_loading_twice_preserves_package_submodules_and_callbacks(self):
         dest = self.loader_fixture()
         addon = self.boot()
-        package = sys.modules['codexpool_addon_stub']
+        package = sys.modules['subpool_addon_stub']
         cp.register_addon_extensions()
         provider = cp.LANE_PROVIDERS['fixture']
         again = cp.load_addon(dest / '.', copy.deepcopy(addon.manifest))
         self.assertIs(again, addon)
-        self.assertIs(sys.modules['codexpool_addon_stub'], package)
+        self.assertIs(sys.modules['subpool_addon_stub'], package)
         self.assertIs(again.component, addon.component)
         self.assertIs(cp.LANE_PROVIDERS['fixture'], provider)
         self.assertIs(cp.build_parser().parse_args(['stub']).fn, addon.component.callback)
@@ -116,7 +116,7 @@ def load(cp):
         self.assertIsNot(new, old)
         self.assertIsNot(new.component, old.component)
         self.assertEqual(new.component.callback(), 'new')
-        self.assertIs(sys.modules['codexpool_addon_stub.component'], new.component)
+        self.assertIs(sys.modules['subpool_addon_stub.component'], new.component)
         self.assertIs(cp.ADDONS[0], new)
         for current in (parser, cp.build_parser()):
             self.assertIs(current.parse_args(['stub']).fn, new.component.callback)
@@ -166,7 +166,7 @@ def load(cp):
             cp.load_addon(dest, old.manifest)
         self.assertIs(cp.ADDONS[0], old)
         self.assertIs(cp.LANE_PROVIDERS['fixture'], provider)
-        self.assertIs(sys.modules['codexpool_addon_stub.component'], old.component)
+        self.assertIs(sys.modules['subpool_addon_stub.component'], old.component)
         self.assertIs(parser.parse_args(['stub']).fn, old.component.callback)
 
     def test_preparing_install_copy_does_not_replace_active_modules(self):
@@ -180,7 +180,7 @@ def load(cp):
         self.assertIsNot(prepared.component, old.component)
         self.assertIs(cp.ADDONS[0], old)
         self.assertIs(cp.LANE_PROVIDERS['fixture'], provider)
-        self.assertIs(sys.modules['codexpool_addon_stub.component'], old.component)
+        self.assertIs(sys.modules['subpool_addon_stub.component'], old.component)
         self.assertIs(cp.load_addon(dest, old.manifest), old)
 
     def test_asset_changes_and_missing_payload_are_not_cache_hits(self):
@@ -240,7 +240,7 @@ def load(cp):
         self.assertEqual(cp.SETTINGS_DEFAULTS, cp.CORE_SETTINGS_DEFAULTS)
         with self.assertRaises(cp.SettingsError):
             cp.parse_settings({'nonesuch_port': 49234})
-        self.assertEqual(self.output(cp.cmd_version, None)[0], f'codexpool {cp.VERSION}\n')
+        self.assertEqual(self.output(cp.cmd_version, None)[0], f'subpool {cp.VERSION}\n')
 
     def test_manifest_is_data_only_and_runtime_is_late(self):
         dest = self.fixture()
@@ -259,7 +259,7 @@ def load(cp):
         addon = self.boot()
         self.assertEqual(addon.id, 'stub')
         self.assertEqual(cp.SETTINGS['stub_mode'], 'off')
-        self.assertEqual(self.output(cp.cmd_version, None)[0], f'codexpool {cp.VERSION}\n+ stub 1.0.0\n')
+        self.assertEqual(self.output(cp.cmd_version, None)[0], f'subpool {cp.VERSION}\n+ stub 1.0.0\n')
 
     def test_checkout_wins_even_if_partial(self):
         self.fixture(self.installed)
@@ -274,7 +274,7 @@ def load(cp):
         dest = self.fixture(core_min='999.0.0')
         (dest / 'addon.py').write_text('raise AssertionError("must not execute")\n')
         self.boot()
-        self.assertIn('needs codexpool', cp.ADDON_ERRORS['stub'])
+        self.assertIn('needs subpool', cp.ADDON_ERRORS['stub'])
         self.assertNotIn('must not execute', cp.ADDON_ERRORS['stub'])
         cp.parse_settings({'legacyfixture_old': 'retained'})
 
@@ -385,7 +385,7 @@ def load(cp):
         addon = self.boot()
         pool = cp.SeatPool('stub', 'stub', 49321, self.work / 'meta', self.work / 'guard',
                            self.work / 'auth', self.work / 'config', self.work / 'link', self.work,
-                           self.work / 'log', 'codexpool stub', 'stub_mode', 'seat', self.work / 'lock')
+                           self.work / 'log', 'subpool stub', 'stub_mode', 'seat', self.work / 'lock')
         def die():
             raise SystemExit(9)
         addon.implementation.guard_passes = lambda: [('fixture', die, pool)]
@@ -561,21 +561,21 @@ def load(cp):
         self.boot()
         source = self.work / 'core'
         (source / 'bin').mkdir(parents=True)
-        (source / 'bin/codexpool').write_text('new CLI')
+        (source / 'bin/subpool').write_text('new CLI')
         (self.installed / 'bin').mkdir()
-        (self.installed / 'bin/codexpool').write_text('old CLI')
-        with patch.multiple(cp, ROOT=self.installed, CODE_DIR=source, CODE_FILES=('bin/codexpool',)):
+        (self.installed / 'bin/subpool').write_text('old CLI')
+        with patch.multiple(cp, ROOT=self.installed, CODE_DIR=source, CODE_FILES=('bin/subpool',)):
             real_replace = cp.os.replace
             def fail_cli(src, dest):
-                if 'payload/bin/codexpool' in str(src):
+                if 'payload/bin/subpool' in str(src):
                     raise OSError('CLI publish failed')
                 return real_replace(src, dest)
             with patch.object(cp.os, 'replace', side_effect=fail_cli), self.assertRaises(OSError):
                 cp.copy_code()
-            self.assertEqual((self.installed / 'bin/codexpool').read_text(), 'old CLI')
+            self.assertEqual((self.installed / 'bin/subpool').read_text(), 'old CLI')
             self.assertFalse((self.installed / 'addons/stub').exists())
             cp.copy_code()
-        self.assertEqual((self.installed / 'bin/codexpool').read_text(), 'new CLI')
+        self.assertEqual((self.installed / 'bin/subpool').read_text(), 'new CLI')
         self.assertEqual((self.installed / 'addons/stub/payload.txt').read_text(), 'fixture code asset\n')
 
     def test_bridge_extension_only_for_its_own_provider(self):

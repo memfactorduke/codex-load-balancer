@@ -33,11 +33,11 @@ def bind(core):
 
 ENGINE_INPUT_LIMIT = 4 * 1024 * 1024
 HISTORY_LIMIT = 60000
-ROLE_FIRST_LINE = 'You are a subagent running on a third-party model reached through codexpool. Do only the assigned task.'
+ROLE_FIRST_LINE = 'You are a subagent running on a third-party model reached through subpool. Do only the assigned task.'
 ENGINE_ENV_KEYS = ('PATH', 'HOME', 'USER', 'LANG', 'SHELL', 'TMPDIR', 'CLAUDE_CONFIG_DIR',
                    'ANTHROPIC_AUTH_TOKEN', 'CLAUDEPOOL', 'DISABLE_AUTOUPDATER',
                    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB')
-LAUNCHER_MARK = '# codexpool claude launcher, written by `codexpool claude install`'
+LAUNCHER_MARK = '# subpool claude launcher, written by `subpool claude install`'
 
 
 def turn_metadata(headers):
@@ -64,7 +64,7 @@ def thread_key(metadata, body):
         key = body.get('prompt_cache_key')
         if not isinstance(key, str) or not key:
             raise BridgeError(400, 'Codex sent neither a thread id nor a prompt cache key.', 'bad_request')
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, 'codexpool:' + key))
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, 'subpool:' + key))
 
 
 def item_text(item):
@@ -118,7 +118,7 @@ def identity_within(path, root):
     return identity is not None and any(file_identity(p) == identity for p in (path,) + tuple(path.parents))
 
 
-PROTECTED_HOME_PATHS = ('.codexpool', '.codex', '.claude', '.ssh', '.gnupg', '.grok', '.aws',
+PROTECTED_HOME_PATHS = ('.subpool', '.codex', '.claude', '.ssh', '.gnupg', '.grok', '.aws',
                         '.azure', '.kube', '.docker', '.config', '.local/share/keyrings', 'Library')
 
 
@@ -132,7 +132,7 @@ def cwd_ok(cwd, config_path=None, home=None, profiles=(), probe_root=None):
         raise BridgeError(400, 'The workspace path cannot be resolved.', 'untrusted_workspace')
     if probe_root is not None:
         # Only the local acceptance command supplies this argument, never a request or metadata.
-        root = home / '.codexpool' / 'state' / 'engine-probe'
+        root = home / '.subpool' / 'state' / 'engine-probe'
         if Path(probe_root) == root and root.resolve() == root and spelled == real and real.parent == root \
                 and real.is_dir() and not any(real.iterdir()):
             return str(real)
@@ -183,7 +183,7 @@ def engine_settings():
     """Versioned, pure template; keep identical to lane apply's acceptance fingerprint."""
     return {'disableAllHooks': True, 'disableSkillShellExecution': True, 'permissions': {'deny': [
         'Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Agent', 'Skill',
-        'Read(~/.codexpool/**)', 'Read(~/.codex/**)', 'Read(~/.claude/**)', 'Read(~/.claude.json)',
+        'Read(~/.subpool/**)', 'Read(~/.codex/**)', 'Read(~/.claude/**)', 'Read(~/.claude.json)',
         'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.config/**)', 'Read(~/Library/**)',
         'Read(~/.gnupg/**)', 'Read(~/.grok/**)', 'Read(~/.azure/**)', 'Read(~/.kube/**)',
         'Read(~/.docker/**)', 'Read(~/.local/share/keyrings/**)']}}
@@ -193,7 +193,7 @@ def engine_environment(engine):
     env = engine.get('env') or {}
     if set(env) != set(ENGINE_ENV_KEYS) or any(not isinstance(v, str) for v in env.values()):
         raise engine_error('engine_misconfigured', field='env')
-    fixed = {'ANTHROPIC_AUTH_TOKEN': 'codexpool', 'CLAUDEPOOL': 'required', 'DISABLE_AUTOUPDATER': '1',
+    fixed = {'ANTHROPIC_AUTH_TOKEN': 'subpool', 'CLAUDEPOOL': 'required', 'DISABLE_AUTOUPDATER': '1',
              'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB': '1',
              'CLAUDE_CONFIG_DIR': engine['profile']}
     if any(env.get(k) != v for k, v in fixed.items()) or engine.get('settings') != engine_settings():
@@ -243,7 +243,7 @@ def cpa_compatibility(engine, version, state, known):
     """A success applies only to the current binary, engine and exact accepted normalization paths."""
     try:
         report = json.loads((Path(state) / 'engine-cpa-check.json').read_text())
-        binary = Path(engine['env']['HOME']) / '.codexpool' / 'bin' / 'claude-current' / 'cli-proxy-api'
+        binary = Path(engine['env']['HOME']) / '.subpool' / 'bin' / 'claude-current' / 'cli-proxy-api'
         build = hashlib.sha256(binary.read_bytes()).hexdigest()
         good = (isinstance(report, dict) and report.get('ok') is True and not report.get('unexpected_paths')
                 and report.get('cpa_sha256') == build and report.get('claude_version') == version
@@ -481,7 +481,7 @@ def engine_error(code, field=None, reset=None, streamed=False):
     messages = {'pool_down': 'The Claude pool is unavailable.', 'engine_unavailable': 'Claude Code is unavailable.',
                 'engine_timeout': 'Claude Code startup timed out.',
                 'session_busy': 'This session is running another turn, or is open in a terminal.',
-                'engine_untested': 'The installed Claude Code version is not accepted for this lane; run codexpool lane apply --accept-engine.',
+                'engine_untested': 'The installed Claude Code version is not accepted for this lane; run subpool lane apply --accept-engine.',
                 'engine_misconfigured': 'Claude Code did not match the accepted configuration: %s.' % (field or 'unknown field'),
                 'bad_request': 'The message could not be delivered to Claude Code.',
                 'engine_error': 'Claude Code error.', 'engine_exited': 'Claude Code exited without a result.'}

@@ -1,4 +1,4 @@
-"""The samples in docs/LANES.md are what codexpool renders for examples/lanes.json (with the default bridge port):
+"""The samples in docs/LANES.md are what subpool renders for examples/lanes.json (with the default bridge port):
 the lanes.json file itself, the config.yaml block of a normal lane apply (lane aliases only; member aliases exist
 only while lane test runs), the role file and the ~/.codex/AGENTS.md block."""
 import json

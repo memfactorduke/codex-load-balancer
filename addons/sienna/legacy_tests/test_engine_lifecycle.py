@@ -258,7 +258,7 @@ class Runtime(unittest.TestCase):
     def test_accept_probe_stub_only_and_no_mutation_on_failure(self):
         # No patch of Popen here: both executable paths point to the fixture in fake HOME.
         self.probe_fixture()
-        version, expectation = b.accept_engine(self.engine, self.route, self.home / '.codexpool' / 'state', timeout=2)
+        version, expectation = b.accept_engine(self.engine, self.route, self.home / '.subpool' / 'state', timeout=2)
         self.assertEqual(version, '2.1.283')
         self.assertEqual(expectation, self.expect)
         capture = json.loads((self.profile / 'spawn.json').read_text())
@@ -266,7 +266,7 @@ class Runtime(unittest.TestCase):
         self.assertIn('Reply with the single word ok.', capture['stdin'])
         self.fixture([dict(self.init(), tools=['Read', 'Bash'])], probe=True, linger=True)
         with self.assertRaises(b.BridgeError) as error:
-            b.accept_engine(self.engine, self.route, self.home / '.codexpool' / 'state', timeout=2)
+            b.accept_engine(self.engine, self.route, self.home / '.subpool' / 'state', timeout=2)
         self.assertEqual(error.exception.code, 'engine_misconfigured')
 
     def test_probe_refuses_missing_engine_and_checks_transcript_denials_warning(self):
@@ -275,17 +275,17 @@ class Runtime(unittest.TestCase):
                                 {'type': 'result', 'subtype': 'success', 'permission_denials': []}], True)):
             self.fixture(events, probe=probe)
             with self.assertRaises(b.BridgeError):
-                b.accept_engine(self.engine, self.route, self.home / '.codexpool' / 'state', timeout=2)
+                b.accept_engine(self.engine, self.route, self.home / '.subpool' / 'state', timeout=2)
         Path(self.engine['launcher']).unlink()
         with mock.patch.object(b.subprocess, 'Popen') as spawn, self.assertRaises(b.BridgeError):
-            b.accept_engine(self.engine, self.route, self.home / '.codexpool' / 'state', timeout=2)
+            b.accept_engine(self.engine, self.route, self.home / '.subpool' / 'state', timeout=2)
         spawn.assert_not_called()
 
     def test_probe_checks_transcript_and_normal_profile_mtimes(self):
         for option, field in (('no_transcript', 'lane transcript'), ('mutate_profile', 'normal profile changed')):
             self.probe_fixture(**{option: True})
             with self.assertRaises(b.BridgeError) as error:
-                b.accept_engine(self.engine, self.route, self.home / '.codexpool' / 'state', timeout=2)
+                b.accept_engine(self.engine, self.route, self.home / '.subpool' / 'state', timeout=2)
             self.assertIn(field, error.exception.message)
 
     def test_resume_holds_lock_and_uses_isolated_env(self):

@@ -9,7 +9,7 @@ from unittest import mock
 try:
     import AppKit
     sys.path.insert(0, str(REPO / 'menubar'))
-    mb = importlib.import_module('codexpool_menubar')
+    mb = importlib.import_module('subpool_menubar')
 except ImportError:
     mb = None
 
@@ -61,8 +61,13 @@ class NativeContract(unittest.TestCase):
         self.ui.account_menu(seat, add)
         self.assertEqual([c.args[2] for c in add.call_args_list], ['switch', 'disable', 'unreserve'])
 
+    def test_codex_setup_does_not_call_retired_claude_hooks(self):
+        self.assertEqual(self.ui.setup_done_rows(object()), [])
+        self.assertIsNone(self.ui.snapshot_login('setup-signin', object()))
+        self.assertEqual(self.ui.snapshot_panes, ())
+
     def test_settings_provider_list_excludes_claude_engine(self):
-        st = importlib.import_module('codexpool_settings')
+        st = importlib.import_module('subpool_settings')
         self.assertFalse(any(p[0] == 'sienna' for p in st.PROVIDERS))
         self.assertEqual(st.POOL_TITLES['claude'], 'Claude CLI')
         self.assertEqual(st.POOL_TITLES['codex'], 'Codex Desktop/CLI')

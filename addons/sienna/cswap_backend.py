@@ -48,7 +48,7 @@ def reserves():
 def call(args, structured=False, ok=(0,), input_text=None):
     binary = executable()
     if not binary:
-        raise ValueError('cswap is not installed. Run codexpool claude install when ready.')
+        raise ValueError('cswap is not installed. Run subpool claude install when ready.')
     result = subprocess.run([binary] + list(args), input=input_text or '',
                             text=True, capture_output=True, timeout=90)
     # Never echo arbitrary subprocess output: only known public JSON fields pass.
@@ -254,9 +254,9 @@ def install(args):
         return
     from . import pool
     if pool.claude_installed():
-        raise ValueError('Retire the old proxy first: codexpool claude retire-proxy (preview), then --yes when ready.')
+        raise ValueError('Retire the old proxy first: subpool claude retire-proxy (preview), then --yes when ready.')
     if not shutil.which('uv'):
-        raise ValueError('Install uv first, then run codexpool claude install again.')
+        raise ValueError('Install uv first, then run subpool claude install again.')
     # An existing cswap is never upgraded or replaced silently.
     if not executable():
         subprocess.run(command, check=True)

@@ -1,6 +1,6 @@
-# codexpool: the Claude pool, a second CLIProxyAPI instance of Claude accounts behind Claude Code.
-# `codexpool claude install` writes ~/.codexpool/config-claude.yaml from this file (port from claude_port in
-# settings.json, the same management key as config.yaml). Owned by ~/.codexpool (see README.md): never point another
+# subpool: the Claude pool, a second CLIProxyAPI instance of Claude accounts behind Claude Code.
+# `subpool claude install` writes ~/.subpool/config-claude.yaml from this file (port from claude_port in
+# settings.json, the same management key as config.yaml). Owned by ~/.subpool (see README.md): never point another
 # tool at it or at auth-claude/. The Codex pool (config.yaml, auth/) is separate and unchanged.
 # Claude Code reaches it through the claude-pool launcher: ANTHROPIC_BASE_URL=http://127.0.0.1:8321 and nothing
 # else; it keeps its own claude.ai login (no ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY).
@@ -9,9 +9,9 @@ host: "127.0.0.1" # loopback only
 port: 8321
 remote-management:
   allow-remote: false
-  secret-key: "<set by codexpool claude install>" # the Codex pool's key (Keychain: codexpool-management-key)
+  secret-key: "<set by subpool claude install>" # the Codex pool's key (Keychain: codexpool-management-key)
   disable-control-panel: true # no web panel downloaded from GitHub at runtime
-auth-dir: "~/.codexpool/auth-claude" # one OAuth login per Claude account (-claude-login); only this process refreshes them
+auth-dir: "~/.subpool/auth-claude" # one OAuth login per Claude account (-claude-login); only this process refreshes them
 # Empty = no client auth on loopback. Claude Code sends its own claude.ai credentials; the pool ignores them and
 # substitutes the serving account's token. The origin gate (build/codexpool_gate.go, profile "claude", set in the
 # launchd plist) keeps browsers out and admits only foreground Claude Code (User-Agent claude-cli/..., x-app: cli).

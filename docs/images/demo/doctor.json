@@ -6,7 +6,7 @@
     {
       "title": "Pool process",
       "checks": [
-        {"status": "ok", "text": "launchd job com.codexpool.pool running (pid 4242)", "fix": null},
+        {"status": "ok", "text": "launchd job com.subpool.pool running (pid 4242)", "fix": null},
         {"status": "ok", "text": "listening on 127.0.0.1:8319", "fix": null},
         {"status": "ok", "text": "running build: 7.3.18+gate.1a2b3c4d5e (installed 7.3.18+gate.1a2b3c4d5e)", "fix": null},
         {"status": "ok", "text": "origin gate: Codex-like request 200, browser request 403", "fix": null},
@@ -39,7 +39,7 @@
     {
       "title": "Guard and visibility",
       "checks": [
-        {"status": "ok", "text": "launchd job com.codexpool.guard loaded", "fix": null},
+        {"status": "ok", "text": "launchd job com.subpool.guard loaded", "fix": null},
         {"status": "ok", "text": "guard last completed 12s ago", "fix": null},
         {"status": "ok", "text": "menu bar app running (pid 4243)", "fix": null},
         {"status": "ok", "text": "no interrupted selftest", "fix": null}

@@ -7,7 +7,7 @@ import unittest
 if addon is None:
     raise unittest.SkipTest('sienna add-on absent; dependent desktop/engine tests')
 from _helpers import addon, sienna_pool, sienna_guard, sienna_selftest
-from _helpers import cp, HOME  # noqa: E402  (sets the fake HOME before bin/codexpool loads)
+from _helpers import cp, HOME  # noqa: E402  (sets the fake HOME before bin/subpool loads)
 import datetime as dt, json, os, time, unittest
 import argparse, contextlib, fcntl, plistlib, subprocess
 from _helpers import ROOT, run
@@ -16,7 +16,7 @@ import test_desktop
 
 mod = test_desktop.mod
 APP_DISCOVER = mod.Desktop.app
-assert 'codexpool-test-home' in str(cp.HOME), cp.HOME
+assert 'subpool-test-home' in str(cp.HOME), cp.HOME
 
 
 class Boom(Exception):
@@ -145,7 +145,7 @@ class Probes(test_desktop.DesktopTests):
             self.fail('preference edits must not block recovery: ' + str(e))
         self.command('rollback')
         entry = sienna_desktop.DESKTOP_P3 / 'configLibrary' / (journal['entry_id'] + '.json')
-        self.assertEqual(self.read(entry)['inferenceGatewayApiKey'], 'codexpool')
+        self.assertEqual(self.read(entry)['inferenceGatewayApiKey'], 'subpool')
         self.assertEqual(self.read(self.meta_path())['appliedId'], journal['entry_id'])
         self.assertEqual(self.read(self.mode_path())['mcpServers'], {'fs': {'command': 'npx'}})
 

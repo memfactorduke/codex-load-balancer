@@ -5,13 +5,15 @@ from pathlib import Path
 def create(legacy, mb):
     class CswapUI(legacy.PoolUI):
         product_scope = 'CLI'
-        status_file = Path.home() / '.codexpool/state/claude-cli-status.json'
-        history_file = Path.home() / '.codexpool/state/claude-cli-history.jsonl'
+        status_file = Path.home() / '.subpool/state/claude-cli-status.json'
+        history_file = Path.home() / '.subpool/state/claude-cli-history.jsonl'
         scope_words = {'all': 'selected account', 'regular': 'selected account'}
         show_chart = False
         order_label = 'cswap accounts'
         order_tip = 'Saved Claude CLI logins; choose an account to switch.'
         setup_pane = 'seats'
+        snapshot_panes = ()
+        meter_tip_suffix = ' Claude CLI shows the selected account’s usage separately.'
         lane_providers = ()
         lane_provider_ids = ()
         switcher_blurb = 'Claude CLI account switching, powered by cswap'
@@ -118,7 +120,7 @@ def create(legacy, mb):
                 return True
             app.say('Updating Claude CLI…')
             args = ['claude', 'reserve', seat.name, 'off' if verb == 'unreserve' else 'on'] if verb in ('reserve', 'unreserve') else ['claude', verb, seat.name]
-            mb.run_codexpool(args, lambda code, err: app.after_action(
+            mb.run_subpool(args, lambda code, err: app.after_action(
                 'Claude CLI updated; reopen Claude Code to apply a switch immediately', verb, code, err))
             return True
 
@@ -126,7 +128,7 @@ def create(legacy, mb):
         def run_action(app, action):
             if action == 'refresh':
                 app.say('Refreshing cswap…')
-                mb.run_codexpool(['claude', 'status', '--live'], app.refreshed)
+                mb.run_subpool(['claude', 'status', '--live'], app.refreshed)
                 return True
             if action == 'addaccount':
                 app.popover.performClose_(None)
@@ -217,6 +219,15 @@ def create(legacy, mb):
                      for n in (80, 90, 95)]))
                 out.append(st.section(st.group(rows), 'Automatic switching'))
             return out
+
+        @staticmethod
+        def setup_done_rows(assistant):
+            # CLI logins live in cswap; Codex setup has no Claude proxy or desktop completion actions.
+            return []
+
+        @staticmethod
+        def snapshot_login(pane, setup):
+            return None
 
         def setup_accounts(self, assistant):
             st = self.st

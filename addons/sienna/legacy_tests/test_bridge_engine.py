@@ -54,7 +54,7 @@ class EngineInput(unittest.TestCase):
         meta = b.turn_metadata({'X-Codex-Turn-Metadata': json.dumps(raw)})
         self.assertEqual(set(meta), {'thread_id', 'parent_thread_id', 'forked_from_thread_id', 'subagent_kind'})
         self.assertEqual(b.thread_key(meta, {}), KEY)
-        expected = str(uuid.uuid5(uuid.NAMESPACE_URL, 'codexpool:cache'))
+        expected = str(uuid.uuid5(uuid.NAMESPACE_URL, 'subpool:cache'))
         self.assertEqual(b.thread_key(None, {'prompt_cache_key': 'cache'}), expected)
         for raw in (None, 'garbled', '[]', 'null'):
             self.assertIsNone(b.turn_metadata({'x-codex-turn-metadata': raw}))
@@ -179,7 +179,7 @@ class EngineWorkspace(unittest.TestCase):
             self.check(child)
 
     def test_protected_untrusted_absent_nested_worktree(self):
-        protected = self.home / '.codexpool' / 'nested'
+        protected = self.home / '.subpool' / 'nested'
         protected.mkdir(parents=True)
         alias = self.home / 'protected-link'
         alias.symlink_to(protected, target_is_directory=True)
@@ -318,7 +318,7 @@ class EngineHarness(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=HOME)
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
-        self.repo, self.profile = self.home / 'repo', self.home / '.codexpool' / 'lanes' / 'test-home'
+        self.repo, self.profile = self.home / 'repo', self.home / '.subpool' / 'lanes' / 'test-home'
         self.repo.mkdir()
         (self.profile / 'tmp').mkdir(parents=True)
         (self.home / '.codex').mkdir()
@@ -336,7 +336,7 @@ class EngineHarness(unittest.TestCase):
                        'mcp_servers': [], 'plugins': []}
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home), 'USER': 'test', 'LANG': 'en_US.UTF-8',
                'SHELL': '/bin/sh', 'TMPDIR': str(self.profile / 'tmp'), 'CLAUDE_CONFIG_DIR': str(self.profile),
-               'ANTHROPIC_AUTH_TOKEN': 'codexpool', 'CLAUDEPOOL': 'required', 'DISABLE_AUTOUPDATER': '1',
+               'ANTHROPIC_AUTH_TOKEN': 'subpool', 'CLAUDEPOOL': 'required', 'DISABLE_AUTOUPDATER': '1',
                'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB': '1'}
         self.engine = dict(launcher=str(bindir / 'claude-pool'), launcher_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
                            profile=str(self.profile), env=env,
@@ -344,7 +344,7 @@ class EngineHarness(unittest.TestCase):
         self.route = dict(extension='sienna', engine='test', upstream_model='test-model', effort='medium', max_turns=3, turn_timeout=20)
         self.cfg = types.SimpleNamespace(engines={'test': self.engine})
         self.service = b.EngineService(self.cfg, b.Sealer(b'k' * 32), self.home / 'state')
-        cpa = self.home / '.codexpool' / 'bin' / 'claude-current' / 'cli-proxy-api'
+        cpa = self.home / '.subpool' / 'bin' / 'claude-current' / 'cli-proxy-api'
         cpa.parent.mkdir(parents=True)
         cpa.write_bytes(b'synthetic CPA; never executed')
         b.private_json(self.service.state / 'engine-cpa-check.json', dict(ok=True, claude_version='2.1.283',

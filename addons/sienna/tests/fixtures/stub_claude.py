@@ -4,7 +4,7 @@
 The harness copies this into fake HOME/.local/versions/<version> and adds an absolute Python shebang.
 No real Claude executable, login, network or application is involved.
 """
-# codexpool claude launcher, written by `codexpool claude install`
+# subpool claude launcher, written by `subpool claude install`
 import json
 import os
 from pathlib import Path

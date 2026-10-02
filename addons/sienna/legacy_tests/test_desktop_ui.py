@@ -4,12 +4,12 @@ desktop_tip_suffix, the Claude tab's Desktop row and the pool-down banner, the D
 and desktop_offer on the Setup assistant's Done step, all drawn by the core apps through the PoolUI): claude-status.json's pool.desktop, written by
 the guard (docs/DESKTOP.md, DESKTOP_3P.md §7). The control keeps configured_mode (the app's files) and running_mode
 (the running app's own log) apart: "On the pool" only once the app has logged the pool's address. Choosing the
-other segment asks first, then runs `codexpool claude desktop pooled|claudeai --relaunch --yes`; what codexpool
+other segment asks first, then runs `subpool claude desktop pooled|claudeai --relaunch --yes`; what subpool
 would refuse (credits on at claude.ai, an interrupted change, an edited "Pool" entry) is said first, in its words.
 
 The copy and state helpers are pure functions over the block, so they run on every Python here, loaded from the
 source without importing the module (which needs PyObjC). The popover's row, the banner and Settings need PyObjC,
-that is the menu bar's own interpreter (~/.codexpool/menubar/.venv/bin/python), and skip without it. The README's
+that is the menu bar's own interpreter (~/.subpool/menubar/.venv/bin/python), and skip without it. The README's
 demo data has no desktop block, so the control is not drawn there and docs/images/demo/render.py's output stays
 byte-identical."""
 import __future__
@@ -23,9 +23,9 @@ from dataclasses import dataclass, field
 
 from _helpers import REPO
 
-MENUBAR = REPO / 'menubar' / 'codexpool_menubar.py'
+MENUBAR = REPO / 'menubar' / 'subpool_menubar.py'
 EXT = REPO / 'addons' / 'sienna' / 'menubar_ext.py'
-SETTINGS = REPO / 'menubar' / 'codexpool_settings.py'
+SETTINGS = REPO / 'menubar' / 'subpool_settings.py'
 SPEC = REPO / 'addons' / 'sienna' / 'docs' / 'SPEC.md'
 DOCS = REPO / 'addons' / 'sienna' / 'docs' / 'MENUBAR.md'
 DESKTOP_DOCS = REPO / 'addons' / 'sienna' / 'docs' / 'DESKTOP.md'
@@ -37,9 +37,9 @@ PURE = ('parse_desktop', 'desktop_shown', 'desktop_credit_labels', 'join_labels'
         'desktop_closing', 'desktop_tip_suffix', 'money')
 CLASSES = ('Desktop', 'DesktopView')
 CONSTANTS = ('DESKTOP_MODES', 'DESKTOP_RUNNING', 'DESKTOP_LABELS', 'DESKTOP_APP_MISSING')
-CREDITS_ON = ('credits on at claude.ai for Max B: turn them off there (Settings → Usage). codexpool can\'t stop every '
+CREDITS_ON = ('credits on at claude.ai for Max B: turn them off there (Settings → Usage). subpool can\'t stop every '
               'paid request.')
-STALE = 'no fresh credits reading for Pro C: wait for the guard\'s next poll (codexpool sienna status)'
+STALE = 'no fresh credits reading for Pro C: wait for the guard\'s next poll (subpool sienna status)'
 ON_THE_POOL = 'On the pool · Chat, Cowork and Code · history in Claude-3p'
 
 BLOCK = {   # the guard's block for a pooled app that logged the pool's address (DESKTOP_3P.md §4.6)
@@ -214,15 +214,15 @@ class Actions(unittest.TestCase):
     def desktop(self, **patch):
         return self.ns['parse_desktop'](block(**patch))
 
-    def test_refusals_in_codexpool_s_words(self):
+    def test_refusals_in_subpool_s_words(self):
         refuse = self.ns['desktop_refusal']
         self.assertEqual(refuse(self.desktop(), 'pooled'), '')
         self.assertEqual(refuse(self.desktop(), 'claudeai'), '')
         why = refuse(self.desktop(credits_ok=False, credits_problems=[CREDITS_ON, STALE]), 'pooled')
         self.assertEqual(why.splitlines(), ['Credits on at claude.ai for Max B: turn them off there (Settings → Usage). '
-                                            'codexpool can\'t stop every paid request.',
+                                            'subpool can\'t stop every paid request.',
                                             'No fresh credits reading for Pro C: wait for the guard\'s next poll '
-                                            '(codexpool sienna status)'])
+                                            '(subpool sienna status)'])
         self.assertIn('--reclaim', refuse(self.desktop(owned_drift=True), 'pooled'))
         self.assertIn('rollback', refuse(self.desktop(txn_pending=True), 'claudeai'))
         self.assertIn('can’t answer', refuse(self.desktop(), 'pooled', pool_down=True))
@@ -270,7 +270,7 @@ class Actions(unittest.TestCase):
         self.assertEqual(closing('', 0, ''), 'Done')
         self.assertEqual(closing('', 1, '✗ Claude did not quit; finish what it is doing and try again'),
                          'Claude did not quit; finish what it is doing and try again')
-        self.assertEqual(closing('', 3, ''), 'codexpool claude desktop failed (exit 3)')
+        self.assertEqual(closing('', 3, ''), 'subpool claude desktop failed (exit 3)')
         self.assertEqual(self.ns['desktop_busy_text']('pooled'), 'Switching Claude to the pool…')
         self.assertEqual(self.ns['desktop_busy_text']('reopen'), 'Reopening Claude…')
 
@@ -303,11 +303,11 @@ def load(name):
     return importlib.import_module(name)
 
 
-mb = load('codexpool_menubar')
+mb = load('subpool_menubar')
 ext = mb.POOL_UI['claude'].module if mb is not None else None   # the add-on's menubar_ext.py, as mb loaded it
 
 
-@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.codexpool/menubar/.venv/bin/python)')
+@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.subpool/menubar/.venv/bin/python)')
 class WithAppKit(unittest.TestCase):
     """The Claude tab's Desktop row, the pool-down banner, the tooltips and Settings, on the demo's Claude pool with
     a desktop block added."""
@@ -390,7 +390,7 @@ class WithAppKit(unittest.TestCase):
         self.assertEqual(mb.pool_severity(plain), mb.pool_severity(pooled))
 
     def test_settings_done_step_offer(self):
-        load('codexpool_settings')
+        load('subpool_settings')
         offer = ext.desktop_offer
         self.assertIsNone(offer(self.model(self.raw)))
         self.assertIsNone(offer(self.model(self.raw, block())))   # already pooled: nothing to offer
@@ -409,7 +409,7 @@ class WithAppKit(unittest.TestCase):
 
     def test_settings_row_builds_in_every_state(self):
         """The Using it card with the Desktop rows, built as the window builds it (no window shown, no command)."""
-        st = load('codexpool_settings')
+        st = load('subpool_settings')
         for patch in ({}, dict(running_mode='unknown', restart_required=True), dict(configured_mode='none'),
                       dict(txn_pending=True), dict(configured_mode='unknown'),
                       dict(credits_ok=False, credits_problems=[CREDITS_ON]),

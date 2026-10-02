@@ -11,14 +11,14 @@ from unittest import mock
 try:
     import AppKit
     sys.path.insert(0, str(REPO / 'menubar'))
-    mb = importlib.import_module('codexpool_menubar')
+    mb = importlib.import_module('subpool_menubar')
 except ImportError:
     mb = None
 
 
 class SeatDisplay(unittest.TestCase):
     def test_available_first_preserves_fill_order_and_priorities(self):
-        path = REPO / 'menubar/codexpool_menubar.py'
+        path = REPO / 'menubar/subpool_menubar.py'
         body = [n for n in ast.parse(path.read_text()).body
                 if isinstance(n, ast.FunctionDef) and n.name == 'display_seats']
         ns = {'Seat': object, 'Model': object}
@@ -75,7 +75,7 @@ class CompactLayout(unittest.TestCase):
     def test_view_toggle_is_local_and_persisted_without_running_commands(self):
         controller = types.SimpleNamespace(seat_view='compact', content=mock.Mock(), render=mock.Mock())
         defaults = mock.Mock()
-        with mock.patch.object(mb, 'NSUserDefaults') as factory, mock.patch.object(mb, 'run_codexpool') as command:
+        with mock.patch.object(mb, 'NSUserDefaults') as factory, mock.patch.object(mb, 'run_subpool') as command:
             factory.standardUserDefaults.return_value = defaults
             mb.Controller.handle_region(controller, ('seatview', 'full'), None, None)
         self.assertEqual(controller.seat_view, 'full')
@@ -105,7 +105,7 @@ class CompactLayout(unittest.TestCase):
         controller = types.SimpleNamespace(chart_expanded=True, seat_view='compact', range_key='7d',
                                             content=mock.Mock(), render=mock.Mock())
         defaults = mock.Mock()
-        with mock.patch.object(mb, 'NSUserDefaults') as factory, mock.patch.object(mb, 'run_codexpool') as command:
+        with mock.patch.object(mb, 'NSUserDefaults') as factory, mock.patch.object(mb, 'run_subpool') as command:
             factory.standardUserDefaults.return_value = defaults
             mb.Controller.handle_region(controller, ('chart', 'toggle'), None, None)
             self.assertFalse(controller.chart_expanded)

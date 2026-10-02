@@ -179,7 +179,7 @@ class DesktopTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.DesktopError, 'no credential is backed up'):
             self.command(reclaim=True)
         self.assertFalse(list(cp.STATE.glob('desktop-backup-*')))
-        entry['inferenceGatewayApiKey'] = 'codexpool'
+        entry['inferenceGatewayApiKey'] = 'subpool'
         self.put(path, entry)
         self.command(reclaim=True)
 
@@ -597,14 +597,14 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(result['failing_paths'], ['$.headers.changed'])
             # Switching major module versions must rewrite imports and remove old fixtures.
             (tree / 'go.mod').write_text('module github.com/router-for-me/CLIProxyAPI/v8\n')
-            (executor / 'testdata/codexpool-desktop/stale.json').write_text('{}')
+            (executor / 'testdata/subpool-desktop/stale.json').write_text('{}')
             with patch.object(cp.subprocess, 'run', return_value=argparse.Namespace(returncode=0, stdout='', stderr='')):
                 self.assertEqual(desktop_build.desktop_wire_test(tree, 'fake-go', {})['result'], 'PASS')
             self.assertIn('CLIProxyAPI/v8/', (executor / 'codexpool_desktop_wire_test.go').read_text())
             self.assertNotIn('CLIProxyAPI/v7/', (executor / 'codexpool_desktop_wire_test.go').read_text())
-            self.assertFalse((executor / 'testdata/codexpool-desktop/stale.json').exists())
+            self.assertFalse((executor / 'testdata/subpool-desktop/stale.json').exists())
             self.assertTrue((executor / 'codexpool_desktop_wire_test.go').exists())
-            self.assertEqual(len(list((executor / 'testdata/codexpool-desktop').glob('*.json'))), 4)
+            self.assertEqual(len(list((executor / 'testdata/subpool-desktop').glob('*.json'))), 4)
         finally:
             shutil.rmtree(tree)
 

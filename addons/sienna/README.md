@@ -14,10 +14,10 @@ Max 20× or Team Premium 6.25×. These describe the plan's per-session capacity,
 not a multiplier of weekly quota. Selected and ready accounts appear first;
 unavailable accounts appear last. This display order does not change cswap's choices.
 
-`codexpool claude install` installs a checked source extension into the pinned cswap
-package. For an already connected installation, `codexpool claude detect-plans`
+`subpool claude install` installs a checked source extension into the pinned cswap
+package. For an already connected installation, `subpool claude detect-plans`
 enables it. cswap uses its own OAuth profile helper and identity checks, then exports
-only public subscription fields in `list --json`. codexpool never reads credentials.
+only public subscription fields in `list --json`. subpool never reads credentials.
 Successful profiles are cached for six hours; failures retry after fifteen minutes
 and show an unknown plan or size. Max without a reported rate tier has no guessed
 multiplier. The extension refuses unfamiliar source and keeps source-only originals
@@ -54,13 +54,13 @@ from upstream automatic rotation by default; the adapter does not enable them.
 ## Setup, when authorized
 
 ```sh
-codexpool claude install --dry-run
-codexpool claude install
+subpool claude install --dry-run
+subpool claude install
 # Sign in through Claude Code, then save its current login:
-codexpool claude add
-codexpool claude status --live
-codexpool claude switch 2
-codexpool claude auto on
+subpool claude add
+subpool claude status --live
+subpool claude switch 2
+subpool claude auto on
 ```
 
 `install` uses uv and Python 3.13 to install upstream source pinned at revision
@@ -75,7 +75,7 @@ Use `reserve SLOT on|off` to change an account's reserve designation.
 ## Existing proxy installations
 
 There is no automatic credential migration. First preview retirement with
-`codexpool claude retire-proxy`; only `--yes` stops the old proxy and removes its
+`subpool claude retire-proxy`; only `--yes` stops the old proxy and removes its
 launcher. It retains old account data. Restart pooled CLI sessions with plain
 `claude`, then set up cswap accounts through normal Claude sign-ins. Installation
 refuses while the legacy proxy is still installed. Its existing protective guard

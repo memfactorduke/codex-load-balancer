@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the idea. codexpool keeps a few rules that shape what it can do: nothing custom in the seat request path, a minimal Codex config, tokens never copied or printed, a loopback-only gated pool, and a menu bar app that only reads files. [AGENTS.md](https://github.com/memfactorduke/codex-load-balancer/blob/main/AGENTS.md#invariants-never-break-these) lists them all.
+        Thanks for the idea. subpool keeps a few rules that shape what it can do: nothing custom in the seat request path, a minimal Codex config, tokens never copied or printed, a loopback-only gated pool, and a menu bar app that only reads files. [AGENTS.md](https://github.com/memfactorduke/codex-load-balancer/blob/main/AGENTS.md#invariants-never-break-these) lists them all.
   - type: textarea
     id: problem
     attributes:

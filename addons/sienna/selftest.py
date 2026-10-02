@@ -90,12 +90,12 @@ def cmd_claude_selftest(args):
     B. Spends a few requests on both accounts; runs only when you say so."""
     pool = cp.seat_pool('claude')
     if not sienna_pool.claude_installed():
-        cp.sys.exit('codexpool claude selftest: the Claude pool is not installed. codexpool claude install sets it up.')
+        cp.sys.exit('subpool claude selftest: the Claude pool is not installed. subpool claude install sets it up.')
     if not cp.port_open(pool.port):
-        cp.sys.exit(f'codexpool claude selftest: the Claude pool does not answer on :{pool.port} (codexpool claude status)')
+        cp.sys.exit(f'subpool claude selftest: the Claude pool does not answer on :{pool.port} (subpool claude status)')
     claude = sienna_pool.real_claude()
     if claude is None:
-        cp.sys.exit('codexpool claude selftest: Claude Code (claude) is not in ~/.local/bin or on PATH')
+        cp.sys.exit('subpool claude selftest: Claude Code (claude) is not in ~/.local/bin or on PATH')
     seats = [s for s in cp.load_seats(pool) if s['provider'] == 'claude']
     a, b = cp.match_seat(seats, args.from_seat), cp.match_seat(seats, args.to_seat)
     if a['name'] == b['name']:
@@ -117,7 +117,7 @@ def cmd_claude_selftest(args):
         movable = [s for s in seats if not s['disabled']]
         toggled = {}
         log_start = pool.log.stat().st_size if pool.log.exists() else 0
-        work = cp.tempfile.mkdtemp(prefix='codexpool-claude-selftest-')
+        work = cp.tempfile.mkdtemp(prefix='subpool-claude-selftest-')
         env = claude_selftest_env()
         extra = ['--model', args.model] if args.model else []
 

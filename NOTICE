@@ -1,12 +1,12 @@
-codexpool (Codex Load Balancer)
+subpool.app (formerly codexpool)
 https://github.com/memfactorduke/codex-load-balancer
 
 Required Notice: Copyright 2026 memfactorduke (https://github.com/memfactorduke/codex-load-balancer)
 
-codexpool is licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE). It is free for personal
+subpool is licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE). It is free for personal
 and other noncommercial use; commercial use needs the licensor's permission.
 
-codexpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are
+subpool is an independent project, not affiliated with or endorsed by OpenAI. Codex and ChatGPT are
 trademarks of OpenAI.
 
 
@@ -18,7 +18,7 @@ None of the software below is vendored in this repository. Each keeps its own li
 CLIProxyAPI
   https://github.com/router-for-me/CLIProxyAPI
   License: MIT
-  codexpool downloads CLIProxyAPI's upstream release source from GitHub at install and upgrade time and builds
+  subpool downloads CLIProxyAPI's upstream release source from GitHub at install and upgrade time and builds
   it with one added file, build/codexpool_gate.go (the origin gate), and a one-line change to
   cmd/server/main.go that registers the gate. CLIProxyAPI is not vendored here, and its MIT license applies
   to it.
@@ -26,7 +26,7 @@ CLIProxyAPI
 PyObjC (pyobjc-core, pyobjc-framework-Cocoa)
   https://github.com/ronaldoussoren/pyobjc
   License: MIT
-  Installed from PyPI into codexpool's own Python environment at install time, for the menu bar app, the
+  Installed from PyPI into subpool's own Python environment at install time, for the menu bar app, the
   Settings window and the Setup assistant.
 
 Go

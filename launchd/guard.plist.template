@@ -7,7 +7,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>{{PYTHON}}</string>
-		<string>{{ROOT}}/bin/codexpool</string>
+		<string>{{ROOT}}/bin/subpool</string>
 		<string>guard</string>
 	</array>
 	<key>WorkingDirectory</key>

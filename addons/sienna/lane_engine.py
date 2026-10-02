@@ -6,7 +6,7 @@ ENGINE_MEMBER_DEFAULTS = {'context_1m': False, 'ultracode': False, 'max_turns': 
 
 
 ENGINE_ROLE_INSTRUCTIONS = '''\
-You are a subagent running on a third-party model reached through codexpool. Do only the assigned task.
+You are a subagent running on a third-party model reached through subpool. Do only the assigned task.
 This is a read-only Claude Code lane. Use Read, Grep and Glob in the trusted workspace only.
 You cannot edit files, run commands, use the network or spawn subagents. Nobody can approve actions mid-turn.
 When a change is needed, return the exact diff or command as text for the parent or user to apply.
@@ -23,7 +23,7 @@ def engine_settings():
     """The v0 inline --settings object. --restricted ignores settings files; the engine must pass this JSON."""
     return {'disableAllHooks': True, 'disableSkillShellExecution': True, 'permissions': {'deny': [
         'Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Agent', 'Skill',
-        'Read(~/.codexpool/**)', 'Read(~/.codex/**)', 'Read(~/.claude/**)', 'Read(~/.claude.json)',
+        'Read(~/.subpool/**)', 'Read(~/.codex/**)', 'Read(~/.claude/**)', 'Read(~/.claude.json)',
         'Read(~/.ssh/**)', 'Read(~/.aws/**)', 'Read(~/.config/**)', 'Read(~/Library/**)',
         'Read(~/.gnupg/**)', 'Read(~/.grok/**)', 'Read(~/.azure/**)', 'Read(~/.kube/**)',
         'Read(~/.docker/**)', 'Read(~/.local/share/keyrings/**)']}}
@@ -40,7 +40,7 @@ def engine_environment(name, login_path):
     profile = engine_profile(name)
     return {'PATH': login_path, 'HOME': str(cp.HOME), 'USER': cp.getpass.getuser(),
             'LANG': cp.os.environ.get('LANG') or 'en_US.UTF-8', 'SHELL': cp.os.environ.get('SHELL') or '/bin/zsh',
-            'TMPDIR': str(profile / 'tmp'), 'CLAUDE_CONFIG_DIR': str(profile), 'ANTHROPIC_AUTH_TOKEN': 'codexpool',
+            'TMPDIR': str(profile / 'tmp'), 'CLAUDE_CONFIG_DIR': str(profile), 'ANTHROPIC_AUTH_TOKEN': 'subpool',
             'CLAUDEPOOL': 'required', 'DISABLE_AUTOUPDATER': '1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1',
             'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB': '1'}
 
@@ -147,11 +147,11 @@ def engine_state(name=None):
 
 
 def engine_state_hint(state):
-    return {'no launcher': 'install the current pool launcher (codexpool claude install)',
-            'no engine': 'install Claude Code first', 'pool down': 'codexpool claude status ; codexpool doctor',
-            'no profile': 'codexpool lane apply',
-            'untested engine': 'codexpool lane apply --accept-engine'
-            }.get(state, 'codexpool doctor')
+    return {'no launcher': 'install the current pool launcher (subpool claude install)',
+            'no engine': 'install Claude Code first', 'pool down': 'subpool claude status ; subpool doctor',
+            'no profile': 'subpool lane apply',
+            'untested engine': 'subpool lane apply --accept-engine'
+            }.get(state, 'subpool doctor')
 
 
 def engine_managed_settings(system_dir=None, preferences_dir=None):
@@ -185,13 +185,13 @@ def doctor_engine(check, lane, prep):
             good = path.is_dir() and path.stat().st_mode & 0o777 == 0o700 and cp.os.access(path, cp.os.W_OK)
         except (cp.LaneError, OSError):
             good = False
-        check(good, f'{name}: {cp.tilde(path)} writable, mode 700', 'codexpool lane apply')
+        check(good, f'{name}: {cp.tilde(path)} writable, mode 700', 'subpool lane apply')
     if prep:
         wanted = cp.json.loads(prep['bridge_new'])['engines'][name]
         env = entry.get('env') if isinstance(entry.get('env'), dict) else {}
         check(env.get('PATH') == wanted['env']['PATH'], f'{name}: recorded login PATH matches generated configuration',
-              'codexpool lane apply', warn=True)
-    code = cp._probe_status(pool.CLAUDE_PORT, {'User-Agent': 'claude-cli/codexpool-launcher', 'X-App': 'cli'})
+              'subpool lane apply', warn=True)
+    code = cp._probe_status(pool.CLAUDE_PORT, {'User-Agent': 'claude-cli/subpool-launcher', 'X-App': 'cli'})
     check(code == 200, f'{name}: Claude pool answers on 127.0.0.1:{pool.CLAUDE_PORT}', engine_state_hint('pool down'))
     managed = engine_managed_settings()
     check(not managed, f'{name}: managed settings still apply under --restricted: ' + ', '.join(cp.tilde(p) for p in managed)
@@ -207,7 +207,7 @@ def doctor_engine(check, lane, prep):
     good = bool(build and cpa.get('ok') and cpa.get('cpa_sha256') == build and cpa.get('known_normalisations', []) == known
                 and cpa.get('claude_version') == version)
     check(good, f'{name}: captured CPA passthrough ' + ('verified for this build and engine' if good else 'not verified or stale'),
-          'codexpool doctor --cpa-passthrough /path/to/sanitized-E4-captures')
+          'subpool doctor --cpa-passthrough /path/to/sanitized-E4-captures')
     if cpa.get('unexpected_paths'):
         check(False, 'pool rewrites Claude requests: ' + ', '.join(cpa['unexpected_paths']),
               'review the differences before accepting any exact path in bridge.json cpa_known_normalisations')
@@ -221,11 +221,11 @@ def run_cpa_passthrough(fixtures):
     runner = cp.pathlib.Path(__file__).with_name('cpa_check.py')
     binary = cp.cpa_binary(pool.CLAUDE_CURRENT)
     if not runner.is_file() or not binary.is_file():
-        cp.sys.exit('codexpool: CPA capture checker or installed Claude build is missing; update the install first')
+        cp.sys.exit('subpool: CPA capture checker or installed Claude build is missing; update the install first')
     known = cp.read_json(cp.BRIDGE_CONFIG, {}).get('cpa_known_normalisations', [])
     if not isinstance(known, list) or any(not isinstance(p, str) or not p.startswith('$.') for p in known):
-        cp.sys.exit('codexpool: cpa_known_normalisations must contain exact JSON paths')
-    with cp.tempfile.TemporaryDirectory(prefix='codexpool-cpa-check-') as temp:
+        cp.sys.exit('subpool: cpa_known_normalisations must contain exact JSON paths')
+    with cp.tempfile.TemporaryDirectory(prefix='subpool-cpa-check-') as temp:
         result = cp.pathlib.Path(temp) / 'result.json'
         env = dict(PATH=cp.os.environ.get('PATH', '/usr/bin:/bin'), HOME=temp, TMPDIR=temp,
                    CODEXPOOL_CPA_BINARY=str(binary.resolve()), CODEXPOOL_CPA_FIXTURES=str(cp.pathlib.Path(fixtures).resolve()),
@@ -245,7 +245,7 @@ def run_cpa_passthrough(fixtures):
 def engine_bridge_module():
     """Load the local implementation, not its server entrypoint or any runtime secret."""
     path = cp.CODE_DIR / 'lanes' / 'bridge.py'
-    spec = cp.importlib.util.spec_from_file_location('codexpool_engine_commands', path)
+    spec = cp.importlib.util.spec_from_file_location('subpool_engine_commands', path)
     module = cp.importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.load_extension_module(cp.pathlib.Path(__file__).with_name('bridge_engine.py'))
@@ -288,24 +288,24 @@ def cmd_claude_lane_resume(args):
     try:
         session = str(bridge.uuid.UUID(args.session))
     except ValueError:
-        cp.sys.exit('codexpool: resume needs a session UUID')
+        cp.sys.exit('subpool: resume needs a session UUID')
     found = [(p, cp.read_json(p, {})) for p in (cp.STATE / 'engine-sessions').glob('*.json')]
     found = [(p, r) for p, r in found if r.get('uuid') == session]
     if len(found) != 1:
-        cp.sys.exit('codexpool: no unique lane session matches that UUID')
+        cp.sys.exit('subpool: no unique lane session matches that UUID')
     path, record = found[0]
     try:
         # Re-read under the lock: a queued Codex turn may have restarted the session.
         with bridge.ThreadLock(path.with_suffix('.lock'), timeout=30) as lock:
             current = cp.read_json(path, {})
             if current.get('uuid') != session:
-                cp.sys.exit('codexpool: the lane session changed while waiting for its lock')
+                cp.sys.exit('subpool: the lane session changed while waiting for its lock')
             key = str(bridge.uuid.UUID(current['thread_key']))
             if path.stem != key:
-                cp.sys.exit('codexpool: invalid lane session record')
+                cp.sys.exit('subpool: invalid lane session record')
             engine = recorded_engines().get(current['member'].split(':', 1)[0])
             if not engine:
-                cp.sys.exit('codexpool: the session engine is no longer configured')
+                cp.sys.exit('subpool: the session engine is no longer configured')
             version, env = bridge.engine_preflight(engine)
             bridge.cpa_compatibility(engine, version, cp.STATE, cp.read_json(cp.BRIDGE_CONFIG, {}).get('cpa_known_normalisations', []))
             cwd = bridge.cwd_ok(current['cwd'], home=env['HOME'], profiles=[engine['profile']])
@@ -323,13 +323,13 @@ def cmd_claude_lane_resume(args):
             if code:
                 cp.sys.exit(code)
     except bridge.BridgeError as error:
-        cp.sys.exit('codexpool: ' + error.message)
+        cp.sys.exit('subpool: ' + error.message)
 
 
 
 def engine_test(codex, role, want_model, compaction, seed):
     """One test: a throwaway Codex thread spawns the role once. (ok, one-line reason, seconds)."""
-    work = cp.pathlib.Path(cp.tempfile.mkdtemp(prefix='codexpool-lanetest-', dir=cp.pathlib.Path.cwd()))
+    work = cp.pathlib.Path(cp.tempfile.mkdtemp(prefix='subpool-lanetest-', dir=cp.pathlib.Path.cwd()))
     try:
         bridge = engine_bridge_module()
         try:
@@ -376,7 +376,7 @@ def engine_test(codex, role, want_model, compaction, seed):
         if facts['models'] != {want_model}:
             return (False, f"the subagent ran on {', '.join(sorted(facts['models'])) or 'no model'}, not {want_model}", seconds)
         if facts['parse_failures']:
-            return (False, f"{facts['parse_failures']} tool call(s) failed to parse (run codexpool lane apply)", seconds)
+            return (False, f"{facts['parse_failures']} tool call(s) failed to parse (run subpool lane apply)", seconds)
         if compaction and (not facts['compactions']):
             return (False, 'the subagent never compacted', seconds)
         records = [cp.read_json(p, {}) for p in (cp.STATE / 'engine-sessions').glob('*.json')]
@@ -522,7 +522,7 @@ def cmd_accept_engine(args):
 def cmd_cpa_check(args):
     run_cpa_passthrough(args.fixtures)
     if not cp.read_json(cp.STATE / 'engine-cpa-check.json', {}).get('ok'):
-        cp.sys.exit('codexpool: CPA compatibility check failed; see codexpool doctor')
+        cp.sys.exit('subpool: CPA compatibility check failed; see subpool doctor')
 
 
 def add_parser(sub):

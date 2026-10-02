@@ -1,4 +1,4 @@
-"""codexpool setup and the sign-in it shares with codexpool login (with a stand-in CLIProxyAPI and pool)."""
+"""subpool setup and the sign-in it shares with subpool login (with a stand-in CLIProxyAPI and pool)."""
 import contextlib
 import io
 import itertools
@@ -74,7 +74,7 @@ class LabelProblem(unittest.TestCase):
         with mock.patch.object(cp, 'login_seat') as login:
             code, _, err = run(cp.cmd_login, label='-x', device=False, no_open=True, no_copy=False, priority=None)
         self.assertEqual(code, 1)
-        self.assertIn('codexpool login: a label cannot start with -', err)
+        self.assertIn('subpool login: a label cannot start with -', err)
         login.assert_not_called()
 
 
@@ -307,7 +307,7 @@ class SignInFailure(unittest.TestCase):
 
 
 class LinkOnTheClipboard(unittest.TestCase):
-    """codexpool login (and setup, below) puts the sign-in link on the clipboard and says so right under it."""
+    """subpool login (and setup, below) puts the sign-in link on the clipboard and says so right under it."""
 
     def login(self, no_copy=False, no_open=True, **env):
         with fake_cpa(FAKE_CPA_EMAIL='work@test', **env), FakePool(), \
@@ -324,7 +324,7 @@ class LinkOnTheClipboard(unittest.TestCase):
                                          'to that account.')
 
     def test_the_browser_opened(self):
-        """Plain codexpool login: CLIProxyAPI opens the browser and prints no link, so nothing goes on the clipboard."""
+        """Plain subpool login: CLIProxyAPI opens the browser and prints no link, so nothing goes on the clipboard."""
         with clipboard():
             code, out, _ = self.login(no_open=False)
             self.assertFalse(CLIPBOARD.exists())
@@ -383,11 +383,11 @@ class LinkOnTheClipboard(unittest.TestCase):
             self.assertEqual(CLIPBOARD.read_text(), URL)
 
     def test_the_command_finds_the_stub_too(self):
-        """bin/codexpool as a command (the menu bar's Re-login runs codexpool login) looks pbcopy up on PATH, so a
+        """bin/subpool as a command (the menu bar's Re-login runs subpool login) looks pbcopy up on PATH, so a
         test that runs it reaches the stub, never the real clipboard."""
         code = ('import importlib.machinery, importlib.util, sys\n'
-                'loader = importlib.machinery.SourceFileLoader("codexpool_cli", sys.argv[1])\n'
-                'module = importlib.util.module_from_spec(importlib.util.spec_from_loader("codexpool_cli", loader))\n'
+                'loader = importlib.machinery.SourceFileLoader("subpool_cli", sys.argv[1])\n'
+                'module = importlib.util.module_from_spec(importlib.util.spec_from_loader("subpool_cli", loader))\n'
                 'loader.exec_module(module)\n'
                 'print(module.pbcopy_tool())\n')
         r = subprocess.run([sys.executable, '-B', '-c', code, str(SCRIPT)], capture_output=True, text=True,
@@ -510,9 +510,9 @@ class SetupCommand(unittest.TestCase):
         self.assertEqual(pool.priorities, {name: 500})
         for text in ('[1/4] The pool', 'No ChatGPT accounts in the pool yet', '[2/4] ChatGPT accounts',
                      'private (incognito) window', URL, 'Open it in your default browser? [Y/n]',
-                     'Added Work: work@test, plan plus, size 1×', 'Use it as the reserve (last resort)? [y/N]',
+                     'Added Work: work@test, plan plus, 1×', 'Use it as the reserve (last resort)? [y/N]',
                      'Add another ChatGPT account? [Y/n]', '[3/4] Subagent lanes (optional)', 'LANES.md',
-                     '[4/4] Check everything (codexpool doctor)', 'Pool process',
+                     '[4/4] Check everything (subpool doctor)', 'Pool process',
                      'Setup done. Added 1 seat this time: Work (plus, 1×).'):
             self.assertIn(text, out)
         self.open_url.assert_not_called()
@@ -535,7 +535,7 @@ class SetupCommand(unittest.TestCase):
                 code, out, _ = self.setup('', 'work', '-x', 'Team', 'y', 'y', 'n', 'y')
                 meta = cp.read_meta()
         self.assertEqual(code, 0, out)
-        self.assertIn('1 ChatGPT account in the pool, in fill order:\n    Work  (plus, size 1×)', out)
+        self.assertIn('1 ChatGPT account in the pool, in fill order:\n    Work  (plus, 1×)', out)
         self.assertIn('That name will not do: a seat is already called work', out)
         self.assertIn('That name will not do: a label cannot start with -', out)
         name = seat_name('team@test', 'pro')
@@ -544,7 +544,7 @@ class SetupCommand(unittest.TestCase):
         self.open_url.assert_called_once_with(URL)
         self.reopen.assert_called_once_with()
         self.assertIn('the Codex app reopened', out)
-        self.assertIn('Added 1 seat this time: Team (pro, 20×, reserve).', out)
+        self.assertIn('Added 1 seat this time: Team (pro, capacity unknown, reserve).', out)
 
     def test_same_account_again_adds_nothing(self):
         existing = fake_seat_file('one@test')
@@ -598,7 +598,7 @@ class SetupCommand(unittest.TestCase):
     def test_failure_without_a_word(self):
         _, tail = self.failed('silent')
         self.assertIn('The sign-in did not finish; nothing changed. The link may have expired (links last about 5\n'
-                      '  minutes), or the sign-in was stopped. ~/.codexpool/logs/main.log may say more.', tail)
+                      '  minutes), or the sign-in was stopped. ~/.subpool/logs/main.log may say more.', tail)
         self.assertNotIn('The pool said', tail)
         self.assertNoInstructions(tail)
 
@@ -655,10 +655,10 @@ class SetupCommand(unittest.TestCase):
         self.kick.assert_not_called()
 
     def test_not_installed(self):
-        with mock.patch.object(cp, 'missing_install', return_value=['~/.codexpool/config.yaml']):
+        with mock.patch.object(cp, 'missing_install', return_value=['~/.subpool/config.yaml']):
             code, out, err = self.setup()
         self.assertEqual((code, out), (1, ''))
-        self.assertIn('codexpool is not installed yet', err)
+        self.assertIn('subpool is not installed yet', err)
 
     def test_needs_a_terminal(self):
         def no_terminal():
@@ -726,7 +726,7 @@ class SeatCommands(unittest.TestCase):
             for bad, text in (('two\nlines', 'one line'), ('-x', 'start with -'), ('', 'empty'), (' Work', 'space')):
                 code, _, err = run(cp.cmd_label, seat='Work', label=bad)
                 self.assertEqual(code, 1, repr(bad))
-                self.assertIn('codexpool label: a label', err)
+                self.assertIn('subpool label: a label', err)
                 self.assertIn(text, err)
             load.assert_not_called()
         self.assertEqual(cp.read_meta()[self.files['Work']], {'label': 'Work'})

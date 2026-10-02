@@ -1,15 +1,15 @@
-# codexpool: CLIProxyAPI pool of ChatGPT seats behind the Codex desktop app.
-# `codexpool install` writes ~/.codexpool/config.yaml from this file (port from settings.json, a fresh
-# management key). Owned by ~/.codexpool (see README.md): never point another tool at it or at auth/.
+# subpool: CLIProxyAPI pool of ChatGPT seats behind the Codex desktop app.
+# `subpool install` writes ~/.subpool/config.yaml from this file (port from settings.json, a fresh
+# management key). Owned by ~/.subpool (see README.md): never point another tool at it or at auth/.
 # Codex reaches the pool via ~/.codex/config.toml: openai_base_url = "http://127.0.0.1:8319/v1"
 
 host: "127.0.0.1" # loopback only
 port: 8319
 remote-management:
   allow-remote: false
-  secret-key: "<set by codexpool install>" # plaintext is hashed by CLIProxyAPI on first start; plaintext lives in the Keychain (codexpool-management-key)
+  secret-key: "<set by subpool install>" # plaintext is hashed by CLIProxyAPI on first start; plaintext lives in the Keychain (codexpool-management-key)
   disable-control-panel: true # no web panel downloaded from GitHub at runtime
-auth-dir: "~/.codexpool/auth" # one OAuth login per seat; only this process refreshes these tokens
+auth-dir: "~/.subpool/auth" # one OAuth login per seat; only this process refreshes these tokens
 # Empty = no client auth on loopback. The Codex app sends its own ChatGPT bearer; the pool ignores it
 # and substitutes the selected seat's token. The origin gate (build/codexpool_gate.go) keeps browsers out.
 api-keys: []

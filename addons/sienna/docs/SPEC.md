@@ -21,7 +21,7 @@ The remaining sections describe the retained legacy proxy view.
 ## Two pools (1.3.0)
 The Claude pool is installed when `state/claude-status.json` exists and its `pool.installed` is true (a file without
 the key, from an older writer, counts while it is fresh; a half-written or unreadable one counts, and shows "not
-reporting"). `codexpool claude uninstall` leaves `"installed": false` or removes the file. Without it the item and the popover are the Codex pool's alone, as
+reporting"). `subpool claude uninstall` leaves `"installed": false` or removes the file. Without it the item and the popover are the Codex pool's alone, as
 below. With it, one item shows both pools and the popover has a Codex | Claude switcher (see the two sections after
 the popover). The same model code reads both files (`DataSource(..., pool='claude')`, `build_model(...,
 pool_name='claude')`); a stale, half-written, down or empty Claude file is handled exactly like a Codex one.
@@ -112,25 +112,25 @@ lighter because glyphs and lines need 3:1, not 4.5:1.
     policy off; the tooltip explains the policy. When the guard flags that as `credits.mismatch`, the line is the
     warning "Turn credits off at claude.ai (Settings → Usage)" instead (orange ⚠ with grey text, like Re-login
     soon; under a parked account's ⏸ line too), and the row's tooltip is the sentence in full: "Usage credits are
-    on at claude.ai for Max 20x: turn them off there (Settings → Usage). codexpool can't stop every paid request."
+    on at claude.ai for Max 20x: turn them off there (Settings → Usage). subpool can't stop every paid request."
     It changes nothing in the menu bar, the tiles or the headline: their red and their warning triangle say what the
     pool is doing now (the reserve serving, credits being spent, a pool down or not reporting), and a standing
     account setting that stays wrong for days would drown those; the row, Settings and Doctor (an error there)
     carry it. Settings' account rows use the same words (`credits_line`); the Seats pane's Usage credits row has
     the sentence in full, with the month's spend.
-  - An account's menu: Re-login… (`codexpool claude login LABEL --no-open --priority N` in Terminal), Enable (spends
-    credits)… for an account parked with credits off (asks first; `codexpool claude enable` overrides that park
-    until the limit resets), Enable / Disable, Make first (`codexpool claude priority SEAT N`, same rules), and Open
+  - An account's menu: Re-login… (`subpool claude login LABEL --no-open --priority N` in Terminal), Enable (spends
+    credits)… for an account parked with credits off (asks first; `subpool claude enable` overrides that park
+    until the limit resets), Enable / Disable, Make first (`subpool claude priority SEAT N`, same rules), and Open
     claude.ai usage page (the browser's own account). No resets. An account parked by its last-resort policy gets no
     Enable, since the CLI refuses to override that park: in its place a disabled line,
-    **Serves once every other account is out**, whose tooltip says why (`last_resort_tip`: codexpool brings it back
+    **Serves once every other account is out**, whose tooltip says why (`last_resort_tip`: subpool brings it back
     once every other account's plan quota is spent, the reserve's included; change its credit policy in
     Settings → Balancing). Settings' In rotation switch for it is off and disabled, with the same reason as the row's
     subtitle (`rotation_row`).
-  - Footer: Status… (`codexpool claude status --live`), Doctor (`codexpool doctor`, which covers both pools), Pool
-    log (`codexpool claude logs -f`), Docs (`~/.codexpool/addons/sienna/docs/SIENNA.md`, else on GitHub), Refresh, then **Claude
+  - Footer: Status… (`subpool claude status --live`), Doctor (`subpool doctor`, which covers both pools), Pool
+    log (`subpool claude logs -f`), Docs (`~/.subpool/addons/sienna/docs/SIENNA.md`, else on GitHub), Refresh, then **Claude
     Code route** with a two-segment control, Pool | Direct (`pool.route`). Choosing the other asks first ("Send new
-    Claude Code sessions direct?"), then runs `codexpool claude route pool|direct`; running sessions stay where they
+    Claude Code sessions direct?"), then runs `subpool claude route pool|direct`; running sessions stay where they
     are. Then Add a Claude account… (the Setup assistant's Add accounts step), Settings…, Quit, and "CLIProxyAPI
     7.3.18 · Claude Code 2.1.283". With the Claude pool installed, Settings… and Add a … account… start the Settings
     window with `--pool` set to the tab's pool (`--pane setup-accounts --pool claude` from the Claude tab), so it
@@ -162,12 +162,12 @@ lighter because glyphs and lines need 3:1, not 4.5:1.
     Doctor. Segment tooltips say what each mode is.
     Choosing the other segment (or Set Up…) asks first (`desktop_confirm`): "Switch the desktop app to the pool?"
     / "Go back to Claude.ai?" with what moves and what stays, [Switch] / [Go Back] [Cancel]; Reopen Claude…: "Reopen
-    Claude now?" [Reopen]. Then `codexpool claude desktop pooled|claudeai --relaunch --yes` (`relaunch --yes` for
+    Claude now?" [Reopen]. Then `subpool claude desktop pooled|claudeai --relaunch --yes` (`relaunch --yes` for
     the reopen) runs in the background (`desktop_command`: never `--reclaim` or a credits override); the control is
     greyed with the caption "Switching Claude to the pool…" / "Sending Claude back to Claude.ai…" / "Reopening
     Claude…" (`desktop_busy`), then the command's closing line, its last stdout line ("Claude opened on the pool",
     "Claude opened; could not confirm the mode yet …"), is the subtitle for 8 s, or its ✗ line on failure
-    (`desktop_closing`); a guard pass follows a success. What codexpool would refuse is said first
+    (`desktop_closing`); a guard pass follows a success. What subpool would refuse is said first
     (`desktop_refusal`, an alert with Run Doctor / OK, before Claude is quit for nothing): an interrupted change
     (`rollback`), credits on at claude.ai or no fresh reading (the backend's lines, one per account), an edited
     "Pool" entry (`--reclaim` is a terminal choice), the Claude pool down (for Pooled), the applied entry hiding
@@ -192,6 +192,6 @@ with the Desktop row's "What changes" open.
 
 ## The Lanes pane: the Claude engine
 
-The engine provider `sienna` (`kind` `engine`, `needs` `engine`; ENGINE-LANE.md) is titled **Claude**: its members read `Claude · claude-opus-5-5 · read-only` (`member_line`), their pill is the engine's state (`LANE_STATE`: `engine ok` Engine OK, `untested engine` Not accepted, `no engine`, `no launcher`, `pool down`, `no profile`; the member row's tooltip is the fix, `ENGINE_HINT`), and its Credentials row says "Not accepted yet · read-only, through the Claude pool · used by sienna" (`engine_state_text`; `infer_ready` reads `engine ok` from the members when `lane providers` is missing). Credentials: for Claude **Accept Engine…** (**Accept Again…** once accepted; enabled only while a lane has a Claude member): a confirm (one read-only probe turn through the Claude pool, one request spent, redo after a Claude Code update), then `codexpool lane apply --accept-engine` streams into the sheet, and providers and lanes are re-read.
+The engine provider `sienna` (`kind` `engine`, `needs` `engine`; ENGINE-LANE.md) is titled **Claude**: its members read `Claude · claude-opus-5-5 · read-only` (`member_line`), their pill is the engine's state (`LANE_STATE`: `engine ok` Engine OK, `untested engine` Not accepted, `no engine`, `no launcher`, `pool down`, `no profile`; the member row's tooltip is the fix, `ENGINE_HINT`), and its Credentials row says "Not accepted yet · read-only, through the Claude pool · used by sienna" (`engine_state_text`; `infer_ready` reads `engine ok` from the members when `lane providers` is missing). Credentials: for Claude **Accept Engine…** (**Accept Again…** once accepted; enabled only while a lane has a Claude member): a confirm (one read-only probe turn through the Claude pool, one request spent, redo after a Claude Code update), then `subpool lane apply --accept-engine` streams into the sheet, and providers and lanes are re-read.
 
 **Add Model** on the Claude engine, which has no catalog: "Type a Claude model id the pool serves, e.g. claude-opus-5-5."; typing an id always works. Claude says "Claude Code, read-only, through the Claude pool. Accept the engine once the lane is saved." and, while not accepted, a box saying that Credentials → Accept Engine… does it after Save (accepting needs a lane with the member).

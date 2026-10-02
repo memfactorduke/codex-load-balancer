@@ -29,18 +29,18 @@ def subcommands(parser, path=()):
 
 class Version(unittest.TestCase):
     def test_constant_is_the_latest_release(self):
-        """A release bumps VERSION in bin/codexpool and adds its CHANGELOG.md section together."""
+        """A release bumps VERSION in bin/subpool and adds its CHANGELOG.md section together."""
         released = re.findall(r'^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d\d-\d\d$', (REPO / 'CHANGELOG.md').read_text(), re.M)
         self.assertTrue(released, 'CHANGELOG.md has no "## [x.y.z] - YYYY-MM-DD" section')
-        self.assertEqual(cp.VERSION, released[0], 'VERSION in bin/codexpool and the newest CHANGELOG.md release differ')
+        self.assertEqual(cp.VERSION, released[0], 'VERSION in bin/subpool and the newest CHANGELOG.md release differ')
 
     def test_command(self):
-        self.assertEqual(run(cp.cmd_version), (0, (f'codexpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS)), ''))
+        self.assertEqual(run(cp.cmd_version), (0, (f'subpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS)), ''))
 
     def test_script(self):
         for args in (['version'], ['--version']):
             r = run_script(*args)
-            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, (f'codexpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS) if args == ['version'] else f'codexpool {cp.VERSION}\n'), ''), args)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, (f'subpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS) if args == ['version'] else f'subpool {cp.VERSION}\n'), ''), args)
 
 
 class Help(unittest.TestCase):
@@ -62,7 +62,7 @@ class Help(unittest.TestCase):
                 with self.assertRaises(SystemExit) as ctx:
                     cp.build_parser().parse_args(list(path) + ['--help'])
                 self.assertEqual(ctx.exception.code, 0)
-                self.assertIn(f'usage: codexpool {" ".join(path)}', out.getvalue())
+                self.assertIn(f'usage: subpool {" ".join(path)}', out.getvalue())
 
     def test_every_subcommand_has_a_summary(self):
         def summaries(parser):
@@ -82,7 +82,7 @@ class Help(unittest.TestCase):
     def test_top_level_help(self):
         r = run_script('--help')
         self.assertEqual(r.returncode, 0)
-        for word in ('setup', 'gui', 'set', 'version', '--version', 'codexpool setup walks you through'):
+        for word in ('setup', 'gui', 'set', 'version', '--version', 'subpool setup walks you through'):
             self.assertIn(word, r.stdout)
 
     def test_new_flags_parse(self):
@@ -104,7 +104,7 @@ class Help(unittest.TestCase):
 
 class Gui(unittest.TestCase):
     def test_argv(self):
-        self.assertEqual(cp.gui_argv(), [str(cp.menubar_python_bin()), str(ROOT / 'menubar' / 'codexpool_settings.py'),
+        self.assertEqual(cp.gui_argv(), [str(cp.menubar_python_bin()), str(ROOT / 'menubar' / 'subpool_settings.py'),
                                          '--pane', 'overview'])
         self.assertEqual(cp.gui_argv('lanes')[-2:], ['--pane', 'lanes'])
         self.assertEqual(cp.gui_argv()[0], str(ROOT / '.venv' / 'bin' / 'python'))
@@ -118,9 +118,9 @@ class Gui(unittest.TestCase):
             self.assertEqual(cp.gui_argv('about')[0], '/opt/py/bin/python3')
 
     def test_panes_are_ones_the_settings_window_takes(self):
-        source = REPO / 'menubar' / 'codexpool_settings.py'
+        source = REPO / 'menubar' / 'subpool_settings.py'
         if not source.exists():
-            self.skipTest('menubar/codexpool_settings.py is not in this checkout')
+            self.skipTest('menubar/subpool_settings.py is not in this checkout')
         panes = {}
         for node in ast.parse(source.read_text()).body:
             if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and \
@@ -129,7 +129,7 @@ class Gui(unittest.TestCase):
         self.assertLessEqual(set(cp.GUI_PANES), set(panes.get('PANES', ())) | set(panes.get('SETUP_PANES', ())))
 
     def test_settings_window_is_installed_code(self):
-        self.assertIn('menubar/codexpool_settings.py', cp.CODE_FILES)
+        self.assertIn('menubar/subpool_settings.py', cp.CODE_FILES)
 
     def test_license_files_are_installed(self):
         # The installed README links LICENSE and NOTICE (the license's required notice and the credits).
@@ -141,7 +141,7 @@ class Gui(unittest.TestCase):
         code, out, err = run(cp.cmd_gui, pane='overview')
         self.assertEqual((code, out), (1, ''))
         self.assertIn('not installed', err)
-        self.assertIn('codexpool_settings.py', err)
+        self.assertIn('subpool_settings.py', err)
 
     def launchable(self):
         """A dummy Settings window and interpreter in the fake install, removed afterwards."""
@@ -248,7 +248,7 @@ class DoctorJson(unittest.TestCase):
                           'Recent pool errors (last 24h of logs)'] + (['Add-ons'] if cp.ADDONS else []))
         by_text = {c['text']: c for c in checks}
         listening = by_text[f'listening on 127.0.0.1:{cp.PORT}']
-        self.assertEqual((listening['status'], listening['fix']), ('fail', 'codexpool restart ; codexpool logs'))
+        self.assertEqual((listening['status'], listening['fix']), ('fail', 'subpool restart ; subpool logs'))
         self.assertEqual(by_text['bound to loopback only'], {'status': 'ok', 'text': 'bound to loopback only',
                                                             'fix': None})
         self.assertEqual(by_text['new threads land on: nothing available']['status'], 'warn')
@@ -274,7 +274,7 @@ class DoctorJson(unittest.TestCase):
         self.assertNotIn('Lanes', [s['title'] for s in json.loads(out)['sections']])
 
     def test_not_installed(self):
-        with mock.patch.object(cp, 'missing_install', return_value=['~/.codexpool/config.yaml']):
+        with mock.patch.object(cp, 'missing_install', return_value=['~/.subpool/config.yaml']):
             code, out, _ = self.doctor()
             code_text, out_text, err_text = self.doctor(as_json=False)
         data = json.loads(out)
@@ -356,16 +356,16 @@ class InstallNextSteps(unittest.TestCase):
     def test_on_its_own(self):
         code, out, _ = self.install()
         self.assertEqual(code, 0)
-        self.assertIn('codexpool setup walks you through', out)
-        self.assertIn('codexpool login "<Label>" --priority <n>', out)
+        self.assertIn('subpool setup walks you through', out)
+        self.assertIn('subpool login "<Label>" --priority <n>', out)
 
     def test_under_the_one_line_installer(self):
         code, out, _ = self.install(CODEXPOOL_VIA_INSTALLER='1')
         self.assertEqual(code, 0)
         self.assertIn('The installer shows the next steps below.', out)
-        self.assertNotIn('codexpool login', out)
-        self.assertNotIn('codexpool setup', out)
-        self.assertIn('CODEXPOOL_VIA_INSTALLER=1 "${PY_CMD[@]}" bin/codexpool install',
+        self.assertNotIn('subpool login', out)
+        self.assertNotIn('subpool setup', out)
+        self.assertIn('CODEXPOOL_VIA_INSTALLER=1 "${PY_CMD[@]}" bin/subpool install',
                       (REPO / 'install.sh').read_text())
 
 

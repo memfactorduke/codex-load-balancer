@@ -20,7 +20,7 @@ PERSONAL = re.compile(r'/Users/(?!<)[A-Za-z]|com\.' + 'rotcafmem'[::-1] + r'|@gm
 EMAIL = re.compile(r'[A-Za-z0-9._%+-]+@([A-Za-z][A-Za-z0-9.-]*\.[A-Za-z]{2,})')
 FIXTURE_DOMAINS = {'example.com', 'example.org', 'example.net', 'test.json'}
 RUNTIME_PATHS = {'auth', 'auth-claude', 'state', 'logs', 'config.yaml', 'config-claude.yaml',
-                 'seats.json', 'claude-seats.json', 'settings.json', 'rollback', 'LOCAL.md', 'toolchain', 'shims'}
+                 'seats.json', 'claude-seats.json', 'settings.json', 'rollback', 'LOCAL.md', 'toolchain', 'shims', 'apps'}
 
 
 def gh(repo, method, path, body=None):

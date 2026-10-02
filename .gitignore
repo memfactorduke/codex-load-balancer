@@ -1,5 +1,5 @@
-# Runtime state, secrets and builds. They live in ~/.codexpool, which can also be this checkout
-# (git clone straight into ~/.codexpool), so none of it may ever be committed.
+# Runtime state, secrets and builds. They live in ~/.subpool, which can also be this checkout
+# (git clone straight into ~/.subpool), so none of it may ever be committed.
 /auth/
 /state/
 /logs/
@@ -10,7 +10,7 @@
 /bin/versions/
 /bin/current
 /bin/.current.tmp
-/build/codexpool-src-*/
+/build/subpool-src-*/
 /lanes.json
 /lanes/bridge.json
 /lanes/secrets/
@@ -24,6 +24,7 @@
 /bin/claude-current
 /bin/.claude-current.tmp
 /rollback/
+/apps/
 
 # Python
 .venv/

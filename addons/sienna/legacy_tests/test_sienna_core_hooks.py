@@ -34,7 +34,7 @@ class Help(unittest.TestCase):
                 with self.assertRaises(SystemExit) as ctx:
                     cp.build_parser().parse_args(list(path) + ['--help'])
                 self.assertEqual(ctx.exception.code, 0)
-                self.assertIn(f'usage: codexpool {" ".join(path)}', out.getvalue())
+                self.assertIn(f'usage: subpool {" ".join(path)}', out.getvalue())
 
     def test_claude_is_an_alias_for_the_whole_sienna_family(self):
         parser = cp.build_parser()
@@ -51,7 +51,7 @@ class Help(unittest.TestCase):
                         parser.parse_args([name, *path[1:], '--help'])
                     self.assertEqual(ctx.exception.code, 0)
                     outputs.append(out.getvalue())
-                self.assertEqual(outputs[0].replace('codexpool sienna', 'codexpool claude'), outputs[1].replace('codexpool sienna', 'codexpool claude'))
+                self.assertEqual(outputs[0].replace('subpool sienna', 'subpool claude'), outputs[1].replace('subpool sienna', 'subpool claude'))
 
 
 class Gui(unittest.TestCase):

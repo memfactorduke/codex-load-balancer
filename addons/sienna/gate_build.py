@@ -40,8 +40,8 @@ def check_gate_detector(tree, version):
     helpers = tree / 'internal/runtime/executor/helps'
     if not any(re.search(r'(?m)^func DetectClaudeCodeRequest\(', p.read_text())
                for p in helpers.glob('*.go') if not p.name.endswith('_test.go')):
-        sys.exit(f'codexpool: CLIProxyAPI v{version} lacks helps.DetectClaudeCodeRequest, required by the '
-                 'Claude token-count gate. Choose a compatible CLIProxyAPI release or update codexpool. '
+        sys.exit(f'subpool: CLIProxyAPI v{version} lacks helps.DetectClaudeCodeRequest, required by the '
+                 'Claude token-count gate. Choose a compatible CLIProxyAPI release or update subpool. '
                  'No running build was changed.')
 
 

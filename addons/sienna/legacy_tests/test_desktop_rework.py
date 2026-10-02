@@ -39,7 +39,7 @@ class ReworkTests(unittest.TestCase):
             with sienna_desktop.desktop_backend() as d:
                 status = d.status(probe=False)
         self.assertIn('Configure Third-Party Inference', str(err.exception))
-        self.assertIn('codexpool leaves the desktop to you', ' '.join(status['errors']))
+        self.assertIn('subpool leaves the desktop to you', ' '.join(status['errors']))
         self.assertEqual(status['configured_mode'], 'other')
         self.assertIsNone(status['policy_inherited'])
         self.assertEqual(path.read_bytes(), before)

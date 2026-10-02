@@ -1,7 +1,7 @@
 # Pooled desktop backend
 
-The CLI is `codexpool sienna desktop`; `codexpool claude desktop` remains an alias.
-Existing `codexpool claude` commands continue to work. The desktop binds only to the
+The CLI is `subpool sienna desktop`; `subpool claude desktop` remains an alias.
+Existing `subpool claude` commands continue to work. The desktop binds only to the
 existing Claude pool. No named-pool registry or state-file migration is introduced.
 
 The menu bar app and the Settings window give it a control (see "Menu bar and Settings" below).
@@ -11,11 +11,11 @@ V1 manages the desktop only when its recorded Pool entry is the **only** third-p
 configuration. An empty library is eligible for first setup. Any other listed or
 unlisted configuration file blocks `pooled`, even when it is not applied or is named
 Pool. No foreign entry is opened, inherited, applied or restored. Status and doctor
-say: **another third-party configuration exists; codexpool leaves the desktop to you**.
+say: **another third-party configuration exists; subpool leaves the desktop to you**.
 
 The manual alternative is Claude's **Developer → Configure Third-Party Inference**:
 choose gateway `http://127.0.0.1:8321` (or the configured Claude pool port), placeholder
-key `codexpool`, turn model discovery off, and list the full model IDs printed by the
+key `subpool`, turn model discovery off, and list the full model IDs printed by the
 refusal. Use high maximum effort for each model. Manage that setup in Claude itself.
 
 ## Commands
@@ -32,7 +32,7 @@ refusal. Use high maximum effort for each model. Manage that setup in Claude its
 pass `--yes` **after its own confirmation dialog**. Without confirmation the backend
 refuses before quitting. Without `--relaunch`, a running app prevents a mutation.
 The GUI's approved action therefore runs, for example,
-`codexpool sienna desktop pooled --relaunch --yes`.
+`subpool sienna desktop pooled --relaunch --yes`.
 
 Pooled options persist: `--models ID[,ID…]`, `--effort low|medium|high`, `--1m`,
 `--no-tool-search`, `--import`, `--no-import`. Import starts off. Enabling it says the
@@ -55,7 +55,7 @@ refresh alone therefore does not move the cutoff for every account's credits pol
 
 `addons/sienna/desktop.py` contains the backend, loaded by the Sienna add-on.
 Paths derive from the CLI's HOME, including the test helper's fake HOME. Only the
-third-party profile and codexpool state are mutable; the normal profile is never
+third-party profile and subpool state are mutable; the normal profile is never
 opened, resolved or statted. Status may stat the normal-mode **log** for its mtime,
 without reading it.
 
@@ -77,7 +77,7 @@ state or backups.
 
 A durable journal precedes each write, recording which steps may have executed.
 Recovery finishes a fully applied transaction despite unrelated preference edits.
-Otherwise it restores a key only if it still equals the value codexpool wrote;
+Otherwise it restores a key only if it still equals the value subpool wrote;
 later changes are left alone and named without exposing values. It never creates
 an absent, untouched entry or metadata file. Recovery keeps an edited or renamed
 entry listed under its current name, even if removing generated keys leaves an empty
@@ -110,7 +110,7 @@ ownership record, journal or legacy backup exists after uninstall.
 
 LaunchServices selects the app when several copies exist. Start time uses macOS
 `proc_pidinfo` microseconds; if unavailable, second-resolution `ps` evidence cannot
-prove ordering within that second. Restart state compares only codexpool’s recorded
+prove ordering within that second. Restart state compares only subpool’s recorded
 key-write time, never app preference mtimes. App log evidence covers `main.log`,
 `main.old.log` and other `main*.log`/`main.log.*` rotations. The diagnostic
 `state/desktop-log-cache.json` stores inode/offset/prefix-hash cursors and redacted
@@ -151,8 +151,8 @@ The Doctor JSON uses the existing section/check format under **Desktop**.
 
 ## Menu bar and Settings
 
-Both read only `pool.desktop`; every action is a `codexpool` command run in the background,
-after a confirmation, with `--relaunch --yes` (codexpool quits and reopens Claude itself).
+Both read only `pool.desktop`; every action is a `subpool` command run in the background,
+after a confirmation, with `--relaunch --yes` (subpool quits and reopens Claude itself).
 The GUI never passes `--reclaim` or a credits override; those stay terminal choices.
 
 The **Claude tab** of the popover gains **Desktop · Pooled | Claude.ai** under Claude Code
@@ -174,10 +174,10 @@ $150 …" (`accepted_credits`), "The "Pool" configuration was edited in the app"
 without the block (an older guard) or when the backend reports `Claude app not found`.
 
 Choosing the other segment asks first ("Switch the desktop app to the pool?" / "Go back to
-Claude.ai?", saying what moves and what stays), then runs `codexpool claude desktop
+Claude.ai?", saying what moves and what stays), then runs `subpool claude desktop
 pooled|claudeai --relaunch --yes`; meanwhile the control is greyed and the caption reads
 "Switching Claude to the pool…", then the command's closing line ("Claude opened on the
-pool") for 8 s. What codexpool would refuse is said before Claude is quit for nothing, in
+pool") for 8 s. What subpool would refuse is said before Claude is quit for nothing, in
 its own words: credits on at claude.ai (which accounts, and the fix), an interrupted change
 (`rollback`), an edited "Pool" entry (`--reclaim`), a pool that is down; the alert offers
 Run Doctor. When the Claude pool is down and the desktop is pooled, the banner says so and
@@ -191,7 +191,7 @@ projects, artifacts, scheduled tasks, memory; not while pooled: mobile and web s
 Cowork, Remote Control, Claude in Chrome, voice, Design, Security and Tag, exact token
 counts; Code transcripts are shared with Claude Code in the terminal), and, while pooled,
 **Import claude.ai history…**: off by default; the confirm says the wizard stores its own
-sign-in in the pooled profile, then `codexpool claude desktop pooled --import --relaunch
+sign-in in the pooled profile, then `subpool claude desktop pooled --import --relaunch
 --yes` unlocks the app's Settings → Import & export → Import…. The Setup assistant's Done
 step offers **Set Up Pooled Desktop…** once the credits check passes, or says why not
 ("Turn credits off at claude.ai for Max B first"). Health shows the doctor's Desktop section
@@ -221,7 +221,7 @@ result; rebuilding a legacy cache without a record runs the test. The build hash
 the wire source and all fixture names/bytes; BUILD-INFO records their hashes. The five
 fixtures are explicitly synthesised, pending E2 captures.
 
-`codexpool sienna desktop pooled` requires a recorded PASS for the **running** Claude
+`subpool sienna desktop pooled` requires a recorded PASS for the **running** Claude
 pool's exact build, not merely the version selected by the build symlink. Missing or
 failed evidence refuses pooled desktop setup, including dry runs. Status exposes the
 fields above; doctor warns when desktop is unused and errors when configured pooled.

@@ -803,7 +803,7 @@ class CreditPolicy(ClaudePass):
     def test_gate_detector_dependency_fails_with_actionable_message(self):
         with tempfile.TemporaryDirectory() as directory:
             tree = pathlib.Path(directory)
-            with self.assertRaisesRegex(SystemExit, 'codexpool:.*lacks helps.DetectClaudeCodeRequest'):
+            with self.assertRaisesRegex(SystemExit, 'subpool:.*lacks helps.DetectClaudeCodeRequest'):
                 addon.gate_build.check_gate_detector(tree, 'test')
             helpers = tree / 'internal/runtime/executor/helps'
             helpers.mkdir(parents=True)
@@ -828,7 +828,7 @@ class CreditPolicy(ClaudePass):
         problems = [c for section in rep.sections for c in section['checks']
                     if 'cloaking' in c['text'] or 'refusal rules' in c['text']]
         self.assertEqual(len(problems), 2)
-        self.assertTrue(all(c['status'] == 'fail' and 'codexpool claude install' in c['fix'] for c in problems))
+        self.assertTrue(all(c['status'] == 'fail' and 'subpool claude install' in c['fix'] for c in problems))
 
 
 class ParseTime(unittest.TestCase):
