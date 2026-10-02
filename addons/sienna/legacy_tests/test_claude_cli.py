@@ -1,6 +1,6 @@
-"""codexpool claude ...: install (dry run and a stubbed real run), uninstall, the claude-pool launcher and the shim
+"""subpool claude ...: install (dry run and a stubbed real run), uninstall, the claude-pool launcher and the shim
 (run for real with sh, against a stand-in claude and a stand-in pool), route, status and the Claude sections of
-codexpool status and doctor. Everything runs in the fake HOME of tests/_helpers.py; the launcher runs as a subprocess
+subpool status and doctor. Everything runs in the fake HOME of tests/_helpers.py; the launcher runs as a subprocess
 with an explicit PATH that holds no real claude."""
 from _helpers import addon
 sienna_desktop, desktop_build = addon.desktop, addon.desktop_build
@@ -144,7 +144,7 @@ class Launcher(unittest.TestCase):
         self.assertEqual(out['ENABLE_TOOL_SEARCH'], '<unset>')
         self.assertEqual(out['HELPER'], '<unset>')
         self.assertEqual(r.stderr, f'claude-pool: the Claude pool does not answer on 127.0.0.1:{sienna_pool.CLAUDE_PORT} '
-                                   '(codexpool claude status); starting Claude Code direct, on its own account\n')
+                                   '(subpool claude status); starting Claude Code direct, on its own account\n')
 
     def test_a_pool_that_hangs_costs_300_ms(self):
         with claude_pool_hangs():
@@ -210,7 +210,7 @@ class Launcher(unittest.TestCase):
             r, out = self.launch()
         self.assertEqual(out['ANTHROPIC_BASE_URL'], '<unset>')
         self.assertEqual(out['HELPER'], '<unset>')
-        self.assertEqual(r.stderr, 'claude-pool: the route is direct (codexpool claude route pool sends new sessions '
+        self.assertEqual(r.stderr, 'claude-pool: the route is direct (subpool claude route pool sends new sessions '
                                    'through the pool); starting Claude Code direct, on its own account\n')
         sienna_pool.write_claude_route('pool')
         with claude_pool_up():
@@ -219,7 +219,7 @@ class Launcher(unittest.TestCase):
 
     def test_never_itself(self):
         """Without ~/.local/bin/claude it takes the first claude on PATH, skipping the shim, the shims directory and
-        any copy of a codexpool launcher; with none left it stops instead of looping."""
+        any copy of a subpool launcher; with none left it stops instead of looping."""
         sienna_pool.CLAUDE_REAL.unlink()
         cp.write_script(sienna_pool.CLAUDE_SHIM, sienna_pool.shim_text())
         copy = HOME / 'elsewhere' / 'claude'
@@ -330,7 +330,7 @@ class Shim(ClaudeHome):
         for action in ('install', 'remove'):
             code, _, err = run(sienna_pool.cmd_claude_shim, action=action)
             self.assertEqual(code, 1)
-            self.assertIn('not codexpool\'s; left alone', err)
+            self.assertIn('not subpool\'s; left alone', err)
         self.assertEqual(sienna_pool.CLAUDE_SHIM.read_text(), '#!/bin/sh\necho mine\n')
 
 
@@ -368,7 +368,7 @@ class Install(ClaudeHome):
         for p in CLAUDE_FILES + (sienna_pool.CLAUDE_AUTH, sienna_pool.CLAUDE_LOGS, sienna_pool.CLAUDE_CURRENT):
             self.assertFalse(p.exists(), p)
         self.assertEqual(cp.INSTALL_FILE.read_bytes() if cp.INSTALL_FILE.exists() else None, before)
-        self.assertIn('codexpool claude install --dry-run: nothing is changed', out)
+        self.assertIn('subpool claude install --dry-run: nothing is changed', out)
         for n in range(1, 7):
             self.assertIn(f'[{n}/6] ', out)
         self.assertIn(f'[dry-run] build (or reuse) CLIProxyAPI v7.3.20 with build/codexpool_gate.go', out)
@@ -394,13 +394,13 @@ class Install(ClaudeHome):
             code, _, err = run(sienna_pool.cmd_claude_install, dry_run=False)
         self.assertEqual(code, 1)
         build.assert_not_called()
-        self.assertIn('update codexpool first', err)
+        self.assertIn('update subpool first', err)
 
-    def test_needs_codexpool_installed(self):
-        with mock.patch.object(cp, 'missing_install', return_value=['~/.codexpool/config.yaml']):
+    def test_needs_subpool_installed(self):
+        with mock.patch.object(cp, 'missing_install', return_value=['~/.subpool/config.yaml']):
             code, _, err = run(sienna_pool.cmd_claude_install, dry_run=True)
         self.assertEqual(code, 1)
-        self.assertIn('Run codexpool install first', err)
+        self.assertIn('Run subpool install first', err)
 
     def real_install(self, gate=GOOD_GATE):
         loaded = {'yes': False}
@@ -442,7 +442,7 @@ class Install(ClaudeHome):
         self.assertEqual((rec['agent'], rec['port'], rec['build'], rec['launcher']),
                          (sienna_pool.CLAUDE_JOB, sienna_pool.CLAUDE_PORT, f'7.3.20-gate-{cp.gate_id(profile="claude")}', str(sienna_pool.CLAUDE_LAUNCHER)))
         self.assertEqual(cp.read_json(sienna_pool.CLAUDE_STATUS_FILE, {})['pool'], {'installed': True, 'route': 'pool'})
-        self.assertIn('codexpool claude login "<Label>" --priority <n>', out)
+        self.assertIn('subpool claude login "<Label>" --priority <n>', out)
         self.assertIn('Start Claude Code through the pool:  claude-pool', out)
         # the second run finds everything in place
         code, out, err = second
@@ -491,7 +491,7 @@ class Install(ClaudeHome):
         write_exe(sienna_pool.CLAUDE_LAUNCHER, '#!/bin/sh\necho mine\n')
         (code, out, _), _, _, _, _ = self.real_install()
         self.assertEqual(code, 0, out)
-        self.assertIn('claude-pool exists and is not codexpool\'s; left alone', out)
+        self.assertIn('claude-pool exists and is not subpool\'s; left alone', out)
         self.assertEqual(sienna_pool.CLAUDE_LAUNCHER.read_text(), '#!/bin/sh\necho mine\n')
         self.assertNotIn('launcher', cp.read_json(cp.INSTALL_FILE, {})['claude'])
 
@@ -537,12 +537,12 @@ class Uninstall(ClaudeHome):
         run(sienna_pool.cmd_claude_uninstall, yes=True)
         self.assertTrue(sienna_pool.CLAUDE_LAUNCHER.exists())
 
-    def test_codexpool_uninstall_takes_the_claude_pool_along(self):
+    def test_subpool_uninstall_takes_the_claude_pool_along(self):
         code, out, _ = run(cp.cmd_uninstall, yes=False)
         self.assertEqual(code, 0)
         self.assertIn(f'the Claude pool: stop the launchd agent {sienna_pool.CLAUDE_JOB}', out)
         self.assertIn(f'the Claude pool: remove {cp.tilde(sienna_pool.CLAUDE_LAUNCHER)}', out)
-        self.assertIn('codexpool claude install bring it all back', out)
+        self.assertIn('subpool claude install bring it all back', out)
         self.assertTrue(sienna_pool.claude_installed())
 
 
@@ -565,7 +565,7 @@ class Status(ClaudeHome):
     def test_not_installed(self):
         code, _, err = run(sienna_pool.cmd_claude_status, json=False, live=False)
         self.assertEqual(code, 1)
-        self.assertIn('the Claude pool is not installed. codexpool claude install sets it up', err)
+        self.assertIn('the Claude pool is not installed. subpool claude install sets it up', err)
         code, out, _ = run(sienna_pool.cmd_claude_status, json=True, live=False)
         self.assertEqual((code, json.loads(out)), (0, {'pool': {'installed': False, 'route': 'pool'}, 'seats': []}))
 
@@ -621,7 +621,7 @@ class Status(ClaudeHome):
         self.assertIn(f'1 of 2 accounts available', out)
         self.assertIn(f'new sessions → {st["seats"][1]["label"]}', out)
 
-    def test_codexpool_status_gains_a_claude_section(self):
+    def test_subpool_status_gains_a_claude_section(self):
         with preserved(cp.STATUS_FILE):
             cp.write_json(cp.STATUS_FILE, {'generated_at': now_iso(), 'pool': {'running': False}, 'seats': [],
                                            'active': None})
@@ -653,7 +653,7 @@ class Doctor(ClaudeHome):
         self.assertEqual(checks['3 Claude account(s) in the pool']['status'], 'ok')
         self.assertEqual(checks['Work A: active']['status'], 'ok')
         self.assertEqual(checks['Old: blocked (sign-in ended)']['status'], 'fail')
-        self.assertEqual(checks['Old: blocked (sign-in ended)']['fix'], "codexpool claude login Old --priority 10")
+        self.assertEqual(checks['Old: blocked (sign-in ended)']['fix'], "subpool claude login Old --priority 10")
         self.assertEqual(checks['Big: credits as the last resort, cap $200']['status'], 'ok')
         self.assertEqual(checks['Old: credits as the last resort without a cap']['status'], 'fail')
 
@@ -733,7 +733,7 @@ class Doctor(ClaudeHome):
             _, checks = self.section(sienna_pool.doctor_claude_log)
             check = checks['Claude Code token-count client is not recognised by this pool']
             self.assertEqual(check['status'], 'warn')
-            self.assertIn('update codexpool or run direct', check['fix'])
+            self.assertIn('update subpool or run direct', check['fix'])
             self.assertFalse(any('other clients or browsers' in text for text in checks))
 
     def test_doctor_json_has_the_claude_sections(self):
@@ -764,7 +764,7 @@ class Settings(unittest.TestCase):
     def test_claude_defaults(self):
         s = cp.parse_settings({})
         self.assertEqual((s['claude_label'], s['claude_port'], s['claude_balancing'], s['claude_cpa']),
-                         ('com.codexpool.claude', 8321, 'priority', None))
+                         ('com.subpool.claude', 8321, 'priority', None))
 
 
     def test_claude_port_must_differ_from_port_and_bridge_port(self):
@@ -791,7 +791,7 @@ class Settings(unittest.TestCase):
         for bad in ('', 'has space', '-lead', None, 5):
             self.assertRefused({'claude_label': bad}, 'invalid claude_label')
         for key in ('pool_label', 'guard_label', 'menubar_label', 'bridge_label'):
-            self.assertRefused({key: 'com.codexpool.claude'}, 'claude_label must differ')
+            self.assertRefused({key: 'com.subpool.claude'}, 'claude_label must differ')
 
 
     def test_claude_balancing(self):

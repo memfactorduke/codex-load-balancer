@@ -441,7 +441,7 @@ def claude_poll_usage(guard, seats, now, serving, save):
             if not passive:
                 cp.log_line(f'guard: claude: {why}; usage now comes from each account\'s last served request')
                 cp.notify('Claude usage polling is off', 'Anthropic refused the pool\'s usage call. Usage now shows '
-                       'as of each account\'s last served request. Run: codexpool doctor')
+                       'as of each account\'s last served request. Run: subpool doctor')
             guard['passive'] = {'since': (passive or {}).get('since') or now.isoformat(), 'why': why,
                                 'retry_at': (now + cp.dt.timedelta(seconds=CLAUDE_PASSIVE_RETRY)).isoformat()}
             break
@@ -490,7 +490,7 @@ def claude_apply_plans(guard, seats, meta):
 
 def claude_unpark(guard, seats, now, save, pool):
     """Step 2: put back the accounts whose park has run out (their limit reset), forget park records that never took
-    effect or that you undid (codexpool claude enable), and let overrides expire. An account whose park ran out while
+    effect or that you undid (subpool claude enable), and let overrides expire. An account whose park ran out while
     another limit is still used up (or whose estimated reset came early) and would spend credits stays parked, until
     that limit's reset; step 3 then applies its credit policy to it with the reading step 1 just took."""
     by_name = {s['name']: s for s in seats}
@@ -829,20 +829,20 @@ def claude_credit_pass(guard, seats, now, save, pool, meta, finalize=True):
                 until = (now + cp.dt.timedelta(seconds=CLAUDE_UNKNOWN_RESET)).isoformat()
                 park(s, until, 'cap', 'Claude credit cap reached',
                      f'{s["label"]} has spent {money_text(used, cur)} of its {money_text(cap, cur)} cap below its plan '
-                     f'limit (fast mode bills credits); parked until {cp.when(until)}. Raise it: codexpool claude '
+                     f'limit (fast mode bills credits); parked until {cp.when(until)}. Raise it: subpool claude '
                      f'credits {q} last-resort --cap <USD>')
             elif not prev.get('rising'):
                 cp.log_line(f'guard: claude: {s["label"]} spends usage credits below its plan limit ({spent})')
                 cp.notify('Claude account spending usage credits',
                        f'{s["label"]} spent usage credits below its plan limit ({spent}). Fast mode (/fast) bills '
                        'credits like this; if you are not using it, check the account at claude.ai.'
-                       + (f' codexpool stops it at its {money_text(cap, cur)} cap.' if cap is not None else ''))
+                       + (f' subpool stops it at its {money_text(cap, cur)} cap.' if cap is not None else ''))
             continue
         until = claude_alarm_until(g, now)
         park(s, until, 'misclassified', 'Claude account billed to credits below its limit',
-             f'{s["label"]} spent usage credits below its plan limit ({spent}), and its credits are off in codexpool; '
+             f'{s["label"]} spent usage credits below its plan limit ({spent}), and its credits are off in subpool; '
              f'parked until {cp.when(until)}. Fast mode (/fast) bills credits like this; if you are not using it, check '
-             f'the account at claude.ai. Back now: codexpool claude enable {q}')
+             f'the account at claude.ai. Back now: subpool claude enable {q}')
     save()
 
     # plan limits and each account's policy
@@ -867,7 +867,7 @@ def claude_credit_pass(guard, seats, now, save, pool, meta, finalize=True):
             if not s['disabled']:
                 park(s, until, 'credits', 'Claude account parked', f'{s["label"]} is at its plan limit '
                      f'({claude_limit_detail(hit)}) and would spend usage credits. Back {cp.when(until)}. '
-                     f'Override: codexpool claude enable {q}')
+                     f'Override: subpool claude enable {q}')
             elif g.get('parked_reason') != 'credits' or g.get('parked_until') != until:
                 # A fresh poll can reveal a shared limit after the early overage pass already parked it.
                 g.update(parked_reason='credits', parked_until=until)
@@ -881,10 +881,10 @@ def claude_credit_pass(guard, seats, now, save, pool, meta, finalize=True):
         if used is not None and cap is not None and used >= cap:
             reason, title, body = 'cap', 'Claude credit cap reached', (
                 f'{s["label"]} has spent {money_text(used, cur)} of its {money_text(cap, cur)} cap; parked until '
-                f'{cp.when(until)}. Raise it: codexpool claude credits {q} last-resort --cap <USD>')
+                f'{cp.when(until)}. Raise it: subpool claude credits {q} last-resort --cap <USD>')
         elif used is None or cap is None or not fresh:
             reason, title, body = 'no-reading', 'Claude account parked', (
-                f'{s["label"]}: without a current credit reading codexpool cannot hold it to '
+                f'{s["label"]}: without a current credit reading subpool cannot hold it to '
                 f'its cap, so it spends nothing. Back {cp.when(until)}.')
         elif not claude_credit_allowed(r, rows, now) or others_serve[s['name']] or spender is not None:
             reason, title, body = 'last-resort', 'Claude account parked', (
@@ -914,7 +914,7 @@ def claude_credit_pass(guard, seats, now, save, pool, meta, finalize=True):
                 cp.notify('Claude is spending usage credits' if spending else 'Claude is serving as the last resort',
                        f'Every other account is out, so {s["label"]} serves as the last resort '
                        f'({money_text(used, cur)} of its {money_text(cap, cur)} '
-                       'cap). codexpool parks it at the cap or as soon as another account can serve.')
+                       'cap). subpool parks it at the cap or as soon as another account can serve.')
             continue
         if s['disabled']:  # parked already: keep the record's reason up to date, quietly
             if g.get('parked_reason') != reason or (cp.parse_time(g.get('parked_until')) or now) <= now or \
@@ -976,22 +976,22 @@ def claude_guard_pass():
     except cp.PoolDown as e:
         guard['down_count'] = guard.get('down_count', 0) + 1
         if guard['down_count'] == cp.DOWN_ALERT_AFTER:
-            cp.notify('Claude pool is not responding', 'launchd keeps restarting it. Run: codexpool doctor')
+            cp.notify('Claude pool is not responding', 'launchd keeps restarting it. Run: subpool doctor')
         save()
         cp.write_json(sienna_pool.CLAUDE_STATUS_FILE, claude_status_down(str(e), False))
         return
     except (cp.ApiError, cp.KeyUnavailable) as e:
         msg = cp.short(str(e), 160)
         if not guard.get('mgmt_error_notified'):
-            cp.notify('codexpool is locked out of the Claude pool', f'{msg[:90]}. Its credit guard is off. '
-                   'Run: codexpool doctor')
+            cp.notify('subpool is locked out of the Claude pool', f'{msg[:90]}. Its credit guard is off. '
+                   'Run: subpool doctor')
             guard['mgmt_error_notified'] = True
         save()
         cp.write_json(sienna_pool.CLAUDE_STATUS_FILE, claude_status_down(
             msg, cp.port_open(sienna_pool.CLAUDE_PORT) if isinstance(e, cp.KeyUnavailable) else True))
         return
     if guard.get('down_count', 0) >= cp.DOWN_ALERT_AFTER or guard.get('mgmt_error_notified'):
-        cp.notify('Claude pool is back', 'codexpool can see the Claude pool again.')
+        cp.notify('Claude pool is back', 'subpool can see the Claude pool again.')
     guard['down_count'] = 0
     guard.pop('mgmt_error_notified', None)
     cp.recover_selftest(guard, pool)

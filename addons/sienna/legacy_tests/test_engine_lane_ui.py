@@ -1,14 +1,14 @@
 """The read-only Claude lane (lane provider `sienna`, kind engine, picker label "Claude"; docs/LANES.md, Engine
-members) in the Settings window's Lanes pane and lane editor (menubar/codexpool_settings.py's PROVIDERS,
+members) in the Settings window's Lanes pane and lane editor (menubar/subpool_settings.py's PROVIDERS,
 LANE_STATE, ENGINE_STATE, engine_state_text, member_line, infer_ready, credentials and the Add Model sheet's
 lines, with the engine's tables and words from addons/sienna/menubar_ext.py's LANE_PROVIDERS, LANE_STATE,
 ENGINE_STATE, ENGINE_HINT and ENGINE_COPY): the provider is named Claude, its members say read-only, its state is the engine's (accepted once, by
-version: `codexpool lane apply --accept-engine`), and the Credentials row offers Accept Engine… with that command
+version: `subpool lane apply --accept-engine`), and the Credentials row offers Accept Engine… with that command
 streaming into a sheet. The xai and bridge providers are as before.
 
 The tables and the copy helpers are pure, so they run on every Python here, loaded from the source without
 importing the module (which needs PyObjC). The pane's rows and the sheets need PyObjC, that is the menu bar's own
-interpreter (~/.codexpool/menubar/.venv/bin/python), and skip without it. The README's demo lanes have no engine
+interpreter (~/.subpool/menubar/.venv/bin/python), and skip without it. The README's demo lanes have no engine
 member, so docs/images/demo/render.py's output stays byte-identical."""
 import __future__
 import ast
@@ -22,9 +22,9 @@ import unittest
 
 from _helpers import REPO
 
-MENUBAR = REPO / 'menubar' / 'codexpool_menubar.py'
+MENUBAR = REPO / 'menubar' / 'subpool_menubar.py'
 EXT = REPO / 'addons' / 'sienna' / 'menubar_ext.py'
-SETTINGS = REPO / 'menubar' / 'codexpool_settings.py'
+SETTINGS = REPO / 'menubar' / 'subpool_settings.py'
 SPEC = REPO / 'addons' / 'sienna' / 'docs' / 'SPEC.md'
 DOCS = REPO / 'addons' / 'sienna' / 'docs' / 'MENUBAR.md'
 DEMO = REPO / 'docs' / 'images' / 'demo'
@@ -32,7 +32,7 @@ ADDON_DEMO = REPO / 'addons' / 'sienna' / 'docs' / 'images' / 'demo'
 NOW = '2026-09-24T16:41:00Z'
 PURE = ('plain_detail', 'engine_state_text', 'member_line', 'infer_ready')
 CONSTANTS = ('PROVIDERS', 'LANE_STATE', 'ENGINE_STATE', 'ENGINE_HINT', 'CLI_HINT')
-UNTESTED = 'untested engine: codexpool lane apply --accept-engine'
+UNTESTED = 'untested engine: subpool lane apply --accept-engine'
 ENGINE_STATES = ('engine ok', 'untested engine', 'no engine', 'no launcher', 'pool down', 'no profile')
 
 
@@ -101,8 +101,8 @@ class Tables(unittest.TestCase):
         self.assertEqual(f(UNTESTED), 'Not accepted yet')
         self.assertEqual(f('engine ok'), 'Accepted')
         self.assertEqual(f('no engine: install Claude Code first'), 'Claude Code isn’t installed')
-        self.assertEqual(f('pool down: codexpool claude status ; codexpool doctor'), 'The Claude pool is down')
-        self.assertEqual(f('something else: codexpool doctor'), 'Something else')
+        self.assertEqual(f('pool down: subpool claude status ; subpool doctor'), 'The Claude pool is down')
+        self.assertEqual(f('something else: subpool doctor'), 'Something else')
         self.assertEqual(f(''), 'Not ready')
         self.assertIn('--accept-engine', self.ns['ENGINE_HINT']['untested engine'])
 
@@ -138,15 +138,15 @@ def load(name):
     return importlib.import_module(name)
 
 
-mb = load('codexpool_menubar')
+mb = load('subpool_menubar')
 
 
-@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.codexpool/menubar/.venv/bin/python)')
+@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.subpool/menubar/.venv/bin/python)')
 class WithAppKit(unittest.TestCase):
     """The pane's data and the sheets' lines, on the demo lanes with a Claude lane added."""
 
     def setUp(self):
-        self.st = load('codexpool_settings')
+        self.st = load('subpool_settings')
         lanes = json.loads((DEMO / 'lanes.json').read_text())
         lanes['lanes'].append({'name': 'sienna', 'display': 'Claude', 'effort': 'medium', 'role': 'Review.',
                                'members': [{'id': 'opus', 'provider': 'sienna', 'model': 'claude-opus-5-5',
@@ -177,7 +177,7 @@ class WithAppKit(unittest.TestCase):
         accepted = copy.deepcopy(self.providers)
         accepted['providers'][-1].update(ready=True, detail='engine ok')
         self.assertTrue({c.title: c for c in self.st.credentials(self.store(providers=accepted))}['Claude'].ready)
-        # a codexpool without `lane providers`: the members' states say
+        # a subpool without `lane providers`: the members' states say
         store = self.store()
         store.providers = None
         self.assertFalse({c.title: c for c in self.st.credentials(store)}['Claude'].ready)

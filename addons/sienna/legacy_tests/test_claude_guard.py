@@ -477,7 +477,7 @@ class CreditPolicy(ClaudePass):
 
     def test_an_account_you_disabled_is_never_enabled(self):
         self.all_out_but_a()
-        self.accounts['claude-a.json']['disabled'] = True   # codexpool claude disable A
+        self.accounts['claude-a.json']['disabled'] = True   # subpool claude disable A
         self.run_pass()
         with self.later(hours=3):   # past every reset A's usage named
             st, rows = self.run_pass()
@@ -536,7 +536,7 @@ class CreditPolicy(ClaudePass):
     def test_enable_overrides_the_park(self):
         self.out('claude-a.json', credits=True)
         self.run_pass()
-        g = self.guard()   # what codexpool claude enable A does: enabled, parked_until becomes override_until
+        g = self.guard()   # what subpool claude enable A does: enabled, parked_until becomes override_until
         g['seats']['claude-a.json']['override_until'] = g['seats']['claude-a.json'].pop('parked_until')
         cp.write_json(sienna_pool.CLAUDE_GUARD_FILE, g)
         self.accounts['claude-a.json']['disabled'] = False
@@ -565,7 +565,7 @@ class CreditPolicy(ClaudePass):
         self.assertEqual((rows['A']['state'], rows['A']['detail']), ('parked', 'billed to credits below its limit'))
         title, body = next(n for n in self.notes if n[0] == 'Claude account billed to credits below its limit')
         self.assertIn('A spent usage credits below its plan limit ($10.00 → $14.50), and its credits are off in '
-                      'codexpool; parked until', body)
+                      'subpool; parked until', body)
         self.assertIn('Fast mode (/fast) bills credits like this', body)
         self.assertEqual(st['active'], 'B')
 
@@ -681,7 +681,7 @@ class SignInEnded(ClaudePass):
         self.assertTrue(rows['A']['sign_in_ended'])
         self.assertFalse(rows['B']['sign_in_ended'])   # a Codex line names no Claude account
         self.assertEqual(self.notes[-1], ('Claude account needs a re-login', 'A: Anthropic ended this sign-in. Sign '
-                                          'in again: codexpool claude login A --priority 300 (or click it in the '
+                                          'in again: subpool claude login A --priority 300 (or click it in the '
                                           'menu bar).'))
 
 
@@ -723,10 +723,10 @@ class GuardCommand(ClaudePass):
                 mock.patch.object(sienna_guard, 'claude_guard_pass') as claude_pass:
             plist.parent.mkdir(parents=True, exist_ok=True)
             plist.write_text('<plist/>')
-            with cp.guard_lock(pool=cp.seat_pool('claude')):   # what codexpool claude selftest holds
+            with cp.guard_lock(pool=cp.seat_pool('claude')):   # what subpool claude selftest holds
                 cp.cmd_guard(None)
             self.assertEqual((codex_pass.call_count, claude_pass.call_count), (1, 0))
-            with cp.guard_lock():   # what codexpool selftest holds
+            with cp.guard_lock():   # what subpool selftest holds
                 cp.cmd_guard(None)
             self.assertEqual((codex_pass.call_count, claude_pass.call_count), (1, 1))
             cp.cmd_guard(None)

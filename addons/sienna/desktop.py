@@ -148,7 +148,7 @@ class SafeFiles:
             raise DesktopError('unexpected file type at ' + str(path))
         elif st.st_nlink != 1:
             raise DesktopError(str(path) + ' has ' + str(st.st_nlink) +
-                               ' links; codexpool will not read a file shared with another location')
+                               ' links; subpool will not read a file shared with another location')
 
     def directory(self, path, create=False):
         path = pathlib.Path(path)
@@ -461,7 +461,7 @@ class Desktop:
         if options.get('effort') not in (None, 'low', 'medium', 'high'):
             raise DesktopError('defaultModelEffort must be low, medium or high')
         value = {'inferenceProvider': 'gateway', 'inferenceGatewayBaseUrl': self.url,
-                 'inferenceGatewayAuthScheme': 'bearer', 'inferenceGatewayApiKey': 'codexpool',
+                 'inferenceGatewayAuthScheme': 'bearer', 'inferenceGatewayApiKey': 'subpool',
                  'inferenceCredentialKind': 'static', 'modelDiscoveryEnabled': False,
                  'deploymentDisplayName': 'Pool', 'inferenceModels': []}
         for i, (name, label, tier) in enumerate(rows):
@@ -490,7 +490,7 @@ class Desktop:
         drift = [k for k in OWNED if value_hash(entry, k) != value_hash(old, k)] if not creating else []
         if drift and not getattr(args, 'reclaim', False):
             diff = '; '.join(k + ': ' + value_hash(old, k) + ' → ' + value_hash(entry, k) for k in sorted(drift))
-            raise DesktopError('"Pool" was edited in the app (' + diff + '): codexpool sienna desktop pooled --reclaim overwrites them, or leave it')
+            raise DesktopError('"Pool" was edited in the app (' + diff + '): subpool sienna desktop pooled --reclaim overwrites them, or leave it')
         options = dict(DEFAULT_OPTIONS, **(state.get('options') or {}))
         for key, option in [('defaultModelEffort', 'effort'), ('toolSearchEnabled', 'tool_search'), ('claudeAiImport', 'import')]:
             if not creating and value_hash(entry, key) != value_hash(old, key):
@@ -554,9 +554,9 @@ class Desktop:
             cap = policy.get('cap')
             capped = policy['policy'] == 'last-resort' and isinstance(cap, (int, float)) and not isinstance(cap, bool) and math.isfinite(cap) and cap > 0
             if not fresh or (enabled is False and not sienna_guard.claude_credits_disabled(usage, now)):
-                problem = 'no fresh credits reading for ' + label + ': wait for the guard\'s next poll (codexpool sienna status)'
+                problem = 'no fresh credits reading for ' + label + ': wait for the guard\'s next poll (subpool sienna status)'
             elif enabled is True and not capped:
-                problem = 'credits on at claude.ai for ' + label + ': turn them off there (Settings → Usage). codexpool can\'t stop every paid request.'
+                problem = 'credits on at claude.ai for ' + label + ': turn them off there (Settings → Usage). subpool can\'t stop every paid request.'
             else:
                 problem = None
             rows.append(label)
@@ -619,9 +619,9 @@ class Desktop:
                     for name in self.fs.names(self.library)))
 
     def manual_alternative(self):
-        return ('another third-party configuration exists; codexpool leaves the desktop to you. '
+        return ('another third-party configuration exists; subpool leaves the desktop to you. '
                 "Use Claude's Developer → Configure Third-Party Inference: gateway " + self.url +
-                ', placeholder key codexpool, model discovery off; list models: ' +
+                ', placeholder key subpool, model discovery off; list models: ' +
                 ', '.join(row[0] for row in DEFAULT_MODELS) + '.')
 
     def require_only_pool(self):
@@ -652,7 +652,7 @@ class Desktop:
             allowed = {'mode': {'deploymentMode'}, 'meta': {'appliedId', '@membership'},
                        'entry': OWNED | OPTIONS}
             if role not in allowed or key not in allowed[role]:
-                raise DesktopError('journal names a key codexpool does not manage')
+                raise DesktopError('journal names a key subpool does not manage')
             if self.key_path(role, journal.get('entry_id')) is None:
                 raise DesktopError('missing entry id in journal')
             for side in ('before', 'after'):
@@ -748,7 +748,7 @@ class Desktop:
             keys = {'mode': {'deploymentMode'}, 'meta': {'appliedId', '@membership'},
                     'entry': OWNED | OPTIONS}[role]
             # Secrets in an edited owned field must never enter an undo log.
-            if role == 'entry' and before.get('inferenceGatewayApiKey') not in (None, 'codexpool') and before != after:
+            if role == 'entry' and before.get('inferenceGatewayApiKey') not in (None, 'subpool') and before != after:
                 raise DesktopError('remove the edited inferenceGatewayApiKey in the app before reclaiming; no credential is backed up')
             if role == 'entry' and before.get('inferenceGatewayBaseUrl') != after.get('inferenceGatewayBaseUrl'):
                 url = self.cp.urllib.parse.urlsplit(str(before.get('inferenceGatewayBaseUrl') or ''))
@@ -812,7 +812,7 @@ class Desktop:
             self.note('! ignored legacy file-backup journal; configuration left unchanged; legacy backup folders were not read')
             return
         if check_only:
-            raise DesktopError('an interrupted desktop change needs recovery; quit Claude, then run codexpool claude desktop rollback')
+            raise DesktopError('an interrupted desktop change needs recovery; quit Claude, then run subpool claude desktop rollback')
         classes = self.classify(journal)
         groups = {}
         for item in journal['steps']:
@@ -824,7 +824,7 @@ class Desktop:
             self.note('✓ finished the interrupted change')
             return
         if 'foreign' in classes.values() and not explicit:
-            raise DesktopError('owned keys changed after an interruption: codexpool claude desktop rollback')
+            raise DesktopError('owned keys changed after an interruption: subpool claude desktop rollback')
         # Group CAS undo by file. Leaving 3p writes explicit 1p FIRST; entering
         # 3p writes mode LAST. An absent old mode is unsafe with a retained entry.
         attempted = journal['steps'][:journal.get('started', -1) + 1]
@@ -903,7 +903,7 @@ class Desktop:
                                                       'cpa': self.cp.cpa_version(pool.CLAUDE_CURRENT)},
                           credits_check=(credits or {}).get('check'), accepted_credits=(credits or {}).get('paid') or None)
             self.closing.append('Set up. Open Claude and it runs on the pool (the sidebar footer says "Pool"). '
-                      'Back: codexpool sienna desktop claudeai. The app\'s own "Go back to Claude.ai" also signs the pooled app out.')
+                      'Back: subpool sienna desktop claudeai. The app\'s own "Go back to Claude.ai" also signs the pooled app out.')
             if options['import'] and getattr(args, 'import_history', None):
                 self.note('Import enabled: the wizard stores its own sign-in in the pooled profile.')
             self.closing.append('The first pooled launch downloads its own engine and sandbox image; this can take a few minutes.')
@@ -911,7 +911,7 @@ class Desktop:
             if command == 'claudeai':
                 self.require_only_pool()
             if not state:
-                self.note('✓ no codexpool desktop ownership record; no files changed')
+                self.note('✓ no subpool desktop ownership record; no files changed')
                 return [], None, None, False
             # A later manual provider selection belongs to the user. Never apply it,
             # read its settings, or change the mode underneath it.
@@ -937,7 +937,7 @@ class Desktop:
             remove_dir = bool(command == 'remove' and state.get('created_dir') and not remaining)
             result.update(removed=command == 'remove', last_backup=None)
             if meta.get('appliedId'):
-                self.closing.append("Removed codexpool setup; the user's later configuration choice is unchanged.")
+                self.closing.append("Removed subpool setup; the user's later configuration choice is unchanged.")
             else:
                 self.closing.append('Done. The app opens on Claude.ai; saved configurations and history are kept.')
         return writes, result, entry_id, remove_dir
@@ -1137,7 +1137,7 @@ class Desktop:
             s['owned'] = rendering  # never echo the disk entry or a tampered snapshot's credentials
             s['current'] = s['ours'] and all(value_hash(normalized, k) == value_hash(rendering, k) for k in OWNED | OPTIONS)
             s['conflicts'] = sorted(set(normalized) & set(REFUSED))
-            s['placeholder_ok'] = not entry or normalized.get('inferenceGatewayApiKey') == 'codexpool'
+            s['placeholder_ok'] = not entry or normalized.get('inferenceGatewayApiKey') == 'subpool'
             models = normalized.get('inferenceModels')
             s['models_ok'] = not entry or (normalized.get('modelDiscoveryEnabled') is False and isinstance(models, list) and bool(models) and
                 all(isinstance(m, dict) and re.fullmatch(r'claude-[a-z0-9][a-z0-9.-]*', str(m.get('name', ''))) and m.get('maxEffort') == 'high' for m in models))
@@ -1195,7 +1195,7 @@ class Desktop:
                 break
             time.sleep(0.25)
         else:
-            raise DesktopError('the app did not start; open it yourself and check codexpool sienna desktop status')
+            raise DesktopError('the app did not start; open it yourself and check subpool sienna desktop status')
         end = time.monotonic() + 60
         while True:
             s = self.status(probe=False)
@@ -1207,8 +1207,8 @@ class Desktop:
         self.note({'pooled': 'Claude opened on the pool.', 'claudeai': 'Claude opened on Claude.ai.',
                    '3p': 'Claude opened in 3p mode; the pool address is confirmed on the first request.',
                    'other': 'Claude opened on another configuration (3p), not on Claude.ai.',
-                   'fallback': 'Claude fell back to standard mode; run codexpool doctor.'}.get(s['running_mode'],
-                  'Claude opened; could not confirm the mode yet (codexpool sienna desktop status).'))
+                   'fallback': 'Claude fell back to standard mode; run subpool doctor.'}.get(s['running_mode'],
+                  'Claude opened; could not confirm the mode yet (subpool sienna desktop status).'))
 
     def command(self, args):
         command = args.desktop_cmd
@@ -1261,7 +1261,7 @@ class Desktop:
                 for problem in credit['problems']:
                     self.note('✗ ' + problem)
             if command == 'pooled' and not self.pool_ok():
-                self.note('✗ the app would open on a pool that cannot answer: codexpool sienna install')
+                self.note('✗ the app would open on a pool that cannot answer: subpool sienna install')
             self.step('Quit Claude (only after confirmation; dry run does not quit)')
             self.step('Render the Pool entry')
             writes, state, _, _ = self.plan(command, args, app, credit)
@@ -1271,7 +1271,7 @@ class Desktop:
             for role, path, data in writes:
                 self.note('[dry-run] ' + role + ': ' + str(digest(self.fs.read(path))) + ' → ' + str(digest(data)))
             if state and command == 'pooled':
-                self.note('codexpool would write: ' + json.dumps(state['owned'], sort_keys=True))
+                self.note('subpool would write: ' + json.dumps(state['owned'], sort_keys=True))
             return
         if relaunch:
             self.confirm_relaunch(args)
@@ -1283,7 +1283,7 @@ class Desktop:
             if credit and not credit['ok']:
                 raise DesktopError('\n'.join(credit['problems']))
             if command == 'pooled' and not self.pool_ok():
-                raise DesktopError('the app would open on a pool that cannot answer: codexpool sienna install')
+                raise DesktopError('the app would open on a pool that cannot answer: subpool sienna install')
             writes, state, entry_id, remove_dir = self.plan(command, args, app, credit)
             prepared = self.prepare(command, writes, state, entry_id, remove_dir) if command not in ('rollback', 'relaunch') else None
             planned_state = self.revision(self.state_path)
@@ -1349,7 +1349,7 @@ def add_parser(claude, fn):
         'status': 'show configured and running desktop modes',
         'pooled': 'configure the desktop app to use the Claude pool',
         'claudeai': 'switch the desktop app back to Claude.ai',
-        'remove': 'undo the desktop configuration created by codexpool',
+        'remove': 'undo the desktop configuration created by subpool',
         'rollback': 'recover an interrupted desktop configuration change',
         'reveal': 'show the desktop configuration in Finder',
         'relaunch': 'quit and reopen the desktop app after confirmation',
@@ -1379,7 +1379,7 @@ def add_parser(claude, fn):
 
 def doctor(cp, rep):
     rep.section('Desktop')
-    fix = 'codexpool sienna desktop status; codexpool sienna desktop reveal'
+    fix = 'subpool sienna desktop status; subpool sienna desktop reveal'
     with Desktop(cp) as d:
         s = d.status()
         rep.check(s['cpa_compatible'], s['cpa_compatibility_reason'],
@@ -1387,7 +1387,7 @@ def doctor(cp, rep):
                   warn=s['configured_mode'] != 'pooled')
         for name in s['legacy_backups']:
             rep.check(False, 'legacy ' + name + ' may hold secrets; its contents were not read',
-                      'Review ~/.codexpool/state/' + name + ' in Finder and delete that folder yourself when no longer needed.', warn=True)
+                      'Review ~/.subpool/state/' + name + ' in Finder and delete that folder yourself when no longer needed.', warn=True)
         if any('another third-party configuration exists' in error for error in s['errors']):
             rep.check(False, d.manual_alternative(), warn=True)
             return
@@ -1395,7 +1395,7 @@ def doctor(cp, rep):
         with contextlib.suppress(DesktopError, OSError):
             relevant = relevant or d.fs.info(d.state_path) is not None or any(e['name'] == 'Pool' for e in d.fs.obj(d.meta_path).get('entries', []))
         if not relevant and not [e for e in s['errors'] if not e.startswith('Claude app not found')]:
-            rep.check(True, 'desktop app not pooled (codexpool sienna desktop pooled sets it up)' +
+            rep.check(True, 'desktop app not pooled (subpool sienna desktop pooled sets it up)' +
                       ('; an older Claude-3p log folder from ' + s['old_3p_logs'] + ' exists' if s['old_3p_logs'] else ''))
             return
         for error in s['errors']:
@@ -1408,7 +1408,7 @@ def doctor(cp, rep):
                           'run the desktop wire capture test; re-verify the app layout',
                           warn=name != 'app' or version_tuple(seen) >= version_tuple(verified))
         rep.check(not s['txn_pending'], 'an interrupted desktop change is pending' if s['txn_pending'] else 'no interrupted change',
-                  'codexpool sienna desktop rollback')
+                  'subpool sienna desktop rollback')
         if s['txn_classes']:
             rep.check(True, ' · '.join(k + ': ' + v for k, v in s['txn_classes'].items()))
         try:
@@ -1420,24 +1420,24 @@ def doctor(cp, rep):
                   ('; the applied configuration hides the Claude.ai sign-in' if s['chooser_disabled'] else ''),
                   'Developer → Configure Third-Party Inference… → apply another configuration', warn=s['configured_mode'] == 'other')
         rep.check(s['mode_explicit'], 'deploymentMode is explicit' if s['mode_explicit'] else
-                  'a provider is applied with no deploymentMode: the app will open in 3p', 'codexpool sienna desktop claudeai')
+                  'a provider is applied with no deploymentMode: the app will open in 3p', 'subpool sienna desktop claudeai')
         rep.check(s['app_bundle_ok'], 'running executable matches the validated app', fix)
         rep.check(s['running_mode'] != 'fallback', 'Claude not running' if not s['app_running'] else 'running: ' + str(s['running_mode']), fix)
         rep.check(not s['restart_required'], 'reopen Claude to switch' if s['restart_required'] else 'no restart pending',
-                  'codexpool sienna desktop relaunch', warn=True)
+                  'subpool sienna desktop relaunch', warn=True)
         rep.check(s['current'] or s['configured_mode'] == 'none', 'Pool entry current' if s['current'] else 'Pool entry out of date or edited',
-                  'codexpool sienna desktop pooled --reclaim (only if you want to replace edited owned fields)', warn=True)
+                  'subpool sienna desktop pooled --reclaim (only if you want to replace edited owned fields)', warn=True)
         for key in s['conflicts']:
             rep.check(False, 'Pool carries ' + key + ': ' + REFUSED[key], 'remove the key in the app configuration window')
         if not s['conflicts']:
             rep.check(True, 'no conflicting keys in Pool')
         rep.check(s['placeholder_ok'], 'Pool carries only the placeholder key' if s['placeholder_ok'] else
                   'Pool carries unnecessary sensitive material in a plain-text file; the pool replaces it upstream',
-                  'codexpool sienna desktop pooled --reclaim', warn=True)
-        rep.check(s['models_ok'], 'model discovery off; full ids; maxEffort high on every model', 'codexpool sienna desktop pooled')
+                  'subpool sienna desktop pooled --reclaim', warn=True)
+        rep.check(s['models_ok'], 'model discovery off; full ids; maxEffort high on every model', 'subpool sienna desktop pooled')
         if s['configured_mode'] == 'pooled':
             rep.check(s['port_ok'] and d.pool_ok(), 'the Claude pool answers and Pool points at it',
-                      'codexpool sienna install, or codexpool sienna desktop claudeai')
+                      'subpool sienna install, or subpool sienna desktop claudeai')
         try:
             c = d.live_credits()
             rep.check(c['ok'], 'fresh credits policies acceptable' if c['ok'] else '; '.join(c['problems']),
@@ -1445,13 +1445,13 @@ def doctor(cp, rep):
             for paid in c['paid']:
                 rep.check(False, paid['label'] + ': capped last-resort paid use accepted ($' + str(paid['cap']) + ')', warn=True)
         except (cp.PoolDown, cp.ApiError, cp.KeyUnavailable, OSError):
-            rep.check(False, 'no live eligible-account credits check', 'run codexpool sienna status', warn=s['configured_mode'] != 'pooled')
+            rep.check(False, 'no live eligible-account credits check', 'run subpool sienna status', warn=s['configured_mode'] != 'pooled')
         started = cp.parse_time(s['pool_started_at'])
         unseen = s['running_mode'] == 'pooled' and not s['pool_seen_desktop_at'] and started and (cp.now_utc() - started).total_seconds() > 600
         rep.check(not unseen, 'pool saw desktop at ' + s['pool_seen_desktop_at'] if s['pool_seen_desktop_at'] else
                   'pool has not seen a desktop request since the pool started' if started else 'pool start time unknown; request evidence unavailable', warn=True)
         rep.check(not s['engine_identity_rejections_24h'], 'desktop engine identity rejections in 24 h: ' + str(s['engine_identity_rejections_24h']),
-                  'the engine identity changed; update codexpool')
+                  'the engine identity changed; update subpool')
         rep.check(True, 'expected Electron rejections in 24 h: ' + str(s['electron_rejections_24h']))
         rep.check(True, 'desktop token-count rejections in 24 h: ' + str(s['token_count_rejections_24h']))
         rep.check(True, 'token counting from pooled desktop is estimated; wire fixtures are synthesised until E2 capture')

@@ -238,13 +238,13 @@ class Providers(unittest.TestCase):
         self.assertTrue(p['opencode-go']['ready'])       # the fake home has its key
         self.assertEqual(p['opencode-go']['detail'], 'key saved')
         self.assertFalse(p['opencode-zen']['ready'])
-        self.assertIn('codexpool lane key opencode-zen -', p['opencode-zen']['detail'])
+        self.assertIn('subpool lane key opencode-zen -', p['opencode-zen']['detail'])
         self.assertFalse(p['responses']['ready'])
         self.assertTrue(all(isinstance(v['title'], str) and v['title'] for v in p.values()))
 
     def test_xai_states(self):
         self.assertEqual((self.providers()['xai']['ready'], self.providers()['xai']['detail']),
-                         (False, 'not signed in: codexpool lane login xai'))
+                         (False, 'not signed in: subpool lane login xai'))
         self.assertTrue(self.providers([self.xai()])['xai']['ready'])
         self.assertFalse(self.providers([self.xai(disabled=True)])['xai']['ready'])
         blocked = self.providers([self.xai(status='error', unavailable=True, status_message='unauthorized')])['xai']
@@ -327,7 +327,7 @@ class Models(unittest.TestCase):
     def test_xai_errors(self):
         data, err = self.models('xai', want=1)
         self.assertIn('the pool is not answering', data['error'])
-        self.assertIn('codexpool lane models: the pool is not answering', err)
+        self.assertIn('subpool lane models: the pool is not answering', err)
         with mock.patch.object(cp, 'mgmt_key', return_value=TEST_KEY), FakePool():   # no model definitions: 404
             data, _ = self.models('xai', want=1)
         self.assertIn('the pool would not list its xAI models', data['error'])
@@ -342,7 +342,7 @@ class Models(unittest.TestCase):
         ((path, headers),) = srv.seen
         self.assertEqual(path, '/v1/models')
         self.assertEqual(headers.get('Authorization'), 'Bearer ' + self.key())
-        self.assertEqual(headers.get('User-Agent'), 'codexpool-bridge/1')
+        self.assertEqual(headers.get('User-Agent'), 'subpool-bridge/1')
 
     def test_without_a_key_it_asks_anyway(self):
         with ModelServer(body={'data': [{'id': 'zen-1'}]}) as srv, \
@@ -354,7 +354,7 @@ class Models(unittest.TestCase):
     def test_errors_never_show_the_key(self):
         key = self.key()
         cases = ((401, {'error': {'message': f'bad key {key}'}}, (), 'answered HTTP 401: bad key <key> (check the key: '
-                                                                     'codexpool lane key opencode-go -)'),
+                                                                     'subpool lane key opencode-go -)'),
                  (500, b'<html>oops</html>', (), 'answered HTTP 500'),
                  (200, b'not json', (), 'did not answer'),
                  (200, {'something': 'else'}, (), 'something other than a model list'),
@@ -417,7 +417,7 @@ class Models(unittest.TestCase):
 
 class KeyFromStdin(unittest.TestCase):
     def test_dash_reads_stdin_and_never_prints_the_key(self):
-        """What the Settings window does: `codexpool lane key NAME -` with the key on stdin, never in argv."""
+        """What the Settings window does: `subpool lane key NAME -` with the key on stdin, never in argv."""
         path = cp.lane_key_path('opencode-zen')
         args = cp.build_parser().parse_args(['lane', 'key', 'opencode-zen', '-'])
         stdin = io.StringIO('zen-secret-123\n')

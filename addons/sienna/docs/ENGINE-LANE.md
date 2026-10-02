@@ -36,11 +36,11 @@ cannot set `base_url`, environment variables, a permission mode or accepted vers
 Install Claude Code and the Claude pool first. With the owner present and a credits-off Claude account available:
 
 ```sh
-codexpool lane apply --dry-run
-codexpool lane apply
-codexpool lane apply --accept-engine --dry-run
-codexpool lane apply --accept-engine
-codexpool doctor
+subpool lane apply --dry-run
+subpool lane apply
+subpool lane apply --accept-engine --dry-run
+subpool lane apply --accept-engine
+subpool doctor
 ```
 
 The acceptance command spends one Claude pool turn per engine. It refuses without an installed engine and current
@@ -60,7 +60,7 @@ the parent to request proposed diffs or commands as text. There is no mid-turn a
 Codex's on-disk project table; turn metadata and prompt text cannot grant permission. Protected application and
 credential directories remain excluded even if a trust entry names them.
 
-The isolated profile is `~/.codexpool/lanes/<lane>-home`, with a private temporary directory. The launcher requires
+The isolated profile is `~/.subpool/lanes/<lane>-home`, with a private temporary directory. The launcher requires
 the Claude pool and exits 75 if it is down: it never silently routes an engine turn direct. Only the fixed engine
 environment is passed. The placeholder bearer belongs to this isolated profile; the user's normal Claude login
 is never imported. Lane turns have no claude.ai connectors, Chrome integration or Remote Control.
@@ -88,7 +88,7 @@ returns `400 bad_checkpoint`.
 To continue the isolated conversation interactively, the current command spelling is:
 
 ```sh
-codexpool claude lane-resume <session-uuid>
+subpool claude lane-resume <session-uuid>
 ```
 
 This implements the planned `sienna resume` behavior until the terminal launcher is renamed. It resolves the
@@ -99,7 +99,7 @@ login or connectors. Codex turns meanwhile wait or receive `session_busy`.
 
 ### Engine tests and CPA compatibility
 
-Run `codexpool lane test sienna` from inside a Codex-trusted git repository. It spends engine and seat quota.
+Run `subpool lane test sienna` from inside a Codex-trusted git repository. It spends engine and seat quota.
 The engine task reads fixture files, returns a random check value and a proposed diff, verifies that no file
 changed, checks the child model and isolated transcript, and does not require `apply_patch`. `--compaction`
 uses the read-only marker task and checks for a Codex compaction. Unit tests use only `tests/fixtures/stub_claude.py`.
@@ -123,7 +123,7 @@ CODEXPOOL_CPA_FIXTURES=/path/to/sanitized-captures \
 python3 -m unittest discover -s tests -p test_cpa_passthrough.py
 ```
 
-To record compatibility for doctor, run `codexpool doctor --cpa-passthrough /path/to/sanitized-captures`.
+To record compatibility for doctor, run `subpool doctor --cpa-passthrough /path/to/sanitized-captures`.
 This starts only the isolated test instance of the installed Claude build and stores the verdict in
 `state/engine-cpa-check.json`. Ordinary doctor calls never execute a capture test; they require a successful
 record matching the build hash, accepted engine version and current exception list. Unexpected JSON paths are

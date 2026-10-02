@@ -1,11 +1,11 @@
-"""Shared set-up for the codexpool tests: a throwaway HOME, stubbed macOS tools, and bin/codexpool loaded as the
-module codexpool_cli.
+"""Shared set-up for the subpool tests: a throwaway HOME, stubbed macOS tools, and bin/subpool loaded as the
+module subpool_cli.
 
-Every test module imports this first. bin/codexpool computes its paths, ports and launchd labels from HOME and
+Every test module imports this first. bin/subpool computes its paths, ports and launchd labels from HOME and
 settings.json when it loads, so the fake home must exist before it does. Nothing here touches the real
-~/.codexpool, ~/.codex, ~/Library/LaunchAgents, the Keychain, the clipboard or the network: launchctl, security,
+~/.subpool, ~/.codex, ~/Library/LaunchAgents, the Keychain, the clipboard or the network: launchctl, security,
 osascript and mdfind are stubs that log their arguments and fail, pbcopy is a stub that writes to a file in the fake
-home (all of them first on PATH, for bin/codexpool run as a command too; CODEXPOOL_NO_CLIPBOARD=1 keeps even the
+home (all of them first on PATH, for bin/subpool run as a command too; CODEXPOOL_NO_CLIPBOARD=1 keeps even the
 pbcopy stub off unless a test turns it on), the pool, bridge and add-on pool ports are free ports picked at random, and the
 launchd labels are test labels. Standard library only; Python 3.9+.
 """
@@ -29,14 +29,14 @@ import tempfile
 import threading
 import urllib.parse
 
-sys.dont_write_bytecode = True  # no __pycache__ next to bin/codexpool
+sys.dont_write_bytecode = True  # no __pycache__ next to bin/subpool
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-SCRIPT = REPO / 'bin' / 'codexpool'
+SCRIPT = REPO / 'bin' / 'subpool'
 BRIDGE_SCRIPT = REPO / 'lanes' / 'bridge.py'
 STUBBED = ('launchctl', 'security', 'osascript', 'mdfind')
-TEST_LABELS = {'pool_label': 'com.codexpool-test.pool', 'guard_label': 'com.codexpool-test.guard',
-               'menubar_label': 'com.codexpool-test.menubar', 'bridge_label': 'com.codexpool-test.bridge'}
+TEST_LABELS = {'pool_label': 'com.subpool-test.pool', 'guard_label': 'com.subpool-test.guard',
+               'menubar_label': 'com.subpool-test.menubar', 'bridge_label': 'com.subpool-test.bridge'}
 TEST_KEY = 'test-management-key'
 
 
@@ -60,7 +60,7 @@ def write_private(path, text):
 
 
 def build_home():
-    home = pathlib.Path(tempfile.mkdtemp(prefix='codexpool-test-home-')).resolve()
+    home = pathlib.Path(tempfile.mkdtemp(prefix='subpool-test-home-')).resolve()
     stubs = home / 'stubs'
     stubs.mkdir()
     for name in STUBBED:
@@ -72,7 +72,7 @@ def build_home():
     pbcopy.write_text('#!/bin/sh\necho "pbcopy $*" >> "$HOME/stub-calls.log"\ncat > "$HOME/clipboard.txt"\n'
                       'exit "${FAKE_PBCOPY_EXIT:-0}"\n')
     pbcopy.chmod(0o755)
-    root = home / '.codexpool'
+    root = home / '.subpool'
     for d in ('state', 'logs', 'auth', 'bin/current', 'lanes/secrets'):
         (root / d).mkdir(parents=True)
     (root / 'auth').chmod(0o700)
@@ -105,7 +105,7 @@ HOME = build_home()
 atexit.register(shutil.rmtree, str(HOME), True)
 os.environ['HOME'] = str(HOME)
 os.environ['PATH'] = f'{HOME / "stubs"}{os.pathsep}{os.environ.get("PATH", "")}'
-os.environ['CODEXPOOL_HOME'] = str(HOME / '.codexpool')  # what lanes/bridge.py reads
+os.environ['CODEXPOOL_HOME'] = str(HOME / '.subpool')  # what lanes/bridge.py reads
 for _name in ('CODEXPOOL_SETTINGS', 'CODEX_HOME', 'CODEXPOOL_REEXEC', 'CODEXPOOL_HEADLINE_NOTE',
               'CODEXPOOL_VIA_INSTALLER', 'FAKE_PBCOPY_EXIT', 'CODEXPOOL_GATE_PROFILE'):
     os.environ.pop(_name, None)
@@ -113,30 +113,30 @@ os.environ['CODEXPOOL_NO_CLIPBOARD'] = '1'  # subprocesses too; tests.test_setup
 
 
 def load_cli():
-    """bin/codexpool as the module codexpool_cli, loaded once per test run."""
-    if 'codexpool_cli' in sys.modules:
-        return sys.modules['codexpool_cli']
-    loader = importlib.machinery.SourceFileLoader('codexpool_cli', str(SCRIPT))
-    spec = importlib.util.spec_from_loader('codexpool_cli', loader)
+    """bin/subpool as the module subpool_cli, loaded once per test run."""
+    if 'subpool_cli' in sys.modules:
+        return sys.modules['subpool_cli']
+    loader = importlib.machinery.SourceFileLoader('subpool_cli', str(SCRIPT))
+    spec = importlib.util.spec_from_loader('subpool_cli', loader)
     module = importlib.util.module_from_spec(spec)
-    sys.modules['codexpool_cli'] = module
+    sys.modules['subpool_cli'] = module
     loader.exec_module(module)
     return module
 
 
 def load_bridge():
-    if 'codexpool_bridge' in sys.modules:
-        return sys.modules['codexpool_bridge']
-    spec = importlib.util.spec_from_file_location('codexpool_bridge', str(BRIDGE_SCRIPT))
+    if 'subpool_bridge' in sys.modules:
+        return sys.modules['subpool_bridge']
+    spec = importlib.util.spec_from_file_location('subpool_bridge', str(BRIDGE_SCRIPT))
     module = importlib.util.module_from_spec(spec)
-    sys.modules['codexpool_bridge'] = module
+    sys.modules['subpool_bridge'] = module
     spec.loader.exec_module(module)
     return module
 
 
-sys.modules.setdefault('codexpool_test_helpers', sys.modules[__name__])
+sys.modules.setdefault('subpool_test_helpers', sys.modules[__name__])
 cp = load_cli()
-ROOT = HOME / '.codexpool'
+ROOT = HOME / '.subpool'
 PBCOPY_STUB = HOME / 'stubs' / 'pbcopy'
 CLIPBOARD = HOME / 'clipboard.txt'
 cp.PBCOPY = str(PBCOPY_STUB)  # the fallback for a PATH without pbcopy too, in-process: never the real clipboard
@@ -196,7 +196,7 @@ def run(fn, **args):
 
 
 def run_script(*args, env=None, python=None):
-    """bin/codexpool as a subprocess, in the fake home."""
+    """bin/subpool as a subprocess, in the fake home."""
     return subprocess.run([python or sys.executable, str(SCRIPT)] + list(args), capture_output=True, text=True,
                           env=dict(os.environ, **(env or {})), timeout=60)
 
@@ -207,7 +207,7 @@ def seat_name(email, plan='plus'):
 
 
 def fake_seat_file(email, plan='plus', priority=None):
-    """A seat file in the fake auth dir, with an unsigned made-up id_token that only carries the claims codexpool
+    """A seat file in the fake auth dir, with an unsigned made-up id_token that only carries the claims subpool
     reads (no real token material). Returns its path."""
     def b64(d):
         return base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip('=')
@@ -223,7 +223,7 @@ def fake_seat_file(email, plan='plus', priority=None):
 
 class FakePool:
     """A stand-in for the pool on cp.PORT: /v1/models (403 for a browser-like request, as the gate answers), and
-    the management API calls codexpool makes for seats (auth-files from the fake auth dir, fields, status, delete).
+    the management API calls subpool makes for seats (auth-files from the fake auth dir, fields, status, delete).
     It checks the management key. models: the /v1/models ids, or a function that returns them (to follow config.yaml
     the way the real pool reloads it). xai_models: what /v0/management/model-definitions/xai answers; extra_files:
     more auth-file rows (an xAI credential, say). Use it as a context manager."""

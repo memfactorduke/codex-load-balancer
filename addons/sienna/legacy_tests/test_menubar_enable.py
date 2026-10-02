@@ -1,6 +1,6 @@
 """Enable for a parked Claude account in the menu bar app and Settings (addons/sienna/menubar_ext.py's
 last_resort_parked, last_resort_tip, LAST_RESORT_ITEM and rotation_row; the core's account menu takes the line from
-the PoolUI): `codexpool claude enable` overrides a park only while the account's credit policy is Off (a
+the PoolUI): `subpool claude enable` overrides a park only while the account's credit policy is Off (a
 credits-off park), for the override's duration. An account parked by its last-resort policy stays parked until every
 other account's plan quota is spent, the reserve's included, and the CLI refuses to override that; so the menu offers
 no Enable (spends credits)… for it but a disabled line saying when it serves, with the reason in its tooltip, and
@@ -8,7 +8,7 @@ Settings' In rotation switch is off and disabled, with the reason as the row's s
 
 The copy helpers are pure functions over a seat's fields, so they run on every Python here, loaded from the source
 without importing the module (which needs PyObjC). The menu and Settings' row need PyObjC, that is the menu bar's
-own interpreter (~/.codexpool/menubar/.venv/bin/python), and skip without it. The README's demo data has one such
+own interpreter (~/.subpool/menubar/.venv/bin/python), and skip without it. The README's demo data has one such
 account, claude-status-reserve.json's Max B, parked in the guard's own words; its popover row is not what changes
 here (the menu and Settings' Seats pane are, and neither is rendered), so docs/images/demo/render.py's output stays
 byte-identical."""
@@ -23,7 +23,7 @@ import unittest
 
 from _helpers import REPO
 
-MENUBAR = REPO / 'menubar' / 'codexpool_menubar.py'
+MENUBAR = REPO / 'menubar' / 'subpool_menubar.py'
 EXT = REPO / 'addons' / 'sienna' / 'menubar_ext.py'
 SPEC = REPO / 'addons' / 'sienna' / 'docs' / 'SPEC.md'
 DOCS = REPO / 'addons' / 'sienna' / 'docs' / 'MENUBAR.md'
@@ -33,7 +33,7 @@ NOW = '2026-09-24T16:41:00Z'
 PURE = ('last_resort_parked', 'last_resort_tip')
 ITEM = 'Serves once every other account is out'
 ENABLE = 'Enable (spends credits)…'
-TIP = ('Max B is the last resort: codexpool brings it back once every other account’s plan quota is spent, the '
+TIP = ('Max B is the last resort: subpool brings it back once every other account’s plan quota is spent, the '
        'reserve’s included. Enable can’t override that; change its credit policy in Settings → Balancing.')
 LAST_RESORT_DETAIL = 'last resort: waits until every account is out'          # the CLI's park detail, verbatim
 CREDITS_OFF_DETAIL = 'credits off: plan limit or model exclusion unverified'
@@ -114,7 +114,7 @@ def load(name):
     return importlib.import_module(name)
 
 
-mb = load('codexpool_menubar')
+mb = load('subpool_menubar')
 ext = mb.POOL_UI['claude'].module if mb is not None else None   # the add-on's menubar_ext.py, as mb loaded it
 
 if mb is not None:
@@ -125,7 +125,7 @@ if mb is not None:
         an Objective-C class once per process, so it is defined here, not inside a test."""
 
 
-@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.codexpool/menubar/.venv/bin/python)')
+@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.subpool/menubar/.venv/bin/python)')
 class WithAppKit(unittest.TestCase):
     """The account menu and Settings' In rotation row, on the demo's Claude pool: Max B is the last resort, Pro C
     has its credits off."""
@@ -160,7 +160,7 @@ class WithAppKit(unittest.TestCase):
 
     def test_the_demo_reserve_scenario_as_the_guard_wrote_it(self):
         """The real thing: Max B parked by its policy while Max 20x, the reserve, serves."""
-        load('codexpool_settings')
+        load('subpool_settings')
         m = self.model(json.loads((ADDON_DEMO / 'claude-status-reserve.json').read_text()))
         seat = self.seat(m, 'Max B')
         self.assertTrue(ext.last_resort_parked(seat))
@@ -202,7 +202,7 @@ class WithAppKit(unittest.TestCase):
         self.assertIn(('Enable', True, ''), self.menu(self.model(raw), 'Max B'))
 
     def test_settings_row_is_off_and_says_why(self):
-        load('codexpool_settings')
+        load('subpool_settings')
         parked = self.model(self.parked('Max B', LAST_RESORT_DETAIL))
         self.assertEqual(ext.rotation_row(self.seat(parked, 'Max B')), (SUB, False))
         reserve = self.model(self.parked('Max B', LAST_RESORT_DETAIL, reserve=True))

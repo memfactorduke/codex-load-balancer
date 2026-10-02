@@ -1,21 +1,35 @@
 # Changelog
 
-All notable changes to codexpool are recorded here. The format follows
+All notable changes to subpool.app are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-- Show serving and ready accounts above unavailable accounts without changing routing. Default to compact
-  two-line rows with a remembered Compact / Full toggle. The usage graph has its own remembered collapse
-  toggle in either view and starts expanded.
-- Detect Claude subscription tiers through cswap's identity-checked profile helper and show plan sizes
-  beside account names. Cache public metadata, preserve unknown sizes, and reject unfamiliar upstream source.
+## [1.4.0] - 2026-10-02
+
+- Rename the project to subpool.app, the command to `subpool`, and the install folder to `~/.subpool`;
+  preserve compatibility with existing installations and package Settings with a real macOS app identity.
+  Retain legacy launchd labels even when an older install omitted them from its settings.
 
 - Publish the optional Claude integration, including its docs, tests, demo assets and patches; explicitly allow
   it in the publication rules and validate both suites in CI. Credentials and runtime state remain local.
 
 ### Changed
+
+- Supplement missing upstream model catalog metadata while preserving remote refreshes and native request
+  routing. Exact per-seat speed aliases retain their own picker description and speed preference.
+- Recognize Pro $500 as 25× Plus capacity, preserve explicit seat weights, and show unknown capacity
+  without inventing pool percentages or pace estimates. Generic Pro logins no longer assume the old
+  allowance when the account metadata cannot distinguish grandfathered and new subscriptions.
+
+- Default to compact two-line account rows, with a remembered Compact / Full toggle. Keep plan sizes,
+  status, binding quota and reset times visible; Full restores every quota bar. The usage graph has its
+  own remembered collapse toggle in either view and starts expanded.
+- Show serving and ready accounts above unavailable accounts in the popover without changing routing.
+- Detect Claude subscription tiers through cswap's identity-checked profile helper and display plan sizes
+  beside account names. Cache public plan metadata; never infer an unknown multiplier or read credentials
+  in subpool. Source extensions require the exact pinned upstream build.
 
 - Add Claude CLI reserve accounts: hold them out of automatic rotation until enabled regular accounts reach the switching threshold; retain manual switching and explicit exclusions.
 
@@ -32,6 +46,11 @@ All notable changes to codexpool are recorded here. The format follows
 - **A seat with more than one limit labels each bar.** A seat with a 5-hour window (Plus, Team) shows a "Week"
   row and a "5h" row, each with its own bar and "% left", and the limit that binds the seat now reads first and
   bolder. Before, the bars were stacked unlabelled at different thicknesses in the same colour.
+
+### Fixed
+
+- Keep the Codex setup completion screen independent of retired Claude proxy controls.
+- Build and test the catalog supplement against both supported upstream module generations.
 
 ## [1.3.0] - 2026-09-28
 
@@ -267,7 +286,8 @@ keep it; codexpool 1.0.0 and later are licensed under the PolyForm Noncommercial
   syntax, checks, dry-runs and shellchecks `install.sh`, runs the unit tests and scans for secrets and personal
   data.
 
-[Unreleased]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/memfactorduke/codex-load-balancer/compare/v1.0.0...v1.1.0

@@ -105,7 +105,7 @@ class Descriptors(unittest.TestCase):
                     mock.patch.object(cp, 'set_disabled') as disabled, mock.patch.object(cp, 'notify') as notify:
                 cp.recover_selftest({}, pool)
             self.assertEqual(disabled.call_args_list, [mock.call('one', False, pool), mock.call('two', True, pool)])
-            self.assertEqual(notify.call_args.args[0], 'codexpool restored accounts')
+            self.assertEqual(notify.call_args.args[0], 'subpool restored accounts')
             self.assertFalse(pool.selftest_journal.exists())
             with mock.patch.object(cp, 'update_meta') as update:
                 cp.fresh_seat_meta('one', 'A', pool)
@@ -115,7 +115,7 @@ class Descriptors(unittest.TestCase):
     def test_heal_uses_descriptor_state_vendor_log_and_port(self):
         pool = cp.seat_pool('claude')
         pool.name = pool.provider = 'fixture'
-        pool.vendor, pool.noun_title, pool.cli = 'Vendor', 'Fixture account', 'codexpool fixture'
+        pool.vendor, pool.noun_title, pool.cli = 'Vendor', 'Fixture account', 'subpool fixture'
         pool.seat_state = mock.Mock(return_value=('blocked', 'unauthorized', None))
         seat = {'name': 'one', 'id': 'one', 'label': 'A', 'priority': 100, 'success': 0}
         with mock.patch.object(cp, 'sign_ins_ended_in_log', return_value=({}, None)) as logs, \
@@ -127,14 +127,14 @@ class Descriptors(unittest.TestCase):
         self.assertEqual(api.call_args.kwargs['port'], pool.port)
         self.assertEqual(notify.call_args.args[0], 'Fixture account needs a re-login')
         self.assertIn('Vendor ended this sign-in', notify.call_args.args[1])
-        self.assertIn('codexpool fixture login A', notify.call_args.args[1])
+        self.assertIn('subpool fixture login A', notify.call_args.args[1])
 
 
     def test_config_and_doctor_use_descriptor_even_after_rename(self):
         for name, gate_title, subject, rebuild, next_rebuild in (
-                ('codex', 'origin gate', 'the pool', 'codexpool upgrade <version>', 'codexpool upgrade'),
+                ('codex', 'origin gate', 'the pool', 'subpool upgrade <version>', 'subpool upgrade'),
                 ('claude', 'origin gate (claude profile)', 'the Claude pool',
-                 'codexpool claude install', 'codexpool claude install')):
+                 'subpool claude install', 'subpool claude install')):
             pool = cp.pool_instance(name)
             rendered = cp.render_config('synthetic-key', pool)
             pool.name = pool.profile = 'fixture'

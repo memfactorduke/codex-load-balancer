@@ -1,4 +1,4 @@
-"""Load balancing: "balancing" in settings.json, codexpool order, the guard's soonest-reset-first fill order (no churn,
+"""Load balancing: "balancing" in settings.json, subpool order, the guard's soonest-reset-first fill order (no churn,
 your order back afterwards, the reserve always last, seats without usage data), and what status.json says about it."""
 import contextlib
 import datetime as dt
@@ -241,7 +241,7 @@ class Balancer(unittest.TestCase):
         code, out, err = run(cp.cmd_priority, seat='c', priority=400)
         self.assertEqual(code, 0, err)
         self.assertIn('C: priority in your order 100 → 400', out)
-        self.assertIn('takes effect with: codexpool set balancing priority', out)
+        self.assertIn('takes effect with: subpool set balancing priority', out)
         self.assertEqual((self.patches, self.order()), ([], list('bacr')))
         cp.SETTINGS['balancing'] = 'priority'
         self.balance()
@@ -351,7 +351,7 @@ class Balancer(unittest.TestCase):
 
 
 class OrderCommand(unittest.TestCase):
-    """codexpool order against the fake pool: priorities from 1000 down, reserve seats last, seats.json keeps it."""
+    """subpool order against the fake pool: priorities from 1000 down, reserve seats last, seats.json keeps it."""
 
     def setUp(self):
         stack = contextlib.ExitStack()

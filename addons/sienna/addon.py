@@ -11,8 +11,8 @@ def load(core):
     selftest.sienna_guard = guard
 
     class Sienna:
-        id, version, core_min = 'sienna', '1.3.0', '1.3.0'
-        install_hint = 'codexpool claude install'
+        id, version, core_min = 'sienna', '1.4.0', '1.4.0'
+        install_hint = 'subpool claude install'
         ui_pool_ids = ('claude',)  # the menu bar and Settings pool id (menubar_ext.POOL)
         uninstall_title = 'the Claude pool'
 
@@ -73,14 +73,14 @@ def load(core):
             if cswap_backend.options().get('enabled') is not True:
                 return None
             view = cswap_backend.read_live() if live and cswap_backend.executable() else cswap_backend.saved()
-            return 'claude', view, lambda: print('Claude CLI: powered by cswap; use codexpool claude status')
+            return 'claude', view, lambda: print('Claude CLI: powered by cswap; use subpool claude status')
 
         def doctor(self, rep):
             if cswap_backend.options().get('enabled') is not True and not pool.claude_installed():
                 return
             rep.section('Claude CLI')
             rep.check(bool(cswap_backend.executable()), 'cswap installed',
-                          'codexpool claude install', warn=True)
+                          'subpool claude install', warn=True)
             if pool.claude_installed():
                 rep.check(False, 'Legacy Claude proxy still installed; CLI switching uses cswap instead. '
                               'Migration has not been performed.', warn=True)
@@ -93,7 +93,7 @@ def load(core):
 
         def keep_note(self):
             if self.uninstall_plan():
-                return ("with the Claude pool's auth-claude/ and config-claude.yaml (codexpool install and codexpool claude "
+                return ("with the Claude pool's auth-claude/ and config-claude.yaml (subpool install and subpool claude "
                         'install bring it all back)')
             return None
 

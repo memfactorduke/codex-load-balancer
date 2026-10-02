@@ -149,12 +149,12 @@ class GateSource(unittest.TestCase):
 
     def test_management_is_exempt_only_on_its_own_clean_path(self):
         # gin routes on the path as sent: a cleaned path would let /v1beta/models/../../v0/management/… through
-        self.assertIn('return codexpoolManagementPath(r.URL.Path) ||', self.src)
+        self.assertIn('return subpoolManagementPath(r.URL.Path) ||', self.src)
         self.assertIn('&& path.Clean(p) == p', self.src)
         self.assertNotIn('path.Clean("/" + r.URL.Path)', self.src)
 
     def test_app_origin_is_the_codex_pools_only(self):
-        self.assertIn('fromApp := origin == codexpoolAppOrigin && codexpoolProfile == ""', self.src)
+        self.assertIn('fromApp := origin == subpoolAppOrigin && codexpoolProfile == ""', self.src)
 
     def test_unknown_profile_fails_closed(self):
         self.assertIn('if !registered || !profile.allowed(r) {', self.src)
@@ -169,7 +169,7 @@ class GateSource(unittest.TestCase):
     def test_default_profile_rules_unchanged(self):
         # the 1.2.0 browser/Host rule and its log line are still there, word for word
         self.assertIn('browser := (origin != "" && !fromApp) || (site != "" && site != "none" && !fromApp)', self.src)
-        self.assertIn('if !codexpoolLoopbackHost(r.Host) || browser {', self.src)
+        self.assertIn('if !subpoolLoopbackHost(r.Host) || browser {', self.src)
         self.assertIn('"codexpool gate: rejected %q %q host=%q origin=%q sec-fetch-site=%q"', self.src)
         self.assertIn('"": {allowed: func(*http.Request) bool { return true }}', self.src)
 
@@ -215,7 +215,7 @@ class ClaudePlist(unittest.TestCase):
     def test_claude_template(self):
         pool = cp.pool_instance('claude')
         p = self.render(pool.template, pool.job)
-        self.assertEqual(p['Label'], 'com.codexpool-test.claude')
+        self.assertEqual(p['Label'], 'com.subpool-test.claude')
         self.assertEqual(p['ProgramArguments'], [str(ROOT / 'bin/claude-current/cli-proxy-api'), '-config',
                                                  str(ROOT / 'config-claude.yaml')])
         self.assertEqual(p['EnvironmentVariables'], {'CODEXPOOL_GATE_PROFILE': 'claude'})
@@ -238,7 +238,7 @@ class ClaudePlist(unittest.TestCase):
 
 
 class ClaudeConfig(unittest.TestCase):
-    """addons/sienna/examples/config-claude.yaml, rendered as codexpool claude install writes config-claude.yaml."""
+    """addons/sienna/examples/config-claude.yaml, rendered as subpool claude install writes config-claude.yaml."""
 
     def setUp(self):
         self.text = cp.render_config('k' * 48, cp.pool_instance('claude'))
@@ -262,8 +262,8 @@ class ClaudeConfig(unittest.TestCase):
         self.assertIn(f'127.0.0.1:{sienna_pool.CLAUDE_PORT}', self.text)
 
     def test_auth_dir_is_its_own(self):
-        self.assertEqual(self.top('auth-dir'), '"~/.codexpool/auth-claude"')
-        self.assertEqual(pathlib.Path(os.path.expanduser('~/.codexpool/auth-claude')), sienna_pool.CLAUDE_AUTH)
+        self.assertEqual(self.top('auth-dir'), '"~/.subpool/auth-claude"')
+        self.assertEqual(pathlib.Path(os.path.expanduser('~/.subpool/auth-claude')), sienna_pool.CLAUDE_AUTH)
 
     def test_failover_and_routing_match_the_codex_pool(self):
         codex = cp.render_config('k' * 48)
@@ -357,7 +357,7 @@ class BuildLinks(unittest.TestCase):
                          (cp.CURRENT, cp.CONFIG, cp.PORT, cp.POOL_JOB, 'codex', cp.MAIN_LOG))
         self.assertEqual((claude.link, claude.config, claude.port, claude.job, claude.profile, claude.log),
                          (ROOT / 'bin' / 'claude-current', ROOT / 'config-claude.yaml', sienna_pool.CLAUDE_PORT,
-                          'com.codexpool-test.claude', 'claude', ROOT / 'claude' / 'logs' / 'main.log'))
+                          'com.subpool-test.claude', 'claude', ROOT / 'claude' / 'logs' / 'main.log'))
         self.assertNotIn(sienna_pool.CLAUDE_PORT, (cp.PORT, cp.BRIDGE_PORT))
 
     def test_gate_hash_of(self):
@@ -399,7 +399,7 @@ class DoctorPerInstance(unittest.TestCase):
         with running_fake(pool.port, 'claude', FAKE_GATE_IGNORE_PROFILE='1', FAKE_CPA_VERSION='7.3.17+gate.2bd3518caf'):
             build, gate = self.checks(pool)
         self.assertEqual(build['status'], 'ok')  # a +gate build: the probe below is what fails
-        self.assertIn(f'; the gate source is now {self.gid}: the next codexpool claude install picks it up', build['text'])
+        self.assertIn(f'; the gate source is now {self.gid}: the next subpool claude install picks it up', build['text'])
         self.assertEqual(gate['status'], 'fail')
         self.assertEqual(gate['text'], 'origin gate (claude profile): Claude Code request 200, other client 200, '
                                        'browser request 403, app://- origin 200')
@@ -413,7 +413,7 @@ class DoctorPerInstance(unittest.TestCase):
             build, gate = self.checks(pool)
         self.assertEqual(build['status'], 'ok')
         # The Codex pool's gate id hashes the core source only: an add-on's gate never makes it look out of date
-        self.assertIn(f'the gate source is now {cp.gate_id(profile="codex")}: the next codexpool upgrade picks it up',
+        self.assertIn(f'the gate source is now {cp.gate_id(profile="codex")}: the next subpool upgrade picks it up',
                       build['text'])
         self.assertEqual(gate, {'status': 'ok', 'fix': None,
                                 'text': 'origin gate: Codex-like request 200, browser request 403'})
@@ -422,8 +422,8 @@ class DoctorPerInstance(unittest.TestCase):
         build, gate = self.checks(cp.pool_instance('codex'))
         self.assertEqual((build['status'], gate['status']), ('fail', 'fail'))
         self.assertEqual(gate['text'], 'origin gate: Codex-like request None, browser request None')
-        self.assertEqual(gate['fix'], 'expected 200 and 403; run: codexpool upgrade <version> --force')
-        self.assertEqual(build['fix'], 'the pool must run a +gate build: codexpool upgrade <version>')
+        self.assertEqual(gate['fix'], 'expected 200 and 403; run: subpool upgrade <version> --force')
+        self.assertEqual(build['fix'], 'the pool must run a +gate build: subpool upgrade <version>')
 
     def test_the_other_client_probe_is_marked(self):
         seen = []
@@ -448,7 +448,7 @@ class DoctorPerInstance(unittest.TestCase):
         rep = titles()
         (claude,) = [s['checks'] for s in rep.sections if s['title'] == 'Claude pool']
         texts = [c['text'] for c in claude]
-        self.assertTrue(texts[0].startswith('launchd job com.codexpool-test.claude'), texts)
+        self.assertTrue(texts[0].startswith('launchd job com.subpool-test.claude'), texts)
         self.assertIn(f'listening on 127.0.0.1:{sienna_pool.CLAUDE_PORT}', texts)
         self.assertIn('bin/claude-current → (missing)', texts)
         self.assertTrue(any(t.startswith('origin gate (claude profile): ') for t in texts), texts)

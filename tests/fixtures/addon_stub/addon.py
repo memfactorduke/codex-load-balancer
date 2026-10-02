@@ -5,7 +5,7 @@ def load(cp):
 
     class Stub:
         id, version, core_min = 'stub', '1.0.0', '1.3.0'
-        install_hint = 'codexpool stub --help'
+        install_hint = 'subpool stub --help'
 
         def settings_problems(self, settings):
             return []

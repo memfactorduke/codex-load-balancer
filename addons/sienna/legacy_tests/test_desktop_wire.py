@@ -30,14 +30,14 @@ class DesktopWire(unittest.TestCase):
             work = Path(temp)
             tree = work / 'cpa'
             shutil.copytree(source, tree, ignore=shutil.ignore_patterns('.git', 'node_modules'))
-            for stale in (tree / 'cmd/server').glob('codexpool*gate*.go'):
+            for stale in (tree / 'cmd/server').glob('subpool*gate*.go'):
                 stale.unlink()
             executor = tree / 'internal/runtime/executor'
             source_text = (GATE / 'codexpool_desktop_wire_test.go').read_text()
             if 'module github.com/router-for-me/CLIProxyAPI/v8' in (tree / 'go.mod').read_text():
                 source_text = source_text.replace('CLIProxyAPI/v7/', 'CLIProxyAPI/v8/')
             (executor / 'codexpool_desktop_wire_test.go').write_text(source_text)
-            fixtures = executor / 'testdata/codexpool-desktop'
+            fixtures = executor / 'testdata/subpool-desktop'
             if fixtures.exists():
                 shutil.rmtree(fixtures)
             shutil.copytree(GATE / 'desktop-wire', fixtures)

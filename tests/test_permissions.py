@@ -1,4 +1,4 @@
-"""Login files hold refresh tokens: CLIProxyAPI writes new ones readable by other users, codexpool makes them private."""
+"""Login files hold refresh tokens: CLIProxyAPI writes new ones readable by other users, subpool makes them private."""
 import os
 import unittest
 from unittest import mock

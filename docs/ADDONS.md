@@ -6,7 +6,7 @@ Its source, docs, tests, demo assets and patches may be published; credentials a
 Step 1 adds discovery and extension points. Existing pool code, runtime paths, settings keys, gate profiles,
 launchers and app code remain in place. There is no state migration. With no add-ons, existing help and version
 output remain unchanged. The management commands are intentionally absent from root help during this step;
-`codexpool addon --help` describes them.
+`subpool addon --help` describes them.
 
 ## Bootstrap and manifest
 
@@ -164,13 +164,13 @@ reserved by `CORE_POOL_IDS` as well as its lock path; this is an identity restri
 
 ## Management and installation
 
-- `codexpool addon list`: loaded versions and unavailable add-ons, with reasons.
-- `codexpool addon install PATH`: validate metadata/code, stage declared files, retain namespace reservations,
+- `subpool addon list`: loaded versions and unavailable add-ons, with reasons.
+- `subpool addon install PATH`: validate metadata/code, stage declared files, retain namespace reservations,
   then replace `ROOT/addons/<id>/`; print `install_hint`. It installs code only.
-- `codexpool addon remove ID`: load the installed copy and refuse if `uninstall_plan()` is nonempty or cannot be
+- `subpool addon remove ID`: load the installed copy and refuse if `uninstall_plan()` is nonempty or cannot be
   evaluated. Remove only code; preserve namespaces and runtime files.
-- `codexpool version`: core version, followed by `+ <id> <version>` for loaded add-ons.
-- `codexpool doctor`: additional sections/checks and an Add-ons summary when applicable.
+- `subpool version`: core version, followed by `+ <id> <version>` for loaded add-ons.
+- `subpool doctor`: additional sections/checks and an Add-ons summary when applicable.
 
 Writers serialize through `state/addon-code.lock`. Discovery holds a shared read lock across both bootstrap
 phases when the lock exists; read-only commands never create it. With add-ons present, `copy_code()` stages all
@@ -202,9 +202,9 @@ The menu bar app and the Settings window keep the generic two-pool plumbing (a s
 both numbers, the switcher tiles, the pool switcher, the `pool` parameter on `build_model`/`parse_seat`, and
 `--pool-status PATH` / `--pool-history PATH` for snapshots). Everything an add-on's pool says or does in them comes
 from one object, its **PoolUI**: `addons/<id>/menubar_ext.py` exports `load(mb) -> PoolUI`, called by
-`menubar/codexpool_menubar.py` once it is defined (PyObjC is up; `mb` is that module), and the Settings window calls
+`menubar/subpool_menubar.py` once it is defined (PyObjC is up; `mb` is that module), and the Settings window calls
 `PoolUI.settings_loaded(st)` with its own module. The apps scan `<code dir>/addons/*/menubar_ext.py` (the checkout,
-or `~/.codexpool/addons/` once installed; `CODEXPOOL_ADDONS` overrides the directory). A load that raises is noted on
+or `~/.subpool/addons/` once installed; `CODEXPOOL_ADDONS` overrides the directory). A load that raises is noted on
 stderr and skipped: the app runs with the Codex pool alone, and with no add-on it shows the Codex-only UI (no
 switcher, one number in the item). One add-on pool at most: the item has two halves.
 
@@ -214,7 +214,7 @@ The core reads these members by name (`mb.POOL_UI[id]`), never a literal of the 
 |---|---|
 | `id`, `aliases`, `title`, `noun`, `account_title`, `status_file`, `history_file`, `docs_path`, `docs_url` | `POOLS`, `--pool`, `DataSource`, `Model.name/noun`, Docs and the sign-in flow |
 | `colors` (text light/dark, fill light/dark), `mark` (bundle id, icon files), `mark_scale`, `mark_px`, `mark_alpha(rgba, w, h, filename)`, `draw_glyph(path, cx, cy, size, weight)`, `draw_settings_glyph(path, s)` | `C.pool_text/pool_fill`, `MARK_APPS`/`MARK_SCALE`/`build_mark`, `draw_pool_glyph`, the Settings switcher |
-| `scope_words`, `plan_names`, `sign_in_ended_text`, `sign_in_site`, `alarm_word`, `history_alarm_key`, `week_key`, `short_key`, `compact_usage`, `command_prefix`, `add_account_title`, `switcher_blurb`, `serving_tip`, `session_word` | `Model.scope`, `parse_seat`, `load_history`, the pill, the rows, the footer, every `codexpool <prefix> …` |
+| `scope_words`, `plan_names`, `sign_in_ended_text`, `sign_in_site`, `alarm_word`, `history_alarm_key`, `week_key`, `short_key`, `compact_usage`, `command_prefix`, `add_account_title`, `switcher_blurb`, `serving_tip`, `session_word` | `Model.scope`, `parse_seat`, `load_history`, the pill, the rows, the footer, every `subpool <prefix> …` |
 | `installed(raw, problem, age)`, `parse_seat(d, seat, now)`, `parse_pool(pool)` | `DataSource.is_installed`, `Seat.scoped/extra/spending` (the normalised fields: the extra limits, the current alarm), `Model.extra` |
 | `seat_right_text`, `seat_lines`, `seat_tip`, `hero_lines`, `banner_copy`, `footer_rows(lay, y, row_h, f)`, `version_text`, `tip_suffix`, `spending_line` | the popover's rows, hero, banner, footer and the strip tooltip |
 | `seat_rotation_item`, `seat_menu_extra`, `seat_action(verb, seat, app)`, `enable_parked_text`, `handle_region(kind, value, app)` | the account menu and the popover's own controls |

@@ -1,6 +1,6 @@
 # Architecture and decisions
 
-This records why codexpool is built the way it is, so later changes don't undo lessons that were paid for. The
+This records why subpool is built the way it is, so later changes don't undo lessons that were paid for. The
 [README](../README.md) says how to use it; [AGENTS.md](../AGENTS.md) says how to change it safely.
 
 ## The problem
@@ -31,7 +31,7 @@ that uses every seat automatically, with no account switching and nothing that b
   to the client yet. Codex treats a 429 as final, so the retry must happen in the pool.
 - **Encrypted thread state crosses seats.** Encrypted reasoning items and native compaction blobs issued under
   one seat were accepted by another, in both directions, in live tests between a Business workspace seat and a
-  personal Pro seat. Other pairs are untested; `codexpool selftest` checks any pair.
+  personal Pro seat. Other pairs are untested; `subpool selftest` checks any pair.
 - **Seats with credits don't stop at 100%.** A seat holding a credit balance keeps answering past its plan limit
   and pays with credits, without any error the pool can see. In one test a Pro seat spent several hundred credits
   in under half an hour.
@@ -42,9 +42,24 @@ that uses every seat automatically, with no account switching and nothing that b
 
 ## Design
 
-**The pool is stock CLIProxyAPI.** It is a maintained open-source proxy that tracks Codex releases closely. Codex
+**The pool uses CLIProxyAPI.** It is a maintained open-source proxy that tracks Codex releases closely. Codex
 reaches it through `openai_base_url` alone. The only custom code in the request path is the origin gate, and it
 only accepts or rejects.
+
+An owner-approved catalog-only supplement in `build/catalog/` supplies newly released model metadata missing
+from upstream. It merges missing entries at catalog load and refresh, without changing inference payloads or
+disabling remote updates. Upstream entries take precedence as soon as they arrive. Both the routing registry
+and native picker catalog are covered. The supplement is included in the build fingerprint, validated before
+the binary is built, and fails closed if upstream loader anchors change. Model exclusions still use the normal
+pool configuration; the Codex default model is independent of these catalog additions.
+
+An explicitly registered per-seat alias may have its own client-catalog presentation and preferred speed.
+The client projection prefers that exact alias template, falling back to the base model's template; it
+still uses the base identity for capability checks. Client-only alias metadata never registers a route:
+only seats with the native per-seat alias can serve it. A dedicated speed choice therefore fails when its
+eligible seats are unavailable, while the ordinary model keeps the normal pool order. Native chat or
+configuration speed selections override a catalog preference, so select the intended speed explicitly in
+the client's speed menu. No inference payload rules or bridge are used for these aliases.
 
 **Fill-first by priority, with 24-hour session affinity.** One seat is drained at a time, so reset times are
 staggered across seats. Each thread stays on its seat, which keeps prompt caching effective and makes account
@@ -63,7 +78,7 @@ seconds), so a stable pool sees no churn, just one log line when the order does 
 order moves new threads while the previous seat still serves, which is no news). Session affinity still holds:
 running threads stay on their seat and only new threads follow the new order, so a reorder costs no prompt cache.
 Your own order is kept in `seats.json` as `manual_priority` (recorded from the pool's priorities the first time
-the guard sorts, and by `codexpool order` and `codexpool priority`, which under `"reset"` change only that
+the guard sorts, and by `subpool order` and `subpool priority`, which under `"reset"` change only that
 record), and the first pass after switching back to `"priority"` writes it back; seats added in the meantime go
 after yours, and the reserve last. Seats with equal priorities are recorded in the order the pool gave them, so
 that order is the one that comes back. A fill order you change yourself (`order`, `priority`, `reserve`, Make
@@ -74,21 +89,21 @@ pass treats like its own reorder.
 the next seat (`request-retry: 3`). Cooldowns are not saved across restarts, so a restart is a clean slate and
 the pool relearns from the next 429.
 
-**One OAuth login per seat, owned by the pool.** Seats are added with `codexpool login` (the sign-in that
-`codexpool setup` and the Setup assistant also use), which runs CLIProxyAPI's own login flow and writes a new
+**One OAuth login per seat, owned by the pool.** Seats are added with `subpool login` (the sign-in that
+`subpool setup` and the Setup assistant also use), which runs CLIProxyAPI's own login flow and writes a new
 file into `auth/`. Only the pool refreshes these tokens. The Codex app keeps its own separate login (a
 different token family, even for the same account) for its usage meter, cloud tasks, plugins and sign-in.
 
-**codexpool never handles tokens.** Usage and reset calls go through the pool's management `api-call` endpoint
-with a `$TOKEN$` placeholder, and the pool substitutes the seat's token. codexpool reads only identity claims
+**subpool never handles tokens.** Usage and reset calls go through the pool's management `api-call` endpoint
+with a `$TOKEN$` placeholder, and the pool substitutes the seat's token. subpool reads only identity claims
 (email, plan, account id) and the time of the last sign-in or refresh (`last_refresh`) from seat files. The
-single-seat refresh response embeds tokens, so `codexpool refresh` prints only the status, and the guard reads only
+single-seat refresh response embeds tokens, so `subpool refresh` prints only the status, and the guard reads only
 the error of a refresh that failed.
 
 **The guard parks seats that would spend credits.** It runs every 60 seconds from launchd. When a seat that the
 pool still considers ready is at 100% and would pay with credits, the guard disables it until its window resets
 and notifies you. The park record is written before the seat is disabled, so a crash can't leave an orphaned
-disabled seat. `codexpool enable` turns a park into an override that lasts until the reset.
+disabled seat. `subpool enable` turns a park into an override that lasts until the reset.
 
 **The guard heals auth blocks.** A seat blocked by an auth error is refreshed every 15 minutes (hourly once you
 have been told). After three failed attempts it notifies you to sign in again. A healed seat leaves probation
@@ -105,7 +120,7 @@ warning) and the guard announces no move and no dry pool; once the pool stops se
 new sign-in.
 
 **Resets are redeemed, never bought.** The guard polls each seat's banked resets every 10 minutes and puts the
-count and soonest expiry into `status.json`. `codexpool reset` redeems the soonest-expiring credit, then calls
+count and soonest expiry into `status.json`. `subpool reset` redeems the soonest-expiring credit, then calls
 the pool's `reset-quota` so CLIProxyAPI drops the seat's cooldown and serves it at once, then refreshes the
 seat's numbers for the menu bar. There is no code path to a purchase endpoint.
 
@@ -119,7 +134,7 @@ the Codex renderer's `app://-`, or a `Sec-Fetch-Site` other than `none`. It is i
 rejected requests never reach them. Its own log line quotes every field, so a page can't forge log lines. An
 [add-on](#add-ons) can run the same gate with a stricter profile of its own.
 
-**Build from source instead of forking.** `codexpool build` downloads the release tag's source, replaces one
+**Build from source instead of forking.** `subpool build` downloads the release tag's source, replaces one
 anchor line in `cmd/server/main.go` (`serverOptions := []api.ServerOption(nil)`) to install the gate, adds the gate
 file, and builds with CGO off using a Go toolchain downloaded from go.dev with its sha256 checked. Before the
 build is used, an 11-case self-test runs it on a scratch port with an empty auth dir: Codex-like requests,
@@ -129,12 +144,12 @@ profile adds its own cases to the run. The build refuses to
 continue if the anchor moved or if upstream starts using the engine-configurator slot itself. The version string
 `X.Y.Z+gate.<hash>` names the upstream release and a hash of the gate source and the anchor edit.
 
-**Upgrades switch back on failure.** `codexpool upgrade` builds, repoints `bin/current`, restarts the pool, and
+**Upgrades switch back on failure.** `subpool upgrade` builds, repoints `bin/current`, restarts the pool, and
 checks the version it reports, the seat count and a live gate probe. Any failure, or a signal mid-way, restores
 the previous build.
 
 **One codebase, per-machine settings.** Launchd labels, the port, the interpreters and the Codex binary come from
-`~/.codexpool/settings.json`, so the same code serves every install. A broken settings file stops every command,
+`~/.subpool/settings.json`, so the same code serves every install. A broken settings file stops every command,
 the guard included, rather than letting it run against the wrong port or labels.
 
 **Install is idempotent and reversible.** Each step checks first and changes only what is missing or wrong;
@@ -151,25 +166,25 @@ never sees that variable. The management key counts as missing only when the Key
 **The CLI is standard-library Python.** It needs nothing installed. The file keeps Python 3.9 syntax so that
 `install` and `uninstall` run on a fresh Mac's `/usr/bin/python3`; every other command re-runs itself under the
 configured Python 3.11+. Nothing that runs in the background relies on the script's `#!/usr/bin/env python3`:
-the launchd agents, the `~/.local/bin/codexpool` wrapper and the menu bar app's actions all name their
+the launchd agents, the `~/.local/bin/subpool` wrapper and the menu bar app's actions all name their
 interpreter, because under launchd `PATH` is `/usr/bin:/bin` and `python3` there is the system one.
 
 **The menu bar app reads files only.** It reads `status.json` and `history.jsonl` (and an add-on pool's own status and
-history files) and runs `codexpool` for
+history files) and runs `subpool` for
 actions. It never touches the Keychain, because a locked Keychain would pop password dialogs, and it never calls
 the network or the management API.
 
 **The Settings window and the Setup assistant follow the same rules.** They are one separate PyObjC process
-(`menubar/codexpool_settings.py`, single instance), started on demand by the menu bar app, `codexpool gui` or
+(`menubar/subpool_settings.py`, single instance), started on demand by the menu bar app, `subpool gui` or
 `install.sh`. They read `status.json` and `history.jsonl` (through the menu bar app's own parsing code) and the
-JSON that `codexpool doctor --json`, `codexpool lane list --json`, `codexpool lane providers --json`,
-`codexpool lane models PROVIDER --json` and `codexpool version` print, and change
-things only by running `codexpool` commands in the background. Every action in a window is therefore also a
+JSON that `subpool doctor --json`, `subpool lane list --json`, `subpool lane providers --json`,
+`subpool lane models PROVIDER --json` and `subpool version` print, and change
+things only by running `subpool` commands in the background. Every action in a window is therefore also a
 terminal command, and the CLI stays the one place that changes state.
 
 **The one-line installer is a bootstrap.** `install.sh` checks the Mac, finds or gets a Python 3.11+ (through uv,
-after asking), downloads a release's source and hands over to `bin/codexpool install`, then opens the Setup
-assistant. The install logic lives only in `bin/codexpool`, so the one-liner, a clone and a re-run for an upgrade
+after asking), downloads a release's source and hands over to `bin/subpool install`, then opens the Setup
+assistant. The install logic lives only in `bin/subpool`, so the one-liner, a clone and a re-run for an upgrade
 all take the same checked, repeatable steps.
 
 ## Seat state model
@@ -185,7 +200,7 @@ CLIProxyAPI's structured `cooldowns[]` view decides a seat's state, not regexes 
 Model-scoped cooldowns don't mark the whole seat. A seat the pool still thinks is ready but whose own usage says
 it is out (a window at 100% with no credits, or `allowed: false`) is shown as exhausted early; the pool learns on
 its next request. A disabled seat with a guard park record is **parked**; one without is **off** (you did it).
-The first ready seat in fill order is **serving**. When CLIProxyAPI gives no structured view, codexpool falls back
+The first ready seat in fill order is **serving**. When CLIProxyAPI gives no structured view, subpool falls back
 to the status message.
 
 Usage comes from two sources, merged field by field with the newest first: the `x-codex-*` headers CLIProxyAPI
@@ -268,9 +283,9 @@ xAI alias entry for a lane carries the same display name as the lane's bridge en
 one alias, the picker takes the name of whichever registered last, so with different names the lane's label
 changed with provider load order.
 
-**One source, rendered.** Lanes are defined in one file, `~/.codexpool/lanes.json`. `codexpool lane apply`
+**One source, rendered.** Lanes are defined in one file, `~/.subpool/lanes.json`. `subpool lane apply`
 renders everything else from it, deterministically: a marked block in `config.yaml`, `lanes/bridge.json` and the
-bridge's launchd job, role files, the `AGENTS.md` block. `codexpool doctor` compares what is on disk with a
+bridge's launchd job, role files, the `AGENTS.md` block. `subpool doctor` compares what is on disk with a
 fresh render. Generated files carry a marker; apply refuses to overwrite a file without it, and refuses to merge
 its pool sections with top-level ones the user wrote, rather than guess.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Writes the synthetic pool used for the README screenshots: five made-up seats, a status.json the way
-`codexpool guard` writes it, and 24 h of history.jsonl (one sample every 10 minutes).
+`subpool guard` writes it, and 24 h of history.jsonl (one sample every 10 minutes).
 
     python3 docs/images/demo/make_data.py [--now 2026-09-24T16:41:00Z] [--out docs/images/demo]
 

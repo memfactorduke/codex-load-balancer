@@ -5,4 +5,4 @@ contact_links:
     about: Report vulnerabilities privately, not in a public issue. If no form appears, use Security contact request above.
   - name: Troubleshooting
     url: https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/TROUBLESHOOTING.md
-    about: Fixes for the common problems. Run codexpool doctor first.
+    about: Fixes for the common problems. Run subpool doctor first.

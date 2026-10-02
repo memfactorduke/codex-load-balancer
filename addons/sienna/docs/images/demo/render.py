@@ -2,7 +2,7 @@
 """Renders the sienna add-on's screenshots in addons/sienna/docs/images/ from the synthetic Claude pool in this
 folder, on top of the core's synthetic Codex pool (docs/images/demo/). Run it with the menu bar app's Python:
 
-    ~/.codexpool/.venv/bin/python addons/sienna/docs/images/demo/render.py
+    ~/.subpool/.venv/bin/python addons/sienna/docs/images/demo/render.py
 
 It imports the core's docs/images/demo/render.py for the snapshot helpers and the core demo data, so the Codex
 side of every image is exactly the core's.
@@ -24,7 +24,7 @@ CORE_DEMO = REPO / 'docs' / 'images' / 'demo'
 sys.path.insert(0, str(HERE))
 import make_claude_data  # noqa: E402
 
-spec = importlib.util.spec_from_file_location('codexpool_core_render', CORE_DEMO / 'render.py')
+spec = importlib.util.spec_from_file_location('subpool_core_render', CORE_DEMO / 'render.py')
 core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 
@@ -34,8 +34,8 @@ CLAUDE = ['--pool-status', str(HERE / 'claude-status-regular.json'),
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    p.add_argument('--app', type=Path, default=REPO / 'menubar' / 'codexpool_menubar.py')
-    p.add_argument('--settings', type=Path, default=REPO / 'menubar' / 'codexpool_settings.py')
+    p.add_argument('--app', type=Path, default=REPO / 'menubar' / 'subpool_menubar.py')
+    p.add_argument('--settings', type=Path, default=REPO / 'menubar' / 'subpool_settings.py')
     p.add_argument('--out', type=Path, default=IMAGES)
     p.add_argument('--skip-data', action='store_true', help='render the data files already in this folder')
     args = p.parse_args()

@@ -6,7 +6,7 @@ account's too; a file from an older guard has no flag and no warning; and the me
 
 The copy helpers are pure functions over a seat's fields and a label, so they run on every Python here, loaded from
 the source without importing the module (which needs PyObjC). Parsing, the rows and Settings' wording need PyObjC,
-that is the menu bar's own interpreter (~/.codexpool/menubar/.venv/bin/python), and skip without it. The README's
+that is the menu bar's own interpreter (~/.subpool/menubar/.venv/bin/python), and skip without it. The README's
 demo data must stay free of the flag, so docs/images/demo/render.py's output stays byte-identical."""
 import __future__
 import ast
@@ -19,7 +19,7 @@ import unittest
 
 from _helpers import REPO
 
-MENUBAR = REPO / 'menubar' / 'codexpool_menubar.py'
+MENUBAR = REPO / 'menubar' / 'subpool_menubar.py'
 EXT = REPO / 'addons' / 'sienna' / 'menubar_ext.py'
 SPEC = REPO / 'addons' / 'sienna' / 'docs' / 'SPEC.md'
 DOCS = REPO / 'addons' / 'sienna' / 'docs' / 'MENUBAR.md'
@@ -29,7 +29,7 @@ NOW = '2026-09-24T16:41:00Z'
 PURE = ('credits_mismatch', 'mismatch_text')
 LINE = 'Turn credits off at claude.ai (Settings → Usage)'
 SENTENCE = ('Usage credits are on at claude.ai for Max 20x: turn them off there (Settings → Usage). '
-            'codexpool can’t stop every paid request.')
+            'subpool can’t stop every paid request.')
 QUIET = 'Credits on at claude.ai · not used by the pool'   # the line an older guard's file still gets
 
 
@@ -99,11 +99,11 @@ def load(name):
     return importlib.import_module(name)
 
 
-mb = load('codexpool_menubar')
+mb = load('subpool_menubar')
 ext = mb.POOL_UI['claude'].module if mb is not None else None   # the add-on's menubar_ext.py, as mb loaded it
 
 
-@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.codexpool/menubar/.venv/bin/python)')
+@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.subpool/menubar/.venv/bin/python)')
 class WithAppKit(unittest.TestCase):
     """Parsing, the popover's rows and Settings' wording, on the demo's Claude pool: Max 20x has credits on at
     claude.ai with policy off (the case the guard flags), Max A has them off, Max B is the last resort."""
@@ -187,12 +187,12 @@ class WithAppKit(unittest.TestCase):
         self.assertEqual(mb.headline_text(plain), mb.headline_text(flagged))
 
     def test_settings_say_the_same_and_the_seats_pane_in_full(self):
-        load('codexpool_settings')
+        load('subpool_settings')
         plain, flagged = self.model(self.raw), self.model(self.flagged('Max 20x'))
         self.assertEqual(ext.credits_text(self.seat(flagged, 'Max 20x'), flagged), (LINE, False))
         self.assertEqual(ext.credits_summary(self.seat(flagged, 'Max 20x'), flagged),
                          'Off, but usage credits are on at claude.ai ($12 of $500 this month): turn them off there '
-                         '(Settings → Usage). codexpool can’t stop every paid request.')
+                         '(Settings → Usage). subpool can’t stop every paid request.')
         self.assertEqual(ext.credits_summary(self.seat(plain, 'Max 20x'), plain),
                          'Off: parked at its plan limit · credits on at claude.ai, $12 of $500 this month.')
 

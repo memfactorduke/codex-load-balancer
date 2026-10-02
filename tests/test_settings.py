@@ -1,4 +1,4 @@
-"""settings.json: validation (load_settings / parse_settings) and `codexpool set`."""
+"""settings.json: validation (load_settings / parse_settings) and `subpool set`."""
 import json
 import os
 import threading
@@ -111,13 +111,13 @@ class LoadSettings(unittest.TestCase):
 
     def test_missing_file_means_defaults(self):
         r = run_script('version', env={'CODEXPOOL_SETTINGS': str(HOME / 'no-such-settings.json')})
-        self.assertEqual((r.returncode, r.stdout), (0, (f'codexpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS))))
+        self.assertEqual((r.returncode, r.stdout), (0, (f'subpool {cp.VERSION}\n' + ''.join(f'+ {a.id} {a.version}\n' for a in cp.ADDONS))))
 
 
 class SetCommand(unittest.TestCase):
     NOTED = ('{\n  "_display": "how numbers read",\n  "display": "left",\n  "port": %d,\n  "bridge_port": %d,\n'
-             '  "pool_label": "com.codexpool-test.pool",\n  "guard_label": "com.codexpool-test.guard",\n'
-             '  "menubar_label": "com.codexpool-test.menubar",\n  "bridge_label": "com.codexpool-test.bridge"\n}\n')
+             '  "pool_label": "com.subpool-test.pool",\n  "guard_label": "com.subpool-test.guard",\n'
+             '  "menubar_label": "com.subpool-test.menubar",\n  "bridge_label": "com.subpool-test.bridge"\n}\n')
 
     def setUp(self):
         ctx = settings_restored()
@@ -178,7 +178,7 @@ class SetCommand(unittest.TestCase):
         self.assertEqual([p.name for p in ROOT.iterdir() if p.name.endswith('.tmp')], [])
 
     def test_two_writers_at_once_keep_both_changes(self):
-        """write_setting reads settings.json under the lock, so a change another codexpool set makes meanwhile is
+        """write_setting reads settings.json under the lock, so a change another subpool set makes meanwhile is
         kept: here the test holds the lock and writes display itself while a thread sets headline."""
         done = threading.Event()
         result = {}
@@ -203,7 +203,7 @@ class SetCommand(unittest.TestCase):
         """The later of two set runs rewrites status.json with the other's change too."""
         cp.STATUS_FILE.write_text(json.dumps(cp.status_down('connection refused', False)))
         raw = json.loads(self.settings_text())
-        raw['headline'] = 'regular'  # as if another codexpool set wrote it after this process loaded its settings
+        raw['headline'] = 'regular'  # as if another subpool set wrote it after this process loaded its settings
         cp.SETTINGS_FILE.write_text(json.dumps(raw))
         run(cp.cmd_set, key='display', value='used')
         pool = json.loads(cp.STATUS_FILE.read_text())['pool']

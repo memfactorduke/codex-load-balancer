@@ -1,4 +1,4 @@
-"""codexpool claude login and the Claude account commands (enable, disable, label, weight, priority, reserve, remove,
+"""subpool claude login and the Claude account commands (enable, disable, label, weight, priority, reserve, remove,
 order, credits), which run the Codex seat code with the Claude pool's port, claude-seats.json and claude-guard.json;
 the plan tier from the profile call; and the selftest's pure parts (the selftest itself never runs here). A stand-in
 Claude pool answers on the fake home's Claude port and a stand-in CLIProxyAPI does -claude-login. No real sign-in,
@@ -165,7 +165,7 @@ class FakeClaudePool:
 
 
 def cli(*argv):
-    """(exit code, stdout, stderr) of `codexpool ARGV...`, parsed by the real parser and run in-process."""
+    """(exit code, stdout, stderr) of `subpool ARGV...`, parsed by the real parser and run in-process."""
     args = cp.build_parser().parse_args(list(argv))
     out, err = io.StringIO(), io.StringIO()
     code = 0
@@ -369,7 +369,7 @@ class Login(ClaudeAccounts):
 
     def test_a_bad_label_or_no_pool(self):
         code, _, err = self.login('-x')
-        self.assertEqual((code, err.strip()), (1, 'codexpool claude login: a label cannot start with - (it would read '
+        self.assertEqual((code, err.strip()), (1, 'subpool claude login: a label cannot start with - (it would read '
                                                   'as an option)'))
         (cp.LAUNCH_AGENTS / f'{sienna_pool.CLAUDE_JOB}.plist').unlink()
         code, _, err = self.login('Work')
@@ -440,7 +440,7 @@ class Commands(ClaudeAccounts):
         self.assertEqual(code, 0, err)
         self.assertIn('Fill order: Alpha > Beta > Reserve (reserve)', out)
         self.assertIn('Reserve is a reserve account: a reserve account always fills after every regular account '
-                      '(codexpool claude reserve <account> --off makes it a regular one).', out)
+                      '(subpool claude reserve <account> --off makes it a regular one).', out)
         self.assertEqual([self.pool.priority(n) for n in (self.a, self.b, self.r)], [1000, 990, 980])
         self.assertEqual([r['name'] for r in cp.read_json(sienna_pool.CLAUDE_STATUS_FILE, {})['seats']],
                          [self.a, self.b, self.r])
@@ -449,7 +449,7 @@ class Commands(ClaudeAccounts):
         cp.SETTINGS['claude_balancing'] = 'reset'
         code, out, err = cli('claude', 'order', 'Beta')
         self.assertEqual(code, 0, err)
-        self.assertIn('takes effect with: codexpool set claude_balancing priority', out)
+        self.assertIn('takes effect with: subpool set claude_balancing priority', out)
         self.assertEqual([p for p, _ in self.pool.patches], [])
         self.assertEqual(self.meta()[self.b]['manual_priority'], 1000)
 
@@ -482,7 +482,7 @@ class Commands(ClaudeAccounts):
     def test_credits(self):
         code, _, err = cli('claude', 'credits', 'Beta', 'last-resort')
         self.assertEqual(code, 1)
-        self.assertIn('last-resort needs a cap, the most Beta may spend: codexpool claude credits Beta last-resort '
+        self.assertIn('last-resort needs a cap, the most Beta may spend: subpool claude credits Beta last-resort '
                       '--cap <USD>', err)
         code, out, err = cli('claude', 'credits', 'Beta', 'last-resort', '--cap', '200')
         self.assertEqual(code, 0, err)
@@ -507,7 +507,7 @@ class Commands(ClaudeAccounts):
             cp.build_parser().parse_args(['claude', 'credits', 'Beta', 'always'])
 
     def test_a_new_credit_policy_ends_an_override(self):
-        """After codexpool claude enable over a credit park, credits off applies at once: the override ends and the
+        """After subpool claude enable over a credit park, credits off applies at once: the override ends and the
         account, at its limit with credits on, is parked again."""
         now = cp.now_utc()
         later = (now + cp.dt.timedelta(hours=2)).isoformat()
@@ -518,7 +518,7 @@ class Commands(ClaudeAccounts):
         cp.write_json(sienna_pool.CLAUDE_GUARD_FILE, {'seats': {self.b: {'override_until': later}}, 'usage': {self.b: usage}})
         code, out, err = cli('claude', 'credits', 'Beta', 'off')
         self.assertEqual(code, 0, err)
-        self.assertIn('Beta: the credit guard\'s override (codexpool claude enable) ends; the new policy applies.', out)
+        self.assertIn('Beta: the credit guard\'s override (subpool claude enable) ends; the new policy applies.', out)
         g = self.guard()['seats'][self.b]
         self.assertNotIn('override_until', g)
         self.assertEqual((g['parked_reason'], g['parked_until']), ('credits', later))

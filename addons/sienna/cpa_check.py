@@ -201,7 +201,7 @@ class Capture(unittest.TestCase):
                             with self.subTest(fixture=name):
                                 fixture = json.loads((fixtures / filename).read_text())
                                 sent = dict(body=fixture['body'], headers=dict(fixture['headers']))
-                                sent['headers']['Authorization'] = 'Bearer codexpool'
+                                sent['headers']['Authorization'] = 'Bearer subpool'
                                 sent['headers']['Content-Type'] = 'application/json'
                                 request = urllib.request.Request('http://127.0.0.1:%d/v1/messages' % pool_port,
                                                                   data=json.dumps(sent['body']).encode(), headers=sent['headers'])

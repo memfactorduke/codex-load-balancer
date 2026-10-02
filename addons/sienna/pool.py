@@ -10,7 +10,7 @@ CLAUDE_PLIST_TEMPLATE = str(ADDON_DIR / 'launchd' / 'claude.plist.template')  # 
 
 CLAUDE_CURRENT = cp.BIN / 'claude-current'  # the Claude pool's build (its own CLIProxyAPI version, same gate source)
 
-CLAUDE_CONFIG = cp.ROOT / 'config-claude.yaml'  # the Claude pool (codexpool claude install), from the add-on's examples/config-claude.yaml
+CLAUDE_CONFIG = cp.ROOT / 'config-claude.yaml'  # the Claude pool (subpool claude install), from the add-on's examples/config-claude.yaml
 
 CLAUDE_AUTH = cp.ROOT / 'auth-claude'  # one -claude-login per Claude account (0700)
 
@@ -26,7 +26,7 @@ CLAUDE_GUARD_FILE = cp.STATE / 'claude-guard.json'  # the guard's Claude pass: p
 
 CLAUDE_LOCK_FILE = cp.STATE / 'claude-guard.lock'  # the Claude pool's: its own, so one pool's selftest never stops the other's guard
 
-CLAUDE_SELFTEST_JOURNAL = cp.STATE / 'claude-selftest.json'  # codexpool claude selftest's journal
+CLAUDE_SELFTEST_JOURNAL = cp.STATE / 'claude-selftest.json'  # subpool claude selftest's journal
 
 CLAUDE_CPA_MIN = (7, 3, 18)  # the first CLIProxyAPI release whose Claude path the Claude pool supports
 
@@ -44,7 +44,7 @@ CLAUDE_JOB = cp.SETTINGS['claude_label']
 
 CLAUDE_PORT = cp.SETTINGS['claude_port']
 
-PROBE_UA = 'codexpool-probe'  # doctor's other-client probe of the Claude pool; excluded the same way
+PROBE_UA = 'subpool-probe'  # doctor's other-client probe of the Claude pool; excluded the same way
 
 CLAUDE_REFRESH_FAILED_LINE = cp.re.compile(r'credential refresh failed for claude \(([^()]+)\): ')  # the Claude pool's
 
@@ -57,16 +57,16 @@ def claude_pool_instance():
     return cp.PoolInstance('claude', 'Claude pool', CLAUDE_CURRENT, CLAUDE_CONFIG, CLAUDE_PORT, CLAUDE_JOB,
                         CLAUDE_PLIST_TEMPLATE, 'claude', CLAUDE_MAIN_LOG,
                         config_template=CLAUDE_CONFIG_TEMPLATE, config_default_port=8321,
-                        probe_cases=claude_probe_cases, rebuild_hint='codexpool claude install',
-                        next_rebuild='codexpool claude install', build_subject='the Claude pool',
+                        probe_cases=claude_probe_cases, rebuild_hint='subpool claude install',
+                        next_rebuild='subpool claude install', build_subject='the Claude pool',
                         gate_title='origin gate (claude profile)',
                         gate_fix='the Claude pool needs a build with the claude gate profile and '
-                                 'CODEXPOOL_GATE_PROFILE=claude in its plist: codexpool claude install')
+                                 'CODEXPOOL_GATE_PROFILE=claude in its plist: subpool claude install')
 
 
 def claude_seat_pool():
     return cp.SeatPool('claude', 'claude', CLAUDE_PORT, CLAUDE_SEATS_META, CLAUDE_GUARD_FILE, CLAUDE_AUTH,
-                    CLAUDE_CONFIG, CLAUDE_CURRENT, CLAUDE_WORK, CLAUDE_MAIN_LOG, 'codexpool claude',
+                    CLAUDE_CONFIG, CLAUDE_CURRENT, CLAUDE_WORK, CLAUDE_MAIN_LOG, 'subpool claude',
                     'claude_balancing', 'account', CLAUDE_LOCK_FILE,
                     title='Claude pool', vendor='Anthropic', noun_title='Claude account',
                     sizes_text='Pro = 1, Max 5× = 5, Max 20× = 20',
@@ -147,7 +147,7 @@ def claude_enable_refusal(pool, seat, guard):
     if guard.get('parked_until') and credit_policy(cp.read_meta(pool), seat['name'])['policy'] == 'last-resort':
         return (f'{seat["label"]} is parked by its last-resort policy; enable cannot override it. '
                 'The guard restores it when the other plans are spent and its credit reading permits it. '
-                'Change the policy or cap with: codexpool claude credits')
+                'Change the policy or cap with: subpool claude credits')
     return None
 
 
@@ -170,7 +170,7 @@ def credit_policy(meta, name):
 
 def claude_seat_row(s, meta, guard):
     """A claude-status.json row for an account the guard's Claude pass has not written yet (just signed in): what
-    the pool and codexpool know, without usage. s: a load_seats row."""
+    the pool and subpool know, without usage. s: a load_seats row."""
     parked = ((guard.get('seats') or {}).get(s['name']) or {}).get('parked_until')
     return {'name': s['name'], 'label': s['label'], 'provider': 'claude', 'plan': s.get('plan'),
             'weight': s['weight'], 'priority': s['priority'], 'reserve': s['reserve'],
@@ -249,21 +249,21 @@ def claude_probe_cases(pool):
 
 
 def claude_installed():
-    """True once codexpool claude install has set the Claude pool up: its launchd agent is in place."""
+    """True once subpool claude install has set the Claude pool up: its launchd agent is in place."""
     return (cp.LAUNCH_AGENTS / f'{CLAUDE_JOB}.plist').exists()
 
 
 def doctor_claude_checks(rep):
-    """The Claude pool's own section of codexpool doctor: its process, build and gate, apart from the Codex pool's."""
+    """The Claude pool's own section of subpool doctor: its process, build and gate, apart from the Codex pool's."""
     check = rep.check
     pool = cp.pool_instance('claude')
     rep.section('Claude pool')
     loaded, pid = cp.launchd_loaded(pool.job)
     check(loaded and pid, f'launchd job {pool.job} ' + (f'running (pid {pid})' if pid else 'not running'),
           f'launchctl bootstrap gui/{cp.UID} {cp.LAUNCH_AGENTS / (pool.job + ".plist")}')
-    check(cp.port_open(pool.port), f'listening on 127.0.0.1:{pool.port}', 'codexpool claude install ; codexpool claude logs')
+    check(cp.port_open(pool.port), f'listening on 127.0.0.1:{pool.port}', 'subpool claude install ; subpool claude logs')
     check(cp.cpa_binary(pool.link).exists(), f'bin/{pool.link.name} → {cp.cpa_version(pool.link) or "(missing)"}',
-          'codexpool claude install builds it')
+          'subpool claude install builds it')
     key_error = None
     try:
         cp.mgmt_key()
@@ -271,11 +271,11 @@ def doctor_claude_checks(rep):
         key_error = e  # the Codex pool's section above already says so
     cp.doctor_build_checks(rep, pool, key_error)
     cfg = pool.config.read_text() if pool.config.exists() else ''
-    check('host: "127.0.0.1"' in cfg, 'bound to loopback only', 'codexpool claude install')
+    check('host: "127.0.0.1"' in cfg, 'bound to loopback only', 'subpool claude install')
     check(cp.re.search(r'^api-keys:\s*\[\]', cfg, cp.re.M) is not None, 'client auth open on loopback (api-keys: [])',
           'Claude Code keeps its own login; api-keys must be [] (the claude gate profile protects the pool)')
     for problem in claude_config_problems(cfg):
-        check(False, problem, 'codexpool claude install rewrites config-claude.yaml from the current template')
+        check(False, problem, 'subpool claude install rewrites config-claude.yaml from the current template')
     doctor_claude_accounts(rep)
     doctor_claude_launch(rep)
     desktop.doctor(cp, rep)
@@ -315,18 +315,18 @@ def doctor_claude_accounts(rep):
     st, age = claude_status_file()
     if st is None:
         check(False, f'{cp.tilde(CLAUDE_STATUS_FILE)} not written yet', 'the guard writes it within a minute; if it '
-              'stays missing: codexpool logs --guard', warn=True)
+              'stays missing: subpool logs --guard', warn=True)
         seats = claude_status_now()['seats']
     else:
         check(age is not None and age < 300, f'usage polling: the guard last wrote the Claude accounts '
               f'{cp.when(cp.parse_time(st.get("generated_at"))) if age is not None else "at an unknown time"}',
-              'codexpool logs --guard')
+              'subpool logs --guard')
         if isinstance(st.get('pool'), dict) and st['pool'].get('usage_polling') == 'passive':
             check(False, 'usage polling is passive: Anthropic refused the pool\'s usage call, so usage is as of each '
                   'account\'s last served request and credit amounts are unknown (last-resort accounts spend nothing)',
-                  'the guard tries the call again every few hours; see codexpool logs --guard', warn=True)
+                  'the guard tries the call again every few hours; see subpool logs --guard', warn=True)
         seats = [r for r in st.get('seats') or [] if isinstance(r, dict)]
-    check(len(seats) >= 1, f'{len(seats)} Claude account(s) in the pool', 'codexpool claude login "<Label>" --priority <n>')
+    check(len(seats) >= 1, f'{len(seats)} Claude account(s) in the pool', 'subpool claude login "<Label>" --priority <n>')
     for r in seats:
         label = str(r.get('label') or r.get('name'))
         state = r.get('state') or 'unknown'
@@ -334,7 +334,7 @@ def doctor_claude_accounts(rep):
             (f', back {cp.when(r["until"])}' if r.get('until') else '')
         q = cp.shlex.quote(label)
         check(state not in ('blocked', 'unknown'), text,
-              f'codexpool claude login {q}' + (f' --priority {r["priority"]}' if r.get('priority') is not None else ''))
+              f'subpool claude login {q}' + (f' --priority {r["priority"]}' if r.get('priority') is not None else ''))
         cred = r.get('credits') if isinstance(r.get('credits'), dict) else None
         if not cred:
             continue
@@ -343,22 +343,22 @@ def doctor_claude_accounts(rep):
             capped = isinstance(cap, (int, float)) and cap > 0
             check(capped, f'{label}: credits as the last resort, cap ${cap or 0:g}' if capped else
                   f'{label}: credits as the last resort without a cap',
-                  f'codexpool claude credits {q} last-resort --cap <USD>')
+                  f'subpool claude credits {q} last-resort --cap <USD>')
             if capped:
                 check(True, f'{label}: set a matching ${cap:g} member spend limit at claude.ai (Settings → Usage)')
             if capped and isinstance(used, (int, float)) and used >= cap:
                 check(False, f'{label} has spent ${used:g} of its ${cap:g} cap', 'the guard keeps it parked until '
-                      'the monthly credits reset; raise the cap with codexpool claude credits', warn=True)
+                      'the monthly credits reset; raise the cap with subpool claude credits', warn=True)
         elif cred.get('mismatch') or cred.get('enabled') is True:
             check(False, f'Usage credits are on at claude.ai for {label}: turn them off there (Settings → Usage). '
-                  "codexpool can't stop every paid request.", 'turn usage credits off at claude.ai (Settings → Usage)')
+                  "subpool can't stop every paid request.", 'turn usage credits off at claude.ai (Settings → Usage)')
     for name, g in (cp.read_json(CLAUDE_GUARD_FILE, {}).get('seats') or {}).items():
         if g.get('exclusion_error'):
-            check(False, f'{name}: {g["exclusion_error"]}', 'codexpool logs --guard', warn=True)
+            check(False, f'{name}: {g["exclusion_error"]}', 'subpool logs --guard', warn=True)
     reserves = [str(r.get('label')) for r in seats if r.get('reserve')]
     if len(reserves) > 1:
         check(False, f'{len(reserves)} reserve accounts: {", ".join(reserves)}', 'one reserve is the usual setup: '
-              'codexpool claude reserve <account> --off', warn=True)
+              'subpool claude reserve <account> --off', warn=True)
 
 
 def doctor_claude_launch(rep):
@@ -369,26 +369,26 @@ def doctor_claude_launch(rep):
     if ours:
         check(CLAUDE_LAUNCHER.read_text() == launcher_text(), f'{cp.tilde(CLAUDE_LAUNCHER)} present'
               + ('' if CLAUDE_LAUNCHER.read_text() == launcher_text() else ' but out of date (another port or home)'),
-              'codexpool claude install')
+              'subpool claude install')
     else:
-        check(False, f'{cp.tilde(CLAUDE_LAUNCHER)} ' + ('is not codexpool\'s' if CLAUDE_LAUNCHER.exists() else 'missing'),
-              'codexpool claude install' if not CLAUDE_LAUNCHER.exists() else
-              f'remove {cp.tilde(CLAUDE_LAUNCHER)}, then codexpool claude install', warn=CLAUDE_LAUNCHER.exists())
+        check(False, f'{cp.tilde(CLAUDE_LAUNCHER)} ' + ('is not subpool\'s' if CLAUDE_LAUNCHER.exists() else 'missing'),
+              'subpool claude install' if not CLAUDE_LAUNCHER.exists() else
+              f'remove {cp.tilde(CLAUDE_LAUNCHER)}, then subpool claude install', warn=CLAUDE_LAUNCHER.exists())
     real = real_claude()
     check(real is not None, f'Claude Code: {cp.tilde(real) if real else "not found in ~/.local/bin or on PATH"}',
           'install Claude Code (the launcher starts ~/.local/bin/claude, else the first claude on PATH)', warn=True)
     check(True, 'Background Claude Code sessions run direct: start them with CLAUDEPOOL=off')
     route = claude_route()
     check(True, f'route: {route} (new sessions ' + ('go through the pool while it answers)' if route == 'pool' else
-                                                     'start direct; codexpool claude route pool)'))
+                                                     'start direct; subpool claude route pool)'))
     if cp.script_is_ours(CLAUDE_SHIM, CLAUDE_SHIM_MARK):
         on_path = str(SHIMS) in cp.os.environ.get('PATH', '').split(cp.os.pathsep)
         check(CLAUDE_SHIM.read_text() == shim_text(), f'shim {cp.tilde(CLAUDE_SHIM)}' +
-              ('' if on_path else ' (not on this shell\'s PATH)'), 'codexpool claude shim install')
+              ('' if on_path else ' (not on this shell\'s PATH)'), 'subpool claude shim install')
     found = [name for name in ANTHROPIC_LAUNCHD_VARS if cp.launchd_getenv(name) is not None]
     check(not found, 'no ANTHROPIC_* variable in launchd\'s environment' if not found else
           f'{", ".join(found)} set in launchd\'s environment (every app started from the Dock gets it)',
-          'launchctl unsetenv ' + ' '.join(found) + '; codexpool sets ANTHROPIC_BASE_URL only for the process '
+          'launchctl unsetenv ' + ' '.join(found) + '; subpool sets ANTHROPIC_BASE_URL only for the process '
           'claude-pool starts', warn=True)
 
 
@@ -424,7 +424,7 @@ def doctor_claude_log(rep):
     check(not n, 'no thinking-signature rejections' if not n else
           f'{n} thinking-signature rejection(s) (Invalid `signature` in `thinking` block / bound to a different '
           'conversation)', 'an account switch broke a thinking chain; Claude Code retries without the earlier '
-          'thinking. Check the pair with codexpool claude selftest A B; upgrade CLIProxyAPI if it keeps happening',
+          'thinking. Check the pair with subpool claude selftest A B; upgrade CLIProxyAPI if it keeps happening',
           warn=True)
     if counts.get('gate'):
         check(False, f'{counts["gate"]} requests from other clients or browsers blocked by the gate',
@@ -432,7 +432,7 @@ def doctor_claude_log(rep):
               warn=True)
     if counts.get('token-count'):
         check(False, 'Claude Code token-count client is not recognised by this pool',
-              'Claude Code X.Y may be newer than this pool knows; update codexpool or run direct. '
+              'Claude Code X.Y may be newer than this pool knows; update subpool or run direct. '
               'Background token counting is also refused until CPA supports its native identity', warn=True)
 
 
@@ -463,11 +463,11 @@ CLAUDE_SHIM = SHIMS / 'claude'
 
 CLAUDE_REAL = cp.HOME / '.local' / 'bin' / 'claude'  # where Claude Code's installer puts it; else the first on PATH
 
-LAUNCHER_MARK = '# codexpool claude launcher'  # in both scripts; each skips any "claude" that carries it
+LAUNCHER_MARK = '# subpool claude launcher'  # in both scripts; each skips any "claude" that carries it
 
-CLAUDE_LAUNCHER_MARK = f'{LAUNCHER_MARK}, written by `codexpool claude install`'
+CLAUDE_LAUNCHER_MARK = f'{LAUNCHER_MARK}, written by `subpool claude install`'
 
-CLAUDE_SHIM_MARK = f'{LAUNCHER_MARK} (the claude shim), written by `codexpool claude shim install`'
+CLAUDE_SHIM_MARK = f'{LAUNCHER_MARK} (the claude shim), written by `subpool claude shim install`'
 
 CLAUDE_PROBE_MS = 300  # how long a launch waits for the Claude pool before it starts Claude Code direct
 
@@ -479,7 +479,7 @@ ANTHROPIC_LAUNCHD_VARS = ('ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROP
 
 CLAUDE_SIGNATURE_PATTERNS = ('Invalid `signature` in `thinking` block', 'bound to a different conversation')
 
-CLAUDE_PATH_LINE = 'export PATH="$HOME/.codexpool/shims:$PATH"'
+CLAUDE_PATH_LINE = 'export PATH="$HOME/.subpool/shims:$PATH"'
 
 
 def claude_pool_url():
@@ -520,8 +520,8 @@ def launcher_text(mark=CLAUDE_LAUNCHER_MARK, name='claude-pool'):
     env = ''.join(f'  : "${{{k}:={v}}}"; export {k}\n' for k, v in CLAUDE_POOL_ENV)
     return f'''#!/bin/sh
 {mark}
-# Starts Claude Code through the codexpool Claude pool: ANTHROPIC_BASE_URL={url} for this process only,
-# with Claude Code's own claude.ai login. CLAUDEPOOL=off {name} starts it direct. Rewritten by codexpool; edits are lost.
+# Starts Claude Code through the subpool Claude pool: ANTHROPIC_BASE_URL={url} for this process only,
+# with Claude Code's own claude.ai login. CLAUDEPOOL=off {name} starts it direct. Rewritten by subpool; edits are lost.
 pool_url={q(url)}
 route_file={q(str(CLAUDE_ROUTE_FILE))}
 shims={q(str(SHIMS))}
@@ -547,7 +547,7 @@ find_claude() {{
 
 pool_answers() {{
   code=$(curl -s -o /dev/null -w '%{{http_code}}' -m {CLAUDE_PROBE_MS / 1000:g} --noproxy '*' \\
-    -H 'User-Agent: claude-cli/codexpool-launcher' -H 'X-App: cli' "$pool_url/healthz" 2>/dev/null)
+    -H 'User-Agent: claude-cli/subpool-launcher' -H 'X-App: cli' "$pool_url/healthz" 2>/dev/null)
   case $code in
     200) return 0 ;;
     [234][0-9][0-9]) [ "${{CLAUDEPOOL:-}}" != required ] && return 0 ;;
@@ -565,12 +565,12 @@ why=
 if [ "${{CLAUDEPOOL:-}}" = off ]; then
   :
 elif [ "$route" = direct ] && [ "${{CLAUDEPOOL:-}}" != required ]; then
-  why='the route is direct (codexpool claude route pool sends new sessions through the pool)'
+  why='the route is direct (subpool claude route pool sends new sessions through the pool)'
 elif pool_answers; then
   export ANTHROPIC_BASE_URL="$pool_url"
 {env}  exec "$real" "$@"
 else
-  why="the Claude pool does not answer on ${{pool_url#http://}} (codexpool claude status)"
+  why="the Claude pool does not answer on ${{pool_url#http://}} (subpool claude status)"
 fi
 if [ "${{CLAUDEPOOL:-}}" = required ]; then
   echo "{name}: $why; pool required, Claude Code was not started" >&2
@@ -609,7 +609,7 @@ def patch_claude_status(**pool_fields):
 
 
 def claude_record(**fields):
-    """Merge fields into install.json's "claude" record (what codexpool claude install set up); None removes one."""
+    """Merge fields into install.json's "claude" record (what subpool claude install set up); None removes one."""
     rec = cp.read_json(cp.INSTALL_FILE, {})
     rec = rec if isinstance(rec, dict) else {}
     claude = rec.get('claude') if isinstance(rec.get('claude'), dict) else {}
@@ -650,10 +650,10 @@ def claude_install_build(st):
         src = cp.GATE_SOURCE.read_text()
     except OSError:
         src = ''
-    if 'CODEXPOOL_GATE_PROFILE' not in src:  # builds come from ~/.codexpool/build, which codexpool install copies
+    if 'CODEXPOOL_GATE_PROFILE' not in src:  # builds come from ~/.subpool/build, which subpool install copies
         msg = f'{cp.tilde(cp.GATE_SOURCE)} ' + ('is missing' if not src else 'has no claude gate profile (it predates the '
                                                                        'Claude pool)')
-        fix = 'update codexpool first: the installer, or codexpool install from a 1.3.0 or later checkout'
+        fix = 'update subpool first: the installer, or subpool install from a 1.3.0 or later checkout'
         if not st.dry:
             raise RuntimeError(f'{msg}; {fix}')
         st.fail(msg, fix)
@@ -719,7 +719,7 @@ def claude_install_files(st):
     if CLAUDE_ROUTE_FILE.exists():
         st.ok(f'route: {claude_route()} ({cp.tilde(CLAUDE_ROUTE_FILE)})')
     else:
-        st.change(f'write {cp.tilde(CLAUDE_ROUTE_FILE)}: pool (codexpool claude route direct sends new sessions direct)',
+        st.change(f'write {cp.tilde(CLAUDE_ROUTE_FILE)}: pool (subpool claude route direct sends new sessions direct)',
                   write_claude_route, 'pool')
     return changed
 
@@ -746,7 +746,7 @@ def claude_install_agent(st, restart):
     want = cp.re.sub(r'^v?(.*)-gate-', r'\1+gate.', cp.cpa_version(CLAUDE_CURRENT) or '') or None  # as X-CPA-VERSION says
     if not st.dry and not cp.wait_port_healthy(CLAUDE_PORT, 30, want):
         raise RuntimeError(f'the Claude pool did not answer on 127.0.0.1:{CLAUDE_PORT} within 30 s; see: '
-                           'codexpool claude logs')
+                           'subpool claude logs')
 
 
 def claude_install_gate(st):
@@ -764,7 +764,7 @@ def claude_install_gate(st):
     cp.unload_agent(CLAUDE_JOB)  # stopped, and its plist removed: launchd must not start it again at the next login
     raise RuntimeError(f'the Claude pool\'s gate does not keep other clients out ({text}), so it was stopped and its '
                        f'launchd agent removed. Its build must come from this build/codexpool_gate.go: rm '
-                       f'{cp.tilde(CLAUDE_CURRENT)} and re-run codexpool claude install')
+                       f'{cp.tilde(CLAUDE_CURRENT)} and re-run subpool claude install')
 
 
 def claude_install_launcher(st):
@@ -775,8 +775,8 @@ def claude_install_launcher(st):
     if not (CLAUDE_LAUNCHER.exists() or CLAUDE_LAUNCHER.is_symlink()):
         st.change(f'write {cp.tilde(CLAUDE_LAUNCHER)} ({how})', cp.write_script, CLAUDE_LAUNCHER, text)
     elif not cp.script_is_ours(CLAUDE_LAUNCHER, CLAUDE_LAUNCHER_MARK):
-        st.warn(f'{cp.tilde(CLAUDE_LAUNCHER)} exists and is not codexpool\'s; left alone',
-                f'remove it and re-run codexpool claude install')
+        st.warn(f'{cp.tilde(CLAUDE_LAUNCHER)} exists and is not subpool\'s; left alone',
+                f'remove it and re-run subpool claude install')
         return
     elif CLAUDE_LAUNCHER.read_text() == text:
         st.ok(f'{cp.tilde(CLAUDE_LAUNCHER)}')
@@ -807,10 +807,10 @@ def cmd_claude_install(args):
     """Set the Claude pool up, or repair it; every step checks first and changes only what is missing or wrong."""
     missing = cp.missing_install()
     if missing:
-        cp.sys.exit(f'codexpool claude install: codexpool itself is not installed yet ({", ".join(missing)} missing). '
-                 'Run codexpool install first; the Claude pool uses its toolchain, key and guard.')
+        cp.sys.exit(f'subpool claude install: subpool itself is not installed yet ({", ".join(missing)} missing). '
+                 'Run subpool install first; the Claude pool uses its toolchain, key and guard.')
     st = ClaudeSteps(args.dry_run)
-    print(f'codexpool claude install{" --dry-run: nothing is changed; each step says what it would do" if st.dry else ""}'
+    print(f'subpool claude install{" --dry-run: nothing is changed; each step says what it would do" if st.dry else ""}'
           f'\n  home {cp.tilde(cp.ROOT)} · port {CLAUDE_PORT} · launchd {CLAUDE_JOB} · logins {cp.tilde(CLAUDE_AUTH)}')
     try:
         moved = claude_install_build(st)
@@ -820,7 +820,7 @@ def cmd_claude_install(args):
         claude_install_launcher(st)
         claude_install_record(st)
     except (RuntimeError, cp.KeyUnavailable) as e:
-        cp.sys.exit(f'\nclaude install stopped: {e}\nFix that and re-run codexpool claude install; every step is safe to '
+        cp.sys.exit(f'\nclaude install stopped: {e}\nFix that and re-run subpool claude install; every step is safe to '
                  'repeat.')
     if st.dry:
         print('\nDry run: nothing was changed.'
@@ -828,16 +828,16 @@ def cmd_claude_install(args):
         cp.sys.exit(1 if st.problems else 0)
     seats = sorted(CLAUDE_AUTH.glob('*.json'))
     if seats:
-        print(f'\nUp to date: {len(seats)} Claude account(s) in the pool. codexpool claude status shows them.')
+        print(f'\nUp to date: {len(seats)} Claude account(s) in the pool. subpool claude status shows them.')
         return
     print('\nInstalled. Claude Code keeps its own login; nothing changes until you start it through the pool.\n'
-          '  1. Add each Claude account (browser sign-in):  codexpool claude login "<Label>" --priority <n>\n'
+          '  1. Add each Claude account (browser sign-in):  subpool claude login "<Label>" --priority <n>\n'
           '     For an account your browser is not signed in to, add --no-open and open the link in a private window.\n'
           f'  2. Start Claude Code through the pool:  {CLAUDE_LAUNCHER.name}   (CLAUDEPOOL=off {CLAUDE_LAUNCHER.name} '
           'or plain claude: direct)\n'
-          '  3. Optional: codexpool claude reserve "<Label>", codexpool claude credits "<Label>" last-resort --cap 200,\n'
-          '     codexpool claude shim install (makes plain claude go through the pool too).\n'
-          'codexpool claude uninstall --yes undoes this and keeps the account logins.')
+          '  3. Optional: subpool claude reserve "<Label>", subpool claude credits "<Label>" last-resort --cap 200,\n'
+          '     subpool claude shim install (makes plain claude go through the pool too).\n'
+          'subpool claude uninstall --yes undoes this and keeps the account logins.')
 
 
 def claude_uninstall_plan():
@@ -849,7 +849,7 @@ def claude_uninstall_plan():
                 backend.uninstall()
                 for event in backend.events:
                     print(event)
-        plan.append(('clean codexpool desktop setup before stopping the pool (best effort)', desktop_before_uninstall))
+        plan.append(('clean subpool desktop setup before stopping the pool (best effort)', desktop_before_uninstall))
     plist = cp.LAUNCH_AGENTS / f'{CLAUDE_JOB}.plist'
     if plist.exists() or cp.launchd_loaded(CLAUDE_JOB)[0]:
         plan.append((f'stop the launchd agent {CLAUDE_JOB} and delete {cp.tilde(plist)}', lambda: cp.unload_agent(CLAUDE_JOB)))
@@ -868,7 +868,7 @@ def claude_uninstall_plan():
 
 def claude_keep_note():
     return (f'keep {cp.tilde(CLAUDE_AUTH)} (the Claude account logins), {cp.tilde(CLAUDE_CONFIG)}, the builds and logs '
-            '(codexpool claude install brings it back)')
+            '(subpool claude install brings it back)')
 
 
 def cmd_claude_uninstall(args):
@@ -879,7 +879,7 @@ def cmd_claude_uninstall(args):
     shim_line = cp.script_is_ours(CLAUDE_SHIM, CLAUDE_SHIM_MARK)
     if not args.yes:
         steps = [text for text, _ in plan] + [claude_keep_note()]
-        print('codexpool claude uninstall would:\n' + '\n'.join(f'  {i + 1}. {p}' for i, p in enumerate(steps))
+        print('subpool claude uninstall would:\n' + '\n'.join(f'  {i + 1}. {p}' for i, p in enumerate(steps))
               + '\nClaude Code itself is not touched: running pooled sessions stop answering (start them again with '
                 'claude --resume).\nRe-run with --yes.')
         return
@@ -909,13 +909,13 @@ def cmd_claude_route(args):
               'pool while it answers; running sessions stay where they are.')
     else:
         print('route: direct. New Claude Code sessions start direct, on Claude Code\'s own account; running sessions '
-              'stay where they are. codexpool claude route pool turns it back.')
+              'stay where they are. subpool claude route pool turns it back.')
 
 
 def cmd_claude_shim(args):
     if args.action == 'install':
         if CLAUDE_SHIM.exists() and not cp.script_is_ours(CLAUDE_SHIM, CLAUDE_SHIM_MARK):
-            cp.sys.exit(f'codexpool claude shim: {cp.tilde(CLAUDE_SHIM)} exists and is not codexpool\'s; left alone')
+            cp.sys.exit(f'subpool claude shim: {cp.tilde(CLAUDE_SHIM)} exists and is not subpool\'s; left alone')
         cp.write_script(CLAUDE_SHIM, shim_text())
         claude_record(shim=str(CLAUDE_SHIM))
         on_path = str(SHIMS) in cp.os.environ.get('PATH', '').split(cp.os.pathsep)
@@ -924,13 +924,13 @@ def cmd_claude_shim(args):
         if on_path:
             print(f'{cp.tilde(SHIMS)} is already on your PATH.')
         else:
-            print(f'Add this line to ~/.zprofile (codexpool never edits shell profiles), then open a new terminal:\n'
+            print(f'Add this line to ~/.zprofile (subpool never edits shell profiles), then open a new terminal:\n'
                   f'  {CLAUDE_PATH_LINE}')
         return
     if not (CLAUDE_SHIM.exists() or CLAUDE_SHIM.is_symlink()):
         print(f'no shim at {cp.tilde(CLAUDE_SHIM)}')
     elif not cp.script_is_ours(CLAUDE_SHIM, CLAUDE_SHIM_MARK):
-        cp.sys.exit(f'codexpool claude shim: {cp.tilde(CLAUDE_SHIM)} is not codexpool\'s; left alone')
+        cp.sys.exit(f'subpool claude shim: {cp.tilde(CLAUDE_SHIM)} is not subpool\'s; left alone')
     else:
         CLAUDE_SHIM.unlink()
         print(f'removed {cp.tilde(CLAUDE_SHIM)}: plain claude starts direct again.')
@@ -997,10 +997,10 @@ def pct_or_dash(win):
 def print_claude_status(st, source):
     pool = st.get('pool') or {}
     if not pool.get('running', True):
-        print(f'Claude pool is NOT running on :{CLAUDE_PORT}. Try: codexpool claude install ; codexpool claude logs')
+        print(f'Claude pool is NOT running on :{CLAUDE_PORT}. Try: subpool claude install ; subpool claude logs')
         return
     if pool.get('error'):
-        print(f'Claude pool is running but codexpool cannot read it: {pool["error"]}\nTry: codexpool doctor')
+        print(f'Claude pool is running but subpool cannot read it: {pool["error"]}\nTry: subpool doctor')
         return
     seats = st.get('seats') or []
     spends = [r for r in seats if isinstance(r.get('credits'), dict) and r['credits'].get('spending')]
@@ -1011,7 +1011,7 @@ def print_claude_status(st, source):
           f'route: {pool.get("route") or claude_route()}  ·  '
           f'new sessions → {serving or "NONE" if seats else "no accounts yet"}  ·  ({source})')
     if not seats:
-        print('Add a Claude account: codexpool claude login "<Label>" --priority <n>')
+        print('Add a Claude account: subpool claude login "<Label>" --priority <n>')
         return
     print()
     print(f'  {"account":<22} {"plan":<12} {"prio":>4}  {"state":<10} {"5h":>5} {"week":>5}  {"credits":<22} note')
@@ -1041,7 +1041,7 @@ def cmd_claude_status(args):
         if args.json:
             print(cp.json.dumps({'pool': {'installed': False, 'route': claude_route()}, 'seats': []}, indent=2))
             return
-        cp.sys.exit('codexpool claude status: the Claude pool is not installed. codexpool claude install sets it up.')
+        cp.sys.exit('subpool claude status: the Claude pool is not installed. subpool claude install sets it up.')
     st, source = claude_status_view(args.live)
     if args.json:
         print(cp.json.dumps(st, indent=2))
@@ -1056,7 +1056,7 @@ CLAUDE_OAUTH_HEADERS = {'Authorization': 'Bearer $TOKEN$', 'Accept': 'applicatio
 
 def claude_seat_call(seat, url, timeout=30):
     """GET an api.anthropic.com OAuth endpoint as one Claude account, through the Claude pool's management api-call
-    (the pool puts that account's token where $TOKEN$ is; codexpool never sees it). Returns (HTTP status, parsed
+    (the pool puts that account's token where $TOKEN$ is; subpool never sees it). Returns (HTTP status, parsed
     body); raises PoolDown, PoolTimeout, ApiError or KeyUnavailable when the pool itself does not answer."""
     header = dict(CLAUDE_OAUTH_HEADERS)
     version = sienna_guard.claude_code_version()
@@ -1109,10 +1109,10 @@ def cmd_claude_login(args):
     Claude pool's build and config, a new OAuth login of the pool's own. Claude Code's login is never used."""
     pool = cp.seat_pool('claude')
     if not claude_installed() or not cp.cpa_binary(pool.link).exists():
-        cp.sys.exit('codexpool claude login: the Claude pool is not installed. codexpool claude install sets it up.')
+        cp.sys.exit('subpool claude login: the Claude pool is not installed. subpool claude install sets it up.')
     problem = cp.label_problem(args.label)
     if problem:
-        cp.sys.exit(f'codexpool claude login: {problem}')
+        cp.sys.exit(f'subpool claude login: {problem}')
     if args.no_open:
         print('Getting a claude.ai sign-in link. Open it in a browser signed in to the Claude account to add (a '
               'private window or its own browser profile), sign in and approve.\n')
@@ -1152,7 +1152,7 @@ def cmd_claude_login(args):
     print(f'\nseat {saved.name}: {c["email"]} plan={tier or "unknown"} account={c["account_id"]}'
           + (f' label={label}' if label else '') + (f' priority={priority}' if priority is not None else ''))
     if not tier:
-        print(f'Its plan is not known yet ({why}); the guard asks again, and codexpool claude weight sets its size.')
+        print(f'Its plan is not known yet ({why}); the guard asks again, and subpool claude weight sets its size.')
     if not new:
         shown = label or cp.default_label(c['email'], tier)
         if args.label and args.label.lower() != (label or '').lower():
@@ -1168,23 +1168,23 @@ def cmd_claude_credits(args):
     """Set a Claude account's credit policy in claude-seats.json; the guard's Claude pass enforces it."""
     pool = cp.seat_pool('claude')
     if args.policy == 'off' and args.cap is not None:
-        cp.sys.exit('codexpool claude credits: --cap goes with last-resort (off spends no credits at all)')
+        cp.sys.exit('subpool claude credits: --cap goes with last-resort (off spends no credits at all)')
     if args.cap is not None and not cp.valid_weight(args.cap):
-        cp.sys.exit(f'codexpool claude credits: the cap is a positive number of US dollars, not {args.cap:g}')
+        cp.sys.exit(f'subpool claude credits: the cap is a positive number of US dollars, not {args.cap:g}')
     with cp.guard_lock(pool=pool):
         s = cp.match_seat([x for x in cp.load_seats(pool) if x['provider'] == 'claude'], args.seat)
         was = credit_policy(cp.read_meta(pool), s['name'])
         cap = args.cap if args.cap is not None else was['cap']
         if args.policy == 'last-resort' and cap is None:
-            cp.sys.exit(f'codexpool claude credits: last-resort needs a cap, the most {s["label"]} may spend: '
-                     f'codexpool claude credits {cp.shlex.quote(s["label"])} last-resort --cap <USD>')
+            cp.sys.exit(f'subpool claude credits: last-resort needs a cap, the most {s["label"]} may spend: '
+                     f'subpool claude credits {cp.shlex.quote(s["label"])} last-resort --cap <USD>')
         cp.update_meta(s['name'], pool, credits=None if args.policy == 'off' else {'policy': 'last-resort',
                                                                                  'cap': float(cap)})
         guard = cp.read_guard(pool)
         g = (guard.get('seats') or {}).get(s['name']) or {}
-        if g.pop('override_until', None):  # a new policy ends `codexpool claude enable`'s override of the old one
+        if g.pop('override_until', None):  # a new policy ends `subpool claude enable`'s override of the old one
             cp.write_json(pool.guard, guard)
-            print(f'{s["label"]}: the credit guard\'s override (codexpool claude enable) ends; the new policy applies.')
+            print(f'{s["label"]}: the credit guard\'s override (subpool claude enable) ends; the new policy applies.')
         sienna_guard.claude_apply_credit_policy(pool)
         cp.refresh_status_file(pool)
     if args.policy == 'off':
@@ -1209,7 +1209,7 @@ def add_claude_parser(sub):
     s = sub.add_parser('sienna', aliases=['claude'], help='the Claude pool: Claude Code through several Claude accounts (see addons/sienna/docs/SIENNA.md)',
                        description='The Claude pool: a second CLIProxyAPI instance (its own build, port, config, '
                                    'logins and launchd agent) that Claude Code reaches with ANTHROPIC_BASE_URL only, '
-                                   'keeping its own claude.ai login. codexpool never sets that variable globally: '
+                                   'keeping its own claude.ai login. subpool never sets that variable globally: '
                                    'the claude-pool launcher sets it for the one process it starts.')
     s.set_defaults(fn=cmd_claude)
     claude = s.add_subparsers(dest='claude_cmd', required=True,
@@ -1234,7 +1234,7 @@ def add_claude_parser(sub):
     x = claude.add_parser('route', help='where new Claude Code sessions go: pool or direct (no argument: print it)')
     x.add_argument('route', nargs='?', choices=CLAUDE_ROUTES)
     x.set_defaults(claude_fn=cmd_claude_route)
-    x = claude.add_parser('shim', help='an optional ~/.codexpool/shims/claude, so plain claude goes through the pool '
+    x = claude.add_parser('shim', help='an optional ~/.subpool/shims/claude, so plain claude goes through the pool '
                                        '(prints the PATH line to add; never edits shell profiles)')
     x.add_argument('action', choices=('install', 'remove'))
     x.set_defaults(claude_fn=cmd_claude_shim)
@@ -1254,7 +1254,7 @@ def add_claude_parser(sub):
 
 
 def add_claude_seat_parsers(claude):
-    """codexpool claude login|enable|disable|label|weight|priority|reserve|remove|order|credits: the Claude pool's
+    """subpool claude login|enable|disable|label|weight|priority|reserve|remove|order|credits: the Claude pool's
     accounts, with the same arguments as the Codex seat commands and the same code (pool "claude")."""
     x = claude.add_parser('login', help='add a Claude account to the pool, or sign one in again (a login of the '
                                         'pool\'s own; Claude Code keeps its login)')
@@ -1294,7 +1294,7 @@ def add_claude_seat_parsers(claude):
     x.add_argument('seat', metavar='SEAT')
     x.add_argument('--yes', action='store_true')
     x.set_defaults(claude_fn=cp.cmd_remove, pool='claude')
-    x = claude.add_parser('order', help='set the fill order in one go: codexpool claude order SEAT [SEAT ...]',
+    x = claude.add_parser('order', help='set the fill order in one go: subpool claude order SEAT [SEAT ...]',
                           description='Set the fill order: the accounts named come first, in that order, then the '
                                       'other regular accounts in the order they had, then the reserve accounts '
                                       '(always last, in their own order). The order is kept as yours in '

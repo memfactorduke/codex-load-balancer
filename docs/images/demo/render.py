@@ -3,10 +3,10 @@
 
 Run it with a Python that has PyObjC (the menu bar app's venv):
 
-    ~/.codexpool/.venv/bin/python docs/images/demo/render.py [--app menubar/codexpool_menubar.py]
+    ~/.subpool/.venv/bin/python docs/images/demo/render.py [--app menubar/subpool_menubar.py]
 
 The popovers come straight from the app's own `--snapshot` mode, and the Settings window and Setup assistant
-from codexpool_settings.py's (with doctor.json, lanes.json, lane-providers.json and lane-models.json from this
+from subpool_settings.py's (with doctor.json, lanes.json, lane-providers.json and lane-models.json from this
 folder). The menu bar strip and the hero image reuse the app's drawing code (imported, never modified) and add
 only the backdrop around it. An add-on renders its own images with its own script, which imports this one
 (`addons/<id>/docs/images/demo/render.py`).
@@ -50,7 +50,7 @@ def history_path(scenario: str) -> Path:
 
 
 def load_app(path: Path):
-    spec = importlib.util.spec_from_file_location('codexpool_menubar', path)
+    spec = importlib.util.spec_from_file_location('subpool_menubar', path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod   # dataclasses look their module up here
     spec.loader.exec_module(mod)
@@ -82,7 +82,7 @@ SETTINGS_SHOTS = (   # (file name, pane, Lanes sheet or Setup assistant step, ap
 
 
 def settings_snapshot(settings_path: Path, out: Path, pane: str, appearance: str, extra=()):
-    """codexpool_settings.py's own --snapshot of one pane (it runs no command); extra: more arguments, e.g. an add-on's pool."""
+    """subpool_settings.py's own --snapshot of one pane (it runs no command); extra: more arguments, e.g. an add-on's pool."""
     subprocess.run([sys.executable, str(settings_path), '--snapshot', str(out), '--pane', pane,
                     '--appearance', appearance, '--status', str(HERE / 'status-regular.json'),
                     '--doctor', str(HERE / 'doctor.json'), '--lanes', str(HERE / 'lanes.json'),
@@ -411,8 +411,8 @@ def hero(k: Kit, out: Path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    p.add_argument('--app', type=Path, default=REPO / 'menubar' / 'codexpool_menubar.py')
-    p.add_argument('--settings', type=Path, default=REPO / 'menubar' / 'codexpool_settings.py')
+    p.add_argument('--app', type=Path, default=REPO / 'menubar' / 'subpool_menubar.py')
+    p.add_argument('--settings', type=Path, default=REPO / 'menubar' / 'subpool_settings.py')
     p.add_argument('--out', type=Path, default=IMAGES)
     p.add_argument('--skip-data', action='store_true', help='render the data files already in this folder')
     args = p.parse_args()

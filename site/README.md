@@ -1,6 +1,6 @@
-# codexpool website
+# subpool website
 
-The marketing site for codexpool: one static page, no build step, no frameworks and no external requests
+The marketing site for subpool: one static page, no build step, no frameworks and no external requests
 (system fonts, inline SVG). This folder is the whole site; deploy it as it is.
 
 ```
@@ -64,7 +64,7 @@ and output settings empty. Vercel serves `404.html` for missing pages by itself.
 
 ### Any other static host
 
-Copy the contents of `site/` to the web root, for example `rsync -av site/ user@host:/var/www/codexpool/`, and
+Copy the contents of `site/` to the web root, for example `rsync -av site/ user@host:/var/www/subpool/`, and
 point the host's "not found" page at `/404.html` if it doesn't pick it up on its own.
 
 ## Custom domain
@@ -72,16 +72,16 @@ point the host's "not found" page at `/404.html` if it doesn't pick it up on its
 1. **Add the domain at the host.** GitHub Pages: Settings → Pages → Custom domain (with a workflow deployment no
    `CNAME` file is needed), then tick **Enforce HTTPS** once the certificate is issued. Netlify and Vercel: add
    it under the project's domains.
-2. **Point DNS at it.** For a subdomain such as `codexpool.example.com`, add a `CNAME` record to
+2. **Point DNS at it.** For a subdomain such as `subpool.example.com`, add a `CNAME` record to
    `memfactorduke.github.io` (or the target Netlify or Vercel shows you). For an apex domain on GitHub Pages, add
    `A` records for `185.199.108.153`, `185.199.109.153`, `185.199.110.153` and `185.199.111.153`
    (and `AAAA` records for `2606:50c0:8000::153` through `2606:50c0:8003::153` for IPv6).
 3. **Update the absolute URLs.** The canonical link, `og:url`, `og:image` and `twitter:image` in `index.html` and
-   the "Back to codexpool" link in `404.html` use the GitHub Pages address. Replace it in both pages (and only
+   the "Back to subpool" link in `404.html` use the GitHub Pages address. Replace it in both pages (and only
    there, so this README keeps its instructions):
 
    ```sh
-   sed -i '' 's#https://memfactorduke.github.io/codex-load-balancer/#https://codexpool.example.com/#g' \
+   sed -i '' 's#https://memfactorduke.github.io/codex-load-balancer/#https://subpool.example.com/#g' \
      site/index.html site/404.html
    ```
 
@@ -91,7 +91,7 @@ point the host's "not found" page at `/404.html` if it doesn't pick it up on its
 
 - `popover-light.webp`, `popover-dark.webp` and `popover-reserve-light.webp` are `docs/images/popover-light.png`,
   `popover-dark.png` and `popover-reserve-light.png` cropped to the popover card (from 56,56 to the outer edge of
-  its border: 680 × 1628 px, 1632 px for the reserve one), with the corners rounded at a 30 px radius and
+  its border: 680 × 1486 px, 1490 px for the reserve one), with the corners rounded at a 30 px radius and
   encoded with `cwebp -q 90`. They are 2× images shown 340 px wide, so each `<img>` has `width="340"` and half
   the pixel height; update the height when a new crop is taller.
 - The window screenshots are 2× renders from the synthetic data in `docs/images/demo/`, encoded as lossless
@@ -106,7 +106,7 @@ point the host's "not found" page at `/404.html` if it doesn't pick it up on its
   | `setup-signin-dark.webp` (1416 × 1346) | the same Setup assistant step in dark, rendered below |
 
   ```sh
-  python menubar/codexpool_settings.py --snapshot setup-signin-dark.png --pane setup-signin \
+  python menubar/subpool_settings.py --snapshot setup-signin-dark.png --pane setup-signin \
     --appearance dark --status docs/images/demo/status-regular.json --doctor docs/images/demo/doctor.json \
     --lanes docs/images/demo/lanes.json --history docs/images/demo/history-regular.jsonl \
     --now 2026-09-24T16:41:00Z
@@ -129,5 +129,5 @@ Every screenshot comes from made-up seats. Never put a real account, email or se
   about 90 KB together, uncompressed.
 - Check both appearances, a 390 px phone and a 1440 px desktop, keyboard focus (Tab through the page) and
   reduced motion (the diagram then shows its resting state: Seat 1 out, Seat 2 serving, and no pause button).
-- The disclaimers in the footer and the FAQ stay: codexpool is independent of OpenAI, and people should use it
+- The disclaimers in the footer and the FAQ stay: subpool is independent of OpenAI, and people should use it
   only with accounts they own, following the terms that apply to them.

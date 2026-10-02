@@ -71,10 +71,10 @@ class LaneSplit(unittest.TestCase):
             bridge_config.write_text(before)
             bridge_config.chmod(0o600)
             (root / 'bin').mkdir()
-            (root / 'bin/codexpool').write_text('old CLI')
+            (root / 'bin/subpool').write_text('old CLI')
             replace = cp.os.replace
             def interrupted(source, target):
-                if Path(target) == root / 'bin/codexpool' and 'payload' in Path(source).parts:
+                if Path(target) == root / 'bin/subpool' and 'payload' in Path(source).parts:
                     # The complete extension and matching config are present before the final CLI swap.
                     current = json.loads(bridge_config.read_text())
                     self.assertTrue(Path(current['extensions']['sienna']).is_file())
@@ -86,7 +86,7 @@ class LaneSplit(unittest.TestCase):
                 with mock.patch.object(cp.os, 'replace', side_effect=interrupted), self.assertRaises(OSError):
                     cp.copy_code()
                 self.assertEqual(bridge_config.read_text(), before)
-                self.assertEqual((root / 'bin/codexpool').read_text(), 'old CLI')
+                self.assertEqual((root / 'bin/subpool').read_text(), 'old CLI')
                 self.assertFalse((root / 'addons/sienna').exists())
                 cp.copy_code()
                 current = json.loads(bridge_config.read_text())

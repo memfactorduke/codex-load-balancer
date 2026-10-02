@@ -1,5 +1,5 @@
 // codexpool_gate.go is added to CLIProxyAPI's cmd/server by `codexpool build`.
-// It is the only change codexpool makes to upstream: one middleware installed through the engine
+// It is the only custom request middleware: installed through the engine
 // configurator hook, which runs before every CLIProxyAPI middleware (access log, CORS, request
 // logging, auth, management IP-ban) and every route, WebSocket upgrades included.
 //

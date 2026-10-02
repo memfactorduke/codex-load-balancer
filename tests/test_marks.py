@@ -1,10 +1,10 @@
-"""The pools' marks in the menu bar app and the Settings switcher (menubar/codexpool_menubar.py's "the pools' marks"
-section, menubar/codexpool_settings.py's pool_glyph_image): the mask maths, the validation, the fallback to the drawn
+"""The pools' marks in the menu bar app and the Settings switcher (menubar/subpool_menubar.py's "the pools' marks"
+section, menubar/subpool_settings.py's pool_glyph_image): the mask maths, the validation, the fallback to the drawn
 glyph, --snapshot defaulting to drawn marks, and that the repo holds no logo file.
 
 The pixel maths are pure functions over bytes, so they run on every Python here, loaded from the source without
 importing the module (which needs PyObjC). What draws or looks an app up needs PyObjC, that is the menu bar's own
-interpreter (~/.codexpool/menubar/.venv/bin/python), and skips without it. No test reads /Applications: the apps are
+interpreter (~/.subpool/menubar/.venv/bin/python), and skips without it. No test reads /Applications: the apps are
 made-up bundles in a temp dir, with icons written by a stdlib PNG encoder."""
 import __future__
 import ast
@@ -24,8 +24,8 @@ from unittest import mock
 
 from _helpers import REPO
 
-MENUBAR = REPO / 'menubar' / 'codexpool_menubar.py'
-SETTINGS = REPO / 'menubar' / 'codexpool_settings.py'
+MENUBAR = REPO / 'menubar' / 'subpool_menubar.py'
+SETTINGS = REPO / 'menubar' / 'subpool_settings.py'
 DEMO = REPO / 'docs' / 'images' / 'demo'
 PURE = ('chroma_alpha', 'flood_exterior', 'solid_inside', 'dilate_alpha', 'spark_dilation', 'mask_bounds', 'crop_alpha',
         'valid_mask')
@@ -321,10 +321,10 @@ def load(name):
     return importlib.import_module(name)
 
 
-mb = load('codexpool_menubar')
+mb = load('subpool_menubar')
 
 
-@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.codexpool/menubar/.venv/bin/python)')
+@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.subpool/menubar/.venv/bin/python)')
 class WithAppKit(unittest.TestCase):
     """The parts that draw or look an app up. Every test starts with an empty mark cache and MARKS as it was."""
 
@@ -340,7 +340,7 @@ class WithAppKit(unittest.TestCase):
             mb._MARK_NOTED.clear()
             mb._MARK_NOTED.update(saved[2])
         self.addCleanup(restore)
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix='codexpool-marks-'))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix='subpool-marks-'))
         self.addCleanup(shutil.rmtree, str(self.tmp), True)
 
     def fake_app(self, name, files, version='1.0'):
@@ -643,7 +643,7 @@ class WithAppKit(unittest.TestCase):
     # -- the Settings switcher: the same mask as a template image, the drawn glyph as the fallback -----------------
 
     def test_settings_switcher_image(self):
-        st = load('codexpool_settings')
+        st = load('subpool_settings')
         alpha = bytes(255 if 2 <= x < 18 and 4 <= y < 8 else 0 for y in range(12) for x in range(20))
         mark = mb.mask_image(alpha, 20, 12)
         mb.MARKS = 'app'
@@ -678,7 +678,7 @@ class WithAppKit(unittest.TestCase):
             live.assert_called_with('drawn')
 
     def test_settings_main_defaults(self):
-        st = load('codexpool_settings')
+        st = load('subpool_settings')
         out = str(self.tmp / 'x.png')
         with mock.patch.object(st, 'snapshot') as snap, mock.patch.object(st, 'run_app') as live:
             st.main(['--snapshot', out, '--pane', 'overview'])

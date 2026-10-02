@@ -5,6 +5,7 @@ missing offline module cache is reported as a skip, never downloaded by the test
 """
 from _helpers import HOME, REPO, cp
 import os
+import runpy
 from pathlib import Path
 import shutil
 import subprocess
@@ -28,18 +29,19 @@ class GateTests(unittest.TestCase):
             work = Path(temp)
             tree = work / 'cpa'
             shutil.copytree(source, tree, ignore=shutil.ignore_patterns('.git', 'node_modules'))
-            for stale in (tree / 'cmd/server').glob('codexpool*gate*.go'):
+            for stale in (tree / 'cmd/server').glob('subpool*gate*.go'):
                 stale.unlink()
             for name in ('codexpool_gate.go', 'codexpool_gate_test.go'):
                 gate_source = (REPO / 'build' / name).read_text()
                 if 'module github.com/router-for-me/CLIProxyAPI/v8' in (tree / 'go.mod').read_text():
                     gate_source = gate_source.replace('CLIProxyAPI/v7/', 'CLIProxyAPI/v8/')
                 (tree / 'cmd/server' / name).write_text(gate_source)
+            runpy.run_path(str(REPO / "build/catalog/apply.py"))["apply"](tree)
             # Overlay modules already cached by the coordinator; never fetch dependencies.
             env = dict(os.environ, HOME=str(HOME), GOPROXY='off', GOSUMDB='off', GOTOOLCHAIN='local',
                        CGO_ENABLED='0', GOFLAGS='-mod=mod', GOCACHE=str(work / 'cache'))
-            result = subprocess.run([go, 'test', '-count=1', '-run', '^TestCodexpoolGate',
-                                     './cmd/server/'], cwd=tree, env=env,
+            result = subprocess.run([go, 'test', '-count=1', '-run', '^TestCodexpool(Gate|Catalog)',
+                                     './cmd/server/', './internal/registry', './internal/client/codex/models'], cwd=tree, env=env,
                                     capture_output=True, text=True, timeout=240)
             output = result.stdout + result.stderr
             if result.returncode and ('module lookup disabled by GOPROXY=off' in output or

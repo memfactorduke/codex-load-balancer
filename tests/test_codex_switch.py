@@ -108,7 +108,7 @@ class CodexSwitch(unittest.TestCase):
         seat = self.seat()
         self.install()  # with a seat: switches at once, and records the URL
         self.assertEqual(base_url(), OURS)
-        seat.unlink()   # the seat went some other way than codexpool remove
+        seat.unlink()   # the seat went some other way than subpool remove
         out = self.install()
         self.assertIn('+ set openai_base_url = "https://proxy.example/v1" (as before install)', out)
         self.assertEqual(base_url(), 'https://proxy.example/v1')
@@ -156,14 +156,14 @@ class CodexSwitch(unittest.TestCase):
         cp.set_codex_key('openai_base_url', '"https://my-proxy.example/v1"')
         out = self.login()
         self.assertIn('openai_base_url was changed by hand since install ("https://my-proxy.example/v1"), so it is left '
-                      'as it is and Codex does not use the pool; codexpool install points it at the pool.', out)
+                      'as it is and Codex does not use the pool; subpool install points it at the pool.', out)
         self.assertNotIn('Codex now uses the pool', out)
         self.assertEqual(base_url(), 'https://my-proxy.example/v1')
         self.assertNotIn('codex_switch_pending', record())
         self.assertNotIn('codex_switch_from', record())
         code, _, _ = run(cp.cmd_uninstall, yes=True)
         self.assertEqual(code, 0)
-        self.assertEqual(base_url(), 'https://my-proxy.example/v1')  # not codexpool's: uninstall leaves it
+        self.assertEqual(base_url(), 'https://my-proxy.example/v1')  # not subpool's: uninstall leaves it
 
     def test_a_line_taken_out_before_the_first_sign_in_stays_out(self):
         cp.CODEX_CONFIG.write_text('openai_base_url = "https://proxy.example/v1"\n' + MINE)
@@ -218,7 +218,7 @@ class CodexSwitch(unittest.TestCase):
         self.install()
         code, out, _ = run(cp.cmd_uninstall, yes=True)
         self.assertEqual(code, 0)
-        self.assertIn('nothing of codexpool\'s left in it', out)  # the switch never happened: nothing to remove
+        self.assertIn('nothing of subpool\'s left in it', out)  # the switch never happened: nothing to remove
         self.assertIsNone(record())
         self.assertTrue(list(cp.STATE.glob('install.json.uninstalled-*')))
         self.assertEqual(cp.CODEX_CONFIG.read_text(), MINE)
@@ -236,7 +236,7 @@ class CodexSwitch(unittest.TestCase):
         self.install()
         with mock.patch.object(cp, 'set_codex_key', side_effect=PermissionError(13, 'Permission denied')):
             out = self.login()
-        self.assertIn('warning: could not point Codex at the pool (Permission denied); run codexpool install', out)
+        self.assertIn('warning: could not point Codex at the pool (Permission denied); run subpool install', out)
         self.assertIs(record()['codex_switch_pending'], True)
 
     def test_a_sign_in_during_uninstall_waits_for_it(self):
@@ -331,7 +331,7 @@ class CodexSwitch(unittest.TestCase):
         self.install()
         self.seat()  # a seat, and still no switch (say it came in some other way)
         self.assertEqual(self.codex_check(), {'status': 'fail', 'text': 'openai_base_url = (unset)',
-                                              'fix': 'codexpool install'})
+                                              'fix': 'subpool install'})
 
     def test_doctor_problem_without_the_note(self):
         self.assertEqual(self.codex_check()['status'], 'fail')  # no install record: not a first-seat wait
@@ -400,7 +400,7 @@ class InstallClosingText(unittest.TestCase):
         code, out, _ = self.install(False)
         self.assertEqual(code, 0)
         self.assertIn('Codex requests\nfail until then', out)
-        self.assertIn('codexpool setup walks you through the next steps', out)
+        self.assertIn('subpool setup walks you through the next steps', out)
         self.assertIn('so it goes through the pool', out)
 
 

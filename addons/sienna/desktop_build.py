@@ -23,7 +23,7 @@ def desktop_wire_test(tree, go, env):
     if 'module github.com/router-for-me/CLIProxyAPI/v8' in (tree / 'go.mod').read_text():
         source = source.replace('CLIProxyAPI/v7/', 'CLIProxyAPI/v8/')
     (executor / files[0].name).write_text(source)
-    fixtures = executor / 'testdata/codexpool-desktop'
+    fixtures = executor / 'testdata/subpool-desktop'
     fixtures.mkdir(parents=True, exist_ok=True)
     for stale in fixtures.glob('*.json'):
         stale.unlink()

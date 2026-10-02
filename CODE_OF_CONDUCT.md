@@ -1,6 +1,6 @@
 # Code of Conduct
 
-codexpool follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+subpool follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 It applies in every project space: issues, pull requests, discussions and reviews.
 
 In short: be kind and patient, assume good intent, keep criticism about the work and not the person, and make

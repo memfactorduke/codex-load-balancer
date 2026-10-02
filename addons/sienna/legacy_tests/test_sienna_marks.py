@@ -1,9 +1,9 @@
 """The Claude pool's mark in the menu bar app and the Settings switcher (addons/sienna/menubar_ext.py's MARK,
-MARK_SCALE, PoolUI.mark_alpha and draw_glyph, registered into menubar/codexpool_menubar.py's MARK_APPS and
+MARK_SCALE, PoolUI.mark_alpha and draw_glyph, registered into menubar/subpool_menubar.py's MARK_APPS and
 MARK_SCALE by load_pool_extensions): the app and its template files, the template's own alpha thickened by a
 pixel, the fallback through the template sizes, the switcher's optical box, and a two-pool snapshot that reads no
 app. The mask maths themselves are the core's (tests/test_marks.py). What draws needs PyObjC, that is the menu
-bar's own interpreter (~/.codexpool/menubar/.venv/bin/python), and skips without it."""
+bar's own interpreter (~/.subpool/menubar/.venv/bin/python), and skips without it."""
 import ast
 import contextlib
 import importlib
@@ -20,7 +20,7 @@ from unittest import mock
 
 from _helpers import REPO
 
-MENUBAR = REPO / 'menubar' / 'codexpool_menubar.py'
+MENUBAR = REPO / 'menubar' / 'subpool_menubar.py'
 EXT = REPO / 'addons' / 'sienna' / 'menubar_ext.py'
 DEMO = REPO / 'docs' / 'images' / 'demo'
 ADDON_DEMO = REPO / 'addons' / 'sienna' / 'docs' / 'images' / 'demo'
@@ -66,10 +66,10 @@ def load(name):
     return importlib.import_module(name)
 
 
-mb = load('codexpool_menubar')
+mb = load('subpool_menubar')
 
 
-@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.codexpool/menubar/.venv/bin/python)')
+@unittest.skipIf(mb is None, 'needs PyObjC (run with the menu bar app\'s interpreter, ~/.subpool/menubar/.venv/bin/python)')
 class WithAppKit(unittest.TestCase):
     def setUp(self):
         saved = (mb.MARKS, dict(mb._MARKS), set(mb._MARK_NOTED))
@@ -83,7 +83,7 @@ class WithAppKit(unittest.TestCase):
             mb._MARK_NOTED.clear()
             mb._MARK_NOTED.update(saved[2])
         self.addCleanup(restore)
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix='codexpool-sienna-marks-'))
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix='subpool-sienna-marks-'))
         self.addCleanup(shutil.rmtree, str(self.tmp), True)
 
     def fake_app(self, name, files, version='1.0'):
@@ -140,7 +140,7 @@ class WithAppKit(unittest.TestCase):
             mb.NSGraphicsContext.restoreGraphicsState()
 
     def test_settings_switcher_image_gets_the_optical_box(self):
-        st = load('codexpool_settings')
+        st = load('subpool_settings')
         alpha = bytes(255 if 2 <= x < 18 and 4 <= y < 8 else 0 for y in range(12) for x in range(20))
         mark = mb.mask_image(alpha, 20, 12)
         mb.MARKS = 'app'

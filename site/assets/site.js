@@ -1,4 +1,4 @@
-// codexpool site: copy buttons, the phone menu, the diagram's pause button and ?theme=.
+// subpool site: copy buttons, the phone menu, the diagram's pause button and ?theme=.
 // The page works without this file.
 (function () {
   'use strict';

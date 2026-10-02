@@ -7,7 +7,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>{{MENUBAR_PYTHON}}</string>
-		<string>{{ROOT}}/menubar/codexpool_menubar.py</string>
+		<string>{{ROOT}}/menubar/subpool_menubar.py</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>{{ROOT}}</string>

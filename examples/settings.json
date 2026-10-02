@@ -1,9 +1,9 @@
 {
-  "pool_label": "com.codexpool.pool",
-  "guard_label": "com.codexpool.guard",
-  "menubar_label": "com.codexpool.menubar",
+  "pool_label": "com.subpool.pool",
+  "guard_label": "com.subpool.guard",
+  "menubar_label": "com.subpool.menubar",
   "_bridge_label": "launchd label of the lane bridge (lanes/bridge.py); it runs only while a lane in lanes.json has a bridge member.",
-  "bridge_label": "com.codexpool.bridge",
+  "bridge_label": "com.subpool.bridge",
   "port": 8319,
   "_bridge_port": "Loopback port of the lane bridge; the pool reaches bridge lane members through it. Must differ from port; left out while port is 8320, it is 8321.",
   "bridge_port": 8320,
@@ -14,6 +14,6 @@
   "headline": "all",
   "_display": "How every number and bar reads: \"left\" (counts down from 100%, bars drain) or \"used\" (counts up from 0%, bars fill).",
   "display": "left",
-  "_balancing": "Which seat new threads get: \"priority\" (your fill order: codexpool order; the first seat until it runs out, then the next) or \"reset\" (the regular seat whose weekly quota resets soonest, so none of it goes to waste; the guard keeps the order up to date and the reserve stays last).",
+  "_balancing": "Which seat new threads get: \"priority\" (your fill order: subpool order; the first seat until it runs out, then the next) or \"reset\" (the regular seat whose weekly quota resets soonest, so none of it goes to waste; the guard keeps the order up to date and the reserve stays last).",
   "balancing": "priority"
 }

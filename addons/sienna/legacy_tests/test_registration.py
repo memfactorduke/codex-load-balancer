@@ -78,18 +78,18 @@ class Registration(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=HOME) as work:
             root = Path(work)
             (root / 'bin').mkdir()
-            shutil.copy(REPO / 'bin/codexpool', root / 'bin/codexpool')
+            shutil.copy(REPO / 'bin/subpool', root / 'bin/subpool')
             fake_home = root / 'home'
             fake_home.mkdir()
             env = dict(os.environ, HOME=str(fake_home), CODEXPOOL_SETTINGS=str(root / 'settings.json'))
-            result = subprocess.run([sys.executable, str(root / 'bin/codexpool'), '--help'],
+            result = subprocess.run([sys.executable, str(root / 'bin/subpool'), '--help'],
                                     env=env, text=True, capture_output=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn('sienna', result.stdout)
             self.assertNotIn('claude_balancing', result.stdout)
             self.assertNotIn('claude', result.stderr)
-            result = subprocess.run([sys.executable, str(root / 'bin/codexpool'), '--version'],
+            result = subprocess.run([sys.executable, str(root / 'bin/subpool'), '--version'],
                                     env=env, text=True, capture_output=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, f'codexpool {cp.VERSION}\n')
-            self.assertFalse((fake_home / '.codexpool').exists(), 'read-only bootstrap wrote runtime state')
+            self.assertEqual(result.stdout, f'subpool {cp.VERSION}\n')
+            self.assertFalse((fake_home / '.subpool').exists(), 'read-only bootstrap wrote runtime state')

@@ -1,14 +1,14 @@
 name: Bug report
-description: Something in codexpool doesn't work as the docs say.
+description: Something in subpool doesn't work as the docs say.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. First run `codexpool doctor`: it checks the whole setup and often names the fix.
+        Thanks for reporting. First run `subpool doctor`: it checks the whole setup and often names the fix.
         [Troubleshooting](https://github.com/memfactorduke/codex-load-balancer/blob/main/docs/TROUBLESHOOTING.md) covers the common problems.
 
-        **Remove personal data before you post:** emails, account and workspace ids, seat names you would rather keep private, and your macOS user name in paths. Never paste tokens or the contents of `~/.codexpool/auth/`.
+        **Remove personal data before you post:** emails, account and workspace ids, seat names you would rather keep private, and your macOS user name in paths. Never paste tokens or the contents of `~/.subpool/auth/`.
         A security problem goes to a [private report](https://github.com/memfactorduke/codex-load-balancer/security/advisories/new), not here (if that page shows no form, open a Security contact request instead).
   - type: textarea
     id: what-happened
@@ -16,7 +16,7 @@ body:
       label: What happened
       description: What you did, what you expected, and what happened instead.
       placeholder: |
-        I ran codexpool reset "Work A" and expected ..., but ...
+        I ran subpool reset "Work A" and expected ..., but ...
     validations:
       required: true
   - type: textarea
@@ -32,17 +32,17 @@ body:
   - type: textarea
     id: doctor
     attributes:
-      label: codexpool doctor output
-      description: The full output of `codexpool doctor`, with personal data removed. It is pasted as-is.
+      label: subpool doctor output
+      description: The full output of `subpool doctor`, with personal data removed. It is pasted as-is.
       render: text
     validations:
       required: true
   - type: input
-    id: codexpool-version
+    id: subpool-version
     attributes:
-      label: codexpool version
-      description: "`codexpool version`, the release you installed, or the commit."
-      placeholder: codexpool 1.0.0
+      label: subpool version
+      description: "`subpool version`, the release you installed, or the commit."
+      placeholder: subpool 1.0.0
     validations:
       required: true
   - type: input
@@ -65,7 +65,7 @@ body:
     attributes:
       label: Logs or screenshots (optional)
       description: |
-        The relevant lines of `codexpool logs -n 50` or `codexpool logs --guard -n 50`, or a screenshot. Remove personal data first.
+        The relevant lines of `subpool logs -n 50` or `subpool logs --guard -n 50`, or a screenshot. Remove personal data first.
       render: text
     validations:
       required: false

@@ -349,7 +349,7 @@ class ConfigSplice(unittest.TestCase):
         self.assertEqual(t2b.count('grok-9'), 1)
         self.assertNotIn('grok-3', t2b)
         t3 = cp.lanes_config_text(t2, plan_of(CHEAP), 'KEY', None)
-        self.assertNotIn('codexpool lanes (xai)', t3)
+        self.assertNotIn('subpool lanes (xai)', t3)
         self.assertIn('oauth-excluded-models:\n  codex:', t3)
         self.assertEqual(cp.lanes_config_text(t2, [], 'K', None), own)
         four = base + 'oauth-excluded-models:\n    codex:\n        - "old"\n'
@@ -472,7 +472,7 @@ class StatusLines(unittest.TestCase):
         with preserved(cp.LANES_FILE):
             cp.LANES_FILE.write_text('{"lanes": []}')
             self.assertEqual(cp.lane_status_lines({'seats': []}),
-                             ['lanes: lanes.json is invalid (codexpool lane list says why)'])
+                             ['lanes: lanes.json is invalid (subpool lane list says why)'])
 
 
 class RefreshStatusFile(unittest.TestCase):
@@ -587,7 +587,7 @@ class WithPool(unittest.TestCase):
             self.assertTrue(block_check(CHEAP)[0])
             renamed = {'lanes': {'cheap': dict(CHEAP['lanes']['cheap'], display='Drafts')}}
             self.assertEqual(block_check(renamed), (False, 'config.yaml lanes block matches lanes.json',
-                                                    'codexpool lane apply'))
+                                                    'subpool lane apply'))
             cp.CONFIG.write_text(cp.lanes_config_text(cp.CONFIG.read_text(), plan_of(renamed), key, None))
             self.assertTrue(block_check(renamed)[0])
             self.assertIn('display-name: "Drafts"', cp.CONFIG.read_text())
@@ -654,7 +654,7 @@ class WithPool(unittest.TestCase):
 
 
 class LaneNamesUpgradeNote(unittest.TestCase):
-    """install's note for lanes applied by an older codexpool, whose lanes block gives a lane another picker name."""
+    """install's note for lanes applied by an older subpool, whose lanes block gives a lane another picker name."""
 
     def test_note_only_while_the_block_has_old_names(self):
         with preserved(cp.CONFIG, cp.LANES_FILE):
@@ -666,7 +666,7 @@ class LaneNamesUpgradeNote(unittest.TestCase):
             self.assertIsNone(cp.lane_names_note())
             old = 'display-name: "Bulk lane (Grok 4.7 Fast, then Muse Spark 1.3 contributor)"'  # what 1.0.0 wrote
             cp.CONFIG.write_text(fresh.replace('display-name: "Bulk"', old))
-            self.assertIn('Run codexpool lane apply', cp.lane_names_note())
+            self.assertIn('Run subpool lane apply', cp.lane_names_note())
             cp.LANES_FILE.write_text('{"lanes": {"Bad Name": {}}}\n')
             self.assertIsNone(cp.lane_names_note())  # a broken lanes.json: doctor reports that instead
             cp.LANES_FILE.unlink()
