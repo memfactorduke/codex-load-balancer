@@ -116,8 +116,12 @@ that pass, and stops refreshing it. The mark holds until the seat file's `last_r
 refresh that worked after all); a log line older than it doesn't count. The pool's seat list is no evidence: it only
 says "unauthorized", and its state can outlast a new sign-in. The pool keeps serving a marked seat on an access
 token that has not run out (up to a day), so while it does, the seat stays ready ("sign in again soon", a doctor
-warning) and the guard announces no move and no dry pool; once the pool stops serving it, it is blocked until the
-new sign-in.
+warning). The guard does not wait for that token to run out: on the pass that marks a regular seat it moves the seat
+below every other regular seat (above the reserve), so new threads go to a seat that keeps working and the move is
+announced as usual. The marked seat still serves after the others until its token runs out; then it is blocked
+until the new sign-in. The seat's priority is kept in its guard entry (`demoted`) and put back once the new
+sign-in clears the mark, unless you changed it in the meantime. With `"balancing": "reset"` the fill order does the
+same by itself (marked seats after the other regular seats). A lone regular seat stays where it is.
 
 **Resets are redeemed, never bought.** The guard polls each seat's banked resets every 10 minutes and puts the
 count and soonest expiry into `status.json`. `subpool reset` redeems the soonest-expiring credit, then calls

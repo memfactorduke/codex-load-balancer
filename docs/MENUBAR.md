@@ -93,8 +93,9 @@ account view and graph choice separately. Hover over a compact account row to se
    is left ("56% left"); a seat with a 5-hour window has one labelled row per limit instead ("Week", "5h", each
    with its own bar and "% left", the limit that binds the seat bolder), and when it resets or comes back. Bars drain as a seat is used: green above 30% left, orange at 30% or less, red at 10%
    or less, and grey for a seat that can't serve. A seat that needs a new sign-in says "Re-login needed" and shows
-   the error. "Re-login soon" (orange) is a seat whose sign-in OpenAI ended but that still serves until its access
-   runs out, within a day: sign in again before then.
+   the error. "Re-login soon" (orange) is a seat whose sign-in OpenAI ended but that still works until its access
+   runs out, within a day: the guard moves it after your other seats so new threads go elsewhere; sign in again to
+   put it back.
 6. **Footer**: Status… (Terminal, `subpool status --live`), Doctor, Pool log (`subpool logs -f`), Docs (the
    README), Refresh (runs one guard pass now); then **Add a ChatGPT account…** (the Setup assistant's Add
    accounts step), **Settings…** (⌘,, which also works while the popover is open), Quit, and the running

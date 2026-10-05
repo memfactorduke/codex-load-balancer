@@ -101,7 +101,9 @@ block in `config.yaml`, the bridge's `lanes/bridge.json`, role files in `~/.code
    an idempotent `redeem_request_id`. Never add a call to a purchase flow.
 7. **The guard's hardened logic stays behaviourally identical** unless the change is the point: state model,
    credit parking (record written before the seat is disabled), healing, selftest journal and recovery, upgrade
-   rollback, gate self-test. One deliberate, tested extension: with `"balancing": "reset"` the guard's balancing
+   rollback, gate self-test. A regular seat whose sign-in OpenAI ended goes after the other regular seats on the pass
+   that marks it, its priority recorded in guard.json (`demoted`) and put back after the new sign-in, unless you
+   changed it meanwhile. One deliberate, tested extension: with `"balancing": "reset"` the guard's balancing
    step (after healing) sets the regular seats' priorities soonest weekly reset first, through the management
    API and only when the pool's order is wrong, keeps reserve seats last, logs one line and never notifies; the
    first pass back on `"priority"` restores your order from `seats.json` (`manual_priority`). A fill order the

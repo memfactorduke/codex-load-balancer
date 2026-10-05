@@ -1671,6 +1671,8 @@ def order_reason(row, now):
         return 'reserve: used last'
     if row.get('state') in BALANCE_OUT:
         return f'{row["state"]}: not ordered until it serves again'
+    if row.get('sign_in_ended'):
+        return 'sign-in ended: used after the other seats'
     t, w = waste_reset(row)
     if t is None:
         return 'no usage data yet: kept in your order'
@@ -1705,30 +1707,34 @@ def reset_fill_order(rows, manual, slack=BALANCE_SLACK):
     """The fill order "balancing": "reset" wants, as seat names, or None when the pool's order already is it (pure).
     rows: the Codex status rows in the pool's fill order; manual: seat names in your order. Regular seats that serve
     come first, soonest reset first (while no seat resets more than slack seconds after any seat below it, the
-    current order stands), then those without usage data in your order; seats that serve nothing stay where they
-    are and don't count; reserve seats come last, in your order."""
+    current order stands), then those without usage data in your order, then those whose sign-in ended (they still
+    serve until their access token runs out) in your order; seats that serve nothing stay where they are and don't
+    count; reserve seats come last, in your order."""
     pos = {n: i for i, n in enumerate(manual)}
     far = len(manual)
     regular = [r for r in rows if not r.get('reserve')]
     serving = [r for r in regular if r.get('state') not in BALANCE_OUT]
+    ended = [r for r in serving if r.get('sign_in_ended')]
     t = {r['name']: waste_reset(r)[0] for r in serving}
-    timed = [r for r in serving if t[r['name']]]
-    untimed = [r for r in serving if not t[r['name']]]
+    timed = [r for r in serving if t[r['name']] and not r.get('sign_in_ended')]
+    untimed = [r for r in serving if not t[r['name']] and not r.get('sign_in_ended')]
     reserves = [r for r in rows if r.get('reserve')]
     want_reserves = sorted(reserves, key=lambda r: pos.get(r['name'], far))
     last_regular = max((i for i, r in enumerate(rows) if not r.get('reserve')), default=-1)
     first_reserve = min((i for i, r in enumerate(rows) if r.get('reserve')), default=len(rows))
     later = [min(t[r['name']] for r in timed[i:]) for i in range(1, len(timed))]  # the soonest reset after each
-    fine = (serving == timed + untimed
+    fine = (serving == timed + untimed + ended
             and all(t[a['name']] <= soonest + dt.timedelta(seconds=slack) for a, soonest in zip(timed, later))
             and untimed == sorted(untimed, key=lambda r: pos.get(r['name'], far))
+            and ended == sorted(ended, key=lambda r: pos.get(r['name'], far))
             and first_reserve > last_regular and reserves == want_reserves)
     if fine:
         return None
     timed.sort(key=lambda r: (t[r['name']], pos.get(r['name'], far)))
     untimed.sort(key=lambda r: pos.get(r['name'], far))
+    ended.sort(key=lambda r: pos.get(r['name'], far))
     idle = [r for r in regular if r.get('state') in BALANCE_OUT]  # in the pool's order: they keep it
-    return [r['name'] for r in timed + untimed + idle + want_reserves]
+    return [r['name'] for r in timed + untimed + ended + idle + want_reserves]
 
 
 def set_pool_order(codex, targets, pool=None):
@@ -1819,6 +1825,62 @@ def balance_pass(guard, seats, now, pool=None, rows_of=None):
     except (ApiError, PoolDown, KeyUnavailable, OSError) as e:
         log_line(f'guard: {tag}balancing: could not set the fill order: {short(str(e), 120)}')
     return False
+
+
+def demote_pass(guard, seats, now, pool=None):
+    """Move a regular seat whose sign-in the provider ended (the guard's mark) below every other regular seat, so new
+    threads go to seats that keep working; the pool still serves it after them until its access token runs out (up
+    to a day). Its priority is recorded in its guard entry (demoted) and put back once a new sign-in clears the mark,
+    unless the priority was changed since. Under "balancing": "reset" the fill order does this by itself: any
+    demotion is put back first, so balancing records your order, not this one. Logs one line per change and never
+    notifies; the pool's move to the next seat is announced as usual. True when it changed the pool's fill order.
+    pool: a SeatPool (None: the Codex pool)."""
+    own = pool.provider if pool else 'codex'
+    codex = [s for s in seats if s['provider'] == own]
+    tag = (pool or seat_pool()).log_tag
+    reset = SETTINGS[pool.balancing if pool else 'balancing'] == 'reset'
+    entries = guard.setdefault('seats', {})
+    changed = False
+    try:
+        for s in codex:
+            g = entries.get(s['name']) or {}
+            d = g.get('demoted')
+            if not isinstance(d, dict) or (g.get('sign_in_ended') and not reset and not s['reserve']):
+                continue
+            if s['priority'] == d.get('to') and isinstance(d.get('priority'), int):
+                set_fields(s['name'], pool, priority=d['priority'])
+                s['priority'] = d['priority']
+                changed = True
+                log_line(f'guard: {tag}{s["label"]} is back at priority {d["priority"]} in the fill order')
+            g.pop('demoted', None)
+        if reset:
+            return changed
+        for s in codex:
+            g = entries.get(s['name']) or {}
+            if s['reserve'] or not g.get('sign_in_ended'):
+                continue
+            others = [o for o in codex if o is not s and not entries.get(o['name'], {}).get('sign_in_ended')]
+            if not [o for o in others if not o['reserve']]:
+                continue  # no seat to go first: it stays where it is
+            last = min(o['priority'] for o in others if not o['reserve'])
+            top_reserve = max((o['priority'] for o in codex if o['reserve']), default=None)
+            if s['priority'] < last and (top_reserve is None or s['priority'] > top_reserve):
+                continue  # already after the seats that work
+            p, moves = fill_order([o for o in codex if o is not s], provider=own)
+            if not isinstance(g.get('demoted'), dict):
+                g['demoted'] = {'priority': s['priority']}
+            g['demoted']['to'] = p
+            entries[s['name']] = g
+            write_json(pool.guard if pool else GUARD_FILE, guard)  # the record before the change
+            apply_fill_order(s['name'], p, moves, pool)
+            for o, q in moves:
+                o['priority'] = q
+            s['priority'] = p
+            changed = True
+            log_line(f'guard: {tag}{s["label"]}: sign-in ended, moved after the other seats (priority {p})')
+    except (ApiError, PoolDown, KeyUnavailable, OSError) as e:
+        log_line(f'guard: {tag}could not move a seat whose sign-in ended: {short(str(e), 120)}')
+    return changed
 
 
 # ---------------------------------------------------------------- guard (launchd, every 60s)
@@ -2058,7 +2120,13 @@ def guard_pass():
 
     # 4b. Balancing: with "balancing": "reset", the regular seats fill soonest reset first; back to your order after.
     #     A fill order you changed yourself since the last pass (order, priority, reserve) counts the same way.
+    #     A seat whose sign-in ended goes after the seats that keep working (demote_pass; reset balancing does it
+    #     in its own order), so new threads move on now rather than when its access token runs out.
+    if SETTINGS['balancing'] == 'reset':
+        demote_pass(guard, seats, now)
     reordered = balance_pass(guard, seats, now)
+    if SETTINGS['balancing'] != 'reset':
+        demote_pass(guard, seats, now)
     reordered = bool(guard.pop('you_reordered', None)) or reordered
 
     # 5. Tell the user when the pool moves on, or runs dry. Short transient cooldowns are blips. That is the pool's

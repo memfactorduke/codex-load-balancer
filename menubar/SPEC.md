@@ -137,7 +137,8 @@ next click on the item opens the popover straight away.
      "Back in 3h 56m" for out and parked seats, right, plus "· reset available" when a reset would bring it back.
      Blocked seats say "Re-login needed" and show the error on an extra line. A seat the pool still serves after
      OpenAI ended its sign-in (`sign_in_ended` in its status.json row, state `active`/`ready`) says "Re-login soon"
-     in orange, with "OpenAI ended this sign-in" on an extra line; it serves until its access token runs out.
+     in orange, with "OpenAI ended this sign-in" on an extra line; it serves until its access token runs out, after
+     the other regular seats (the guard moves it there).
    - Tooltip: the blocked detail and "n banked resets, soonest expires Oct 3. Click to use one."
    - Clicking a row opens an `NSMenu` (seat file name `name` is what gets passed to subpool):
      - **Use reset now… (n banked, expires Oct 3)** when the seat has a banked reset. Asks first ("Use a reset on

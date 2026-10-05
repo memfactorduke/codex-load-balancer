@@ -117,6 +117,12 @@ class ResetFillOrder(unittest.TestCase):
         self.rows['c'] = row('c', week_in=dt.timedelta(days=9), now=self.now)
         self.assertEqual(self.order('cab', 'bac'), list('bac'))
 
+    def test_an_ended_sign_in_goes_after_the_seats_that_keep_working(self):
+        self.rows['b'] = dict(self.rows['b'], sign_in_ended=True)
+        self.assertEqual(self.order('bacer'), list('acebr'))
+        self.assertIsNone(self.order('acebr'))
+        self.assertEqual(cp.order_reason(self.rows['b'], self.now), 'sign-in ended: used after the other seats')
+
     def test_nothing_to_order(self):
         self.assertIsNone(cp.reset_fill_order([], []))
         self.assertIsNone(self.order('r'))

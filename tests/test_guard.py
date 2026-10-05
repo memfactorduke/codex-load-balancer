@@ -59,6 +59,8 @@ class EndedSignIn(unittest.TestCase):
         self.refresh_answer = None   # the error body of the pool's refresh answer (None: the refresh worked)
         self.refreshes, self.notes, self.all_notes = [], [], []
         self.others = []             # more seats, healthy ones, after Work in the fill order (see spare())
+        self.priorities = {SEAT: 300}  # each seat's priority in the pool, as PATCH leaves it
+        self.patches = []
         for name, kwargs in (('load_seats', {'side_effect': self.seats}), ('api', {'side_effect': self.api}),
                              ('notify', {'side_effect': self.notify}),
                              ('poll_usage', {'side_effect': cp.ApiError(500, 'not here')}),
@@ -78,8 +80,9 @@ class EndedSignIn(unittest.TestCase):
 
     def seats(self):
         healthy = {'status': 'active', 'unavailable': False, 'status_message': '', 'cooldowns': []}
-        return [self.seat_row(self.path, 'Work', 300, self.pool)] + \
-            [self.seat_row(path, label, priority, healthy) for path, label, priority in self.others]
+        rows = [self.seat_row(self.path, 'Work', self.priorities[SEAT], self.pool)] + \
+            [self.seat_row(path, label, self.priorities[path.name], healthy) for path, label, _ in self.others]
+        return sorted(rows, key=lambda r: -r['priority'])   # the pool's fill order
 
     @staticmethod
     def seat_row(path, label, priority, pool):
@@ -96,12 +99,18 @@ class EndedSignIn(unittest.TestCase):
         self.addCleanup(path.unlink)
         cp.update_meta(path.name, label='Spare')
         self.others.append((path, 'Spare', 200))
+        self.priorities[path.name] = 200
+        return path.name
 
     def api(self, method, path, body=None, **kwargs):
         if path == '/v0/management/auth-files/refresh':
             self.refreshes.append(body['name'])
             if self.refresh_answer is not None:
                 raise cp.ApiError(500, self.refresh_answer)
+            return {'ok': True}
+        if method == 'PATCH' and path == '/v0/management/auth-files/fields':
+            self.patches.append((body['name'], body['priority']))
+            self.priorities[body['name']] = body['priority']
             return {'ok': True}
         raise AssertionError(f'unexpected {method} {path}')
 
@@ -348,30 +357,64 @@ class EndedSignIn(unittest.TestCase):
         self.assertEqual(self.all_notes, [ENDED_NOTE, ('All Codex seats are exhausted', 'No reset time known.')])
         self.assertEqual(self.refreshes, [])
 
-    def test_a_seat_the_pool_still_serves_before_another(self):
-        """The same with a second seat after it: no "Codex now on Spare" while the pool still sends Work the
-        traffic, and the move is announced when the pool makes it."""
+    def test_a_seat_the_pool_still_serves_goes_after_another(self):
+        """With a second seat: the first pass that sees the ended sign-in moves Work after Spare, so new threads go to
+        a seat that keeps working (announced as a move); Work still serves after it until its access token runs
+        out, and a new sign-in puts it back where it was."""
+        spare = self.spare()
+        self.warm_up()
+        self.log(refresh_line(self.now - dt.timedelta(minutes=1)))
+        g, row = self.guard_pass()
+        self.assertEqual(self.patches, [(SEAT, 100)])
+        self.assertEqual(g['demoted'], {'priority': 300, 'to': 100})
+        self.assertEqual(self.all_notes, [ENDED_NOTE, ('Codex now on Spare', f'Work: {SOON}')])
+        st = json.loads(cp.STATUS_FILE.read_text())
+        self.assertEqual((st['active'], [(r['label'], r['state']) for r in st['seats']]),
+                         ('Spare', [('Spare', 'active'), ('Work', 'ready')]))
+        self.assertEqual(row['detail'], SOON)
+        self.guard_pass()   # nothing more to move, nothing more to say
+        self.assertEqual(self.patches, [(SEAT, 100)])
+        self.assertEqual(len(self.all_notes), 2)
+        self.signed_in(self.now)   # subpool login --priority 100 (its current one): new tokens
+        g, row = self.guard_pass()
+        self.assertEqual(self.patches, [(SEAT, 100), (SEAT, 300)])
+        self.assertNotIn('demoted', g)
+        self.assertEqual(row['state'], 'active')
+        self.assertEqual(self.all_notes[2:], [('Codex now on Work', 'Spare: ready')])
+        self.assertEqual(self.priorities, {SEAT: 300, spare: 200})
+
+    def test_a_priority_you_changed_meanwhile_is_kept(self):
         self.spare()
         self.warm_up()
         self.log(refresh_line(self.now - dt.timedelta(minutes=1)))
         self.guard_pass()
-        self.assertEqual(self.all_notes, [ENDED_NOTE])
-        self.assertEqual(json.loads(cp.GUARD_FILE.read_text())['announced'], SEAT)
-        st = json.loads(cp.STATUS_FILE.read_text())
-        self.assertEqual((st['active'], [r['state'] for r in st['seats']]), ('Work', ['active', 'ready']))
-        args = argparse.Namespace(from_seat='Work', to_seat='Spare')   # selftest still takes it for blocked
+        self.priorities[SEAT] = 50   # subpool priority Work 50
+        self.signed_in(self.now)
+        g, _ = self.guard_pass()
+        self.assertEqual(self.patches, [(SEAT, 100)])
+        self.assertNotIn('demoted', g)
+
+    def test_the_only_seat_stays_where_it_is(self):
+        self.warm_up()
+        self.log(refresh_line(self.now - dt.timedelta(minutes=1)))
+        g, row = self.guard_pass()
+        self.assertEqual((self.patches, row['state']), ([], 'active'))
+        self.assertNotIn('demoted', g)
+
+    def test_once_the_pool_stops_serving_it(self):
+        self.spare()
+        self.warm_up()
+        self.log(refresh_line(self.now - dt.timedelta(minutes=1)))
+        self.guard_pass()
+        self.blocked_by_the_pool()
+        _, row = self.guard_pass()
+        self.assertEqual((row['state'], row['detail']), ('blocked', 'OpenAI ended this sign-in'))
+        self.assertEqual(json.loads(cp.STATUS_FILE.read_text())['active'], 'Spare')
+        self.assertEqual(len(self.all_notes), 2)   # no second "now on Spare"
+        args = argparse.Namespace(from_seat='Work', to_seat='Spare')   # selftest takes it for blocked
         with mock.patch.object(cp, 'codex_bin', return_value='codex'), self.assertRaises(SystemExit) as out:
             cp.cmd_selftest(args)
         self.assertEqual(str(out.exception.code), 'Work is blocked; pick seats that are ready')
-        self.blocked_by_the_pool()
-        self.guard_pass()
-        self.assertEqual(self.all_notes, [ENDED_NOTE, ('Codex now on Spare', 'Work: OpenAI ended this sign-in')])
-        self.assertEqual(json.loads(cp.STATUS_FILE.read_text())['active'], 'Spare')
-        self.signed_in(self.now)   # subpool login: new tokens, and the pool serves Work again
-        self.pool.update(status='active', unavailable=False, status_message='')
-        _, row = self.guard_pass()
-        self.assertEqual(row['state'], 'active')
-        self.assertEqual(self.all_notes[2:], [('Codex now on Work', 'Spare: ready')])
 
     def test_doctor_asks_for_a_sign_in_only(self):
         self.blocked_by_the_pool()

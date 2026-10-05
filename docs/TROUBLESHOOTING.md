@@ -115,7 +115,8 @@ token for good (`refresh_token_invalidated`, "Your session has ended", `refresh_
 `invalid_grant`), for instance after you signed out of all devices or changed the password. The guard notifies
 you the first time it sees that, from the pool's log or its own refresh, and stops refreshing the seat. When the
 pool log showed it, the seat usually still serves on its access token for up to a day: it says **Re-login soon**
-until then, and blocked after. Sign in again with the `subpool login` line from the notification (or
+until then, and blocked after. The guard moves it after your other regular seats right away, so new threads go to
+a seat that keeps working; a new sign-in puts it back where it was. Sign in again with the `subpool login` line from the notification (or
 **Re-login…** in the menu bar); the seat is back on the guard's next pass after the sign-in.
 
 ### doctor reports `refresh_token_reused`

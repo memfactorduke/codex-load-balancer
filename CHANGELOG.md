@@ -6,6 +6,13 @@ All notable changes to subpool.app are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A seat whose sign-in OpenAI ended ("Re-login soon") no longer stays first in the fill order until its access
+  token runs out: the guard moves it after the other regular seats on the pass that notices, so new threads go to a
+  seat that keeps working, and announces the move. It still serves after them until the token runs out; a new
+  sign-in puts its priority back. With `"balancing": "reset"`, such seats come after the other regular seats.
+
 ## [1.4.0] - 2026-10-02
 
 - Rename the project to subpool.app, the command to `subpool`, and the install folder to `~/.subpool`;
